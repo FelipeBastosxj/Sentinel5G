@@ -1,0 +1,27 @@
+{
+  "name": "eventstream-observability-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Distributed Messaging Observability Platform for real-time event ingestion, processing, telemetry, and reliability analytics.",
+  "workspaces": [
+    "shared/*",
+    "services/*",
+    "frontend/angular-dashboard"
+  ],
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test:ingestion": "npm run test -w @eventstream/ingestion-service",
+    "test:processing": "npm run test -w @eventstream/processing-service",
+    "test:gateway": "npm run test -w @eventstream/realtime-gateway",
+    "test:webhook": "npm run test -w @eventstream/webhook-service"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
