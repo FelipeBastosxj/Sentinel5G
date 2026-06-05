@@ -1,0 +1,101 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in EventStream Observability Engine
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug.
+        Please fill in the fields below as completely as possible.
+
+  - type: dropdown
+    id: service
+    attributes:
+      label: Affected Service / Component
+      description: Which service or component is affected?
+      options:
+        - ingestion-service
+        - processing-service
+        - realtime-gateway
+        - webhook-service
+        - angular-dashboard
+        - infra / docker-compose
+        - shared / contracts
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of the bug.
+      placeholder: Describe what happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Step-by-step instructions to reproduce the bug.
+      placeholder: |
+        1. Start infrastructure with `docker-compose up -d`
+        2. Send a POST request to `/integrations/twilio/webhook`
+        3. Observe the error in the logs
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Paste any relevant logs or error messages here.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What version of the project are you using?
+      placeholder: "e.g. v0.1.0 or commit SHA"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Describe your environment.
+      placeholder: |
+        - OS: Ubuntu 22.04
+        - Docker version: 26.x
+        - Node.js version: 22.x
+        - Kafka version: 3.7
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have read HARDNESS.md and CONTRIBUTING.md.
+          required: true

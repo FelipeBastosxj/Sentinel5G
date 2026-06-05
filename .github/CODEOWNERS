@@ -1,0 +1,28 @@
+# CODEOWNERS
+# Define code ownership for automatic review requests.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global owner — reviews all PRs by default
+* @FelipeBastosxj
+
+# Services
+/services/ingestion-service/   @FelipeBastosxj
+/services/processing-service/  @FelipeBastosxj
+/services/realtime-gateway/    @FelipeBastosxj
+/services/webhook-service/     @FelipeBastosxj
+
+# Frontend
+/frontend/                     @FelipeBastosxj
+
+# Infrastructure
+/infra/                        @FelipeBastosxj
+
+# Shared contracts and schemas
+/shared/                       @FelipeBastosxj
+
+# CI/CD workflows
+/.github/                      @FelipeBastosxj
+
+# Governance documents
+HARDNESS.md                    @FelipeBastosxj
+CONTRIBUTING.md                @FelipeBastosxj
