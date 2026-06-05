@@ -1,0 +1,8 @@
+# Angular Dashboard
+# This directory will be scaffolded using Angular CLI:
+#
+#   npm install -g @angular/cli
+#   ng new angular-dashboard --routing --style=scss
+#
+# After scaffolding, the package.json name should be updated to:
+#   "@eventstream/dashboard"
