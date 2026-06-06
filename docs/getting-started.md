@@ -112,6 +112,64 @@ docker compose -f infra/docker-compose.yml --profile observability up -d
 
 Starts: **Prometheus** (:9090), **Loki** (:3100), **Tempo** (:3200), **Grafana** (:3000), **OTel Collector**
 
+### 5. Start the Angular dashboard
+
+> Requires Node.js >= 22 installed locally. Run from **PowerShell** (not WSL).
+
+```powershell
+# Install dependencies (first time only)
+npm install
+
+# Start the dashboard — keeps the terminal open
+npm run frontend
+```
+
+Open **http://localhost:4200** — the dashboard connects automatically to the realtime gateway via WebSocket on `ws://localhost:3004/ws`.
+
+---
+
+## Daily Workflow
+
+### 🟢 Start (beginning of the day)
+
+```bash
+# Terminal 1 — WSL: start infra + backend services
+docker compose -f infra/docker-compose.yml --profile services up -d
+
+# Wait ~30s for Kafka, then check all containers are healthy
+docker compose -f infra/docker-compose.yml --profile services ps
+
+# Terminal 2 — PowerShell: start the frontend (stays open)
+npm run frontend
+```
+
+### 🔴 Stop (end of the day)
+
+```bash
+# Stop all backend services + infrastructure
+docker compose -f infra/docker-compose.yml --profile services down
+```
+
+> The frontend terminal can be closed with `Ctrl+C`.
+
+### 🔄 After changing service code
+
+```bash
+# Rebuild and restart only the affected service (e.g. ingestion-service)
+docker compose -f infra/docker-compose.yml --profile services build ingestion-service
+docker compose -f infra/docker-compose.yml --profile services up -d ingestion-service
+```
+
+### 💡 npm aliases (same commands, shorter)
+
+```bash
+npm run services:up     # start all 4 backend services
+npm run services:down   # stop all 4 backend services
+npm run services:build  # rebuild all Docker images
+npm run services:logs   # tail all service logs
+npm run frontend        # start the Angular dashboard (:4200)
+```
+
 ---
 
 ## Verify Everything Works
