@@ -77,12 +77,12 @@ docker compose -f infra/docker-compose.yml --profile services down
 
 | Tool | Version | Required |
 |------|---------|----------|
-| Node.js | >= 22.x | ✅ |
-| npm | >= 10.x | ✅ |
 | Docker | >= 27.x | ✅ |
 | Docker Compose | >= 2.x | ✅ |
+| Node.js | >= 22.x | ⚙️ Dev only |
+| npm | >= 10.x | ⚙️ Dev only |
 | WSL 2 (Windows only) | Ubuntu 22.04+ | ✅ Windows |
-| GNU Make | any | ✅ Linux/Mac |
+| GNU Make | any | ⚙️ Linux/Mac |
 
 ---
 
@@ -208,7 +208,7 @@ npm run services:gateway
 
 Wait for each service to print:
 ```
-Application is running on: http://[::1]:300X
+LOG [Bootstrap] <service-name> listening on http://localhost:300X
 ```
 
 ### Step 5 — Start frontend
@@ -238,7 +238,7 @@ Starts: **Prometheus**, **Loki**, **Tempo**, **Grafana**, **OTel Collector**
 | Processing Service | http://localhost:3003 | Event processing |
 | Realtime Gateway | http://localhost:3004 | WebSocket gateway |
 | Kafka UI | http://localhost:8080 | Kafka browser |
-| Grafana | http://localhost:3000 | Dashboards (admin/admin) |
+| Grafana | http://localhost:3000 | Dashboards (no login required) |
 | Prometheus | http://localhost:9090 | Metrics |
 | Loki | http://localhost:3100 | Logs |
 
@@ -362,10 +362,10 @@ npm run help              # List all available commands
 External Providers (Twilio, Infobip, SendGrid)
         │
         ▼
-  webhook-service          ← validates + normalizes payloads
+  webhook-service          ← validates signatures, normalizes payloads
         │
-        ▼ Kafka: events.raw
-  ingestion-service        ← canonical event creation
+        ▼ HTTP POST /ingest
+  ingestion-service        ← rate limiting, schema validation
         │
         ▼ Kafka: events.raw
   processing-service       ← enrichment + retry + DLQ

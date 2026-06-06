@@ -32,7 +32,7 @@ All four endpoints respond with **HTTP 202 Accepted** on success and
 **HTTP 401 Unauthorized** on signature failure. The forwarder propagates
 the inbound `x-correlation-id` header (or generates one if absent).
 
-The `webhook-service` listens on **`WEBHOOK_SERVICE_PORT`** (default `3004`).
+The `webhook-service` listens on **`WEBHOOK_PORT`** (default `3002`).
 
 ---
 
@@ -167,25 +167,25 @@ version) is auto-filled by `buildCanonicalEvent()`.
 
 ```powershell
 # Twilio (form-encoded)
-curl -X POST http://localhost:3004/integrations/twilio/webhook `
+curl -X POST http://localhost:3002/integrations/twilio/webhook `
   -H "X-Twilio-Signature: <hash>" `
   -d "MessageSid=SM123&AccountSid=AC123&MessageStatus=delivered&From=%2B15551234567&To=%2B15557654321"
 
 # Infobip (Bearer)
-curl -X POST http://localhost:3004/integrations/infobip/webhook `
+curl -X POST http://localhost:3002/integrations/infobip/webhook `
   -H "Authorization: Bearer $env:INFOBIP_WEBHOOK_SECRET" `
   -H "Content-Type: application/json" `
   -d "{\"results\":[{\"messageId\":\"m1\",\"to\":\"+15551234567\",\"status\":{\"id\":5,\"groupId\":3,\"groupName\":\"DELIVERED\",\"name\":\"DELIVERED_TO_HANDSET\"}}]}"
 
 # SendGrid (JSON array)
-curl -X POST http://localhost:3004/integrations/sendgrid/webhook `
+curl -X POST http://localhost:3002/integrations/sendgrid/webhook `
   -H "Content-Type: application/json" `
   -H "X-Twilio-Email-Event-Webhook-Signature: <sig>" `
   -H "X-Twilio-Email-Event-Webhook-Timestamp: 1700000000" `
   -d "[{\"event\":\"delivered\",\"email\":\"a@b.com\",\"sg_event_id\":\"abc\",\"timestamp\":1700000000}]"
 
 # Custom (any CanonicalEvent-shaped payload)
-curl -X POST http://localhost:3004/integrations/custom/webhook `
+curl -X POST http://localhost:3002/integrations/custom/webhook `
   -H "Content-Type: application/json" `
   -d "{\"channel\":\"internal\",\"eventType\":\"DELIVERY_EVENT\",\"source\":\"my-app\",\"correlationId\":\"corr-1\"}"
 ```

@@ -18,7 +18,7 @@ export class EnvService {
   }
 
   get httpPort(): number {
-    return Number(this.config.get<string>('WEBHOOK_SERVICE_PORT', '3004'));
+    return Number(this.config.get<string>('WEBHOOK_PORT', '3002'));
   }
 
   // -------- Provider secrets (HARDNESS §9 — never trust external input) ---
@@ -36,10 +36,9 @@ export class EnvService {
 
   // -------- Outbound (ingestion-service) ---------------------------------
   get ingestionUrl(): string {
-    const port = Number(this.config.get<string>('INGESTION_SERVICE_PORT', '3001'));
     return this.config.get<string>(
-      'INGESTION_SERVICE_URL',
-      `http://localhost:${port}`,
+      'INGESTION_BASE_URL',
+      'http://localhost:3001',
     );
   }
 
