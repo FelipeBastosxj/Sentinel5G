@@ -1,6 +1,6 @@
 {
   "name": "eventstream-observability-engine",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Distributed Messaging Observability Platform for real-time event ingestion, processing, telemetry, and reliability analytics.",
   "workspaces": [

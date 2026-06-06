@@ -41,10 +41,10 @@ Each phase has a clear scope and set of deliverables. Phases are sequential but 
 
 > **Goal:** Persist processed events and expose historical analytics.
 
-- [ ] ClickHouse schema design for events
-- [ ] ClickHouse writer from `events.processed`
-- [ ] Aggregation pipelines (delivery rates, error rates, latency)
-- [ ] Historical query API endpoints
+- [x] ClickHouse schema design for events (`eventstream.events`, MergeTree, 90-day TTL)
+- [x] ClickHouse writer from `events.processed` (non-blocking, non-fatal — HARDNESS §10)
+- [ ] Aggregation pipelines (delivery rates, error rates, latency p95/p99)
+- [x] Historical query API endpoints (`GET /events/recent?limit&channel&source`)
 - [x] Event metrics publishing to `events.metrics`
 - [ ] Time-series data modeling
 
@@ -71,9 +71,11 @@ Each phase has a clear scope and set of deliverables. Phases are sequential but 
 - [x] Angular Signals for state management
 - [x] WebSocket integration service
 - [x] Live Event Stream view
-- [x] Live Metrics view (ECharts)
+- [x] Live Metrics view (ECharts — bar, doughnut, line/area charts)
 - [x] Provider health dashboard
 - [x] Event detail panel with full Canonical Event view
+- [x] ClickHouse hydration on startup (events persisted across browser close)
+- [x] `localStorage` persistence (data survives F5)
 - [ ] Correlation ID trace explorer
 
 ---
@@ -87,7 +89,7 @@ Each phase has a clear scope and set of deliverables. Phases are sequential but 
 - [x] Loki structured log shipping
 - [x] OpenTelemetry Collector in Docker Compose
 - [x] Correlation ID propagation in traces and logs
-- [x] Grafana dashboards for Prometheus and Loki
+- [x] Grafana dashboards for Prometheus and Loki (stable datasource UIDs provisioned)
 
 ---
 

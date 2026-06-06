@@ -6,6 +6,7 @@ apiVersion: 1
 
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
@@ -14,6 +15,7 @@ datasources:
       timeInterval: 15s
       httpMethod: POST
   - name: Loki
+    uid: loki
     type: loki
     access: proxy
     url: http://loki:3100
@@ -24,6 +26,7 @@ datasources:
           name: TraceID
           url: $${__value.raw}
   - name: Tempo
+    uid: tempo
     type: tempo
     access: proxy
     url: http://tempo:3200
