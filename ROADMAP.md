@@ -17,7 +17,7 @@ Each phase has a clear scope and set of deliverables. Phases are sequential but 
 - [x] Ingestion Service — generic webhook endpoint
 - [x] Ingestion Service — payload normalization to Canonical Event
 - [x] Ingestion Service — publish to Kafka `events.raw`
-- [x] Makefile with `up`, `down`, `logs`, `test`, `reset` commands
+- [x] `npm run` scripts for all developer workflow commands (`up`, `down`, `logs`, `test`, `reset`)
 - [x] `.env.example` with all required variables
 
 ---

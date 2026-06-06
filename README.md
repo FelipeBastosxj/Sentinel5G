@@ -82,7 +82,6 @@ docker compose -f infra/docker-compose.yml --profile services down
 | Node.js | >= 22.x | ⚙️ Dev only |
 | npm | >= 10.x | ⚙️ Dev only |
 | WSL 2 (Windows only) | Ubuntu 22.04+ | ✅ Windows |
-| GNU Make | any | ⚙️ Linux/Mac |
 
 ---
 
@@ -350,9 +349,6 @@ npm run reset             # Full reset (stop + remove volumes)
 npm run logs              # Tail all infrastructure logs
 npm run help              # List all available commands
 ```
-
-> **Linux/macOS users:** All commands above are also available via `make`.
-> See the [Makefile](./Makefile) for the full list.
 
 ---
 
