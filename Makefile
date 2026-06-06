@@ -1,4 +1,4 @@
-.PHONY: up down logs test reset build lint infra-up infra-down
+.PHONY: up down logs test reset build lint infra-up infra-down infra-reset obs-up obs-down obs-logs frontend frontend-build env help
 
 # =============================================================================
 # EventStream Observability Engine — Makefile
@@ -10,15 +10,31 @@
 
 ## Start all infrastructure services (Kafka, Redis, ClickHouse)
 infra-up:
-	docker-compose up -d
+	docker compose -f infra/docker-compose.yml up -d
 
 ## Stop all infrastructure services
 infra-down:
-	docker-compose down
+	docker compose -f infra/docker-compose.yml down
 
 ## Stop infrastructure and remove volumes (full reset)
 infra-reset:
-	docker-compose down -v
+	docker compose -f infra/docker-compose.yml down -v
+
+# -----------------------------------------------------------------------------
+# Observability stack (Prometheus, Loki, Tempo, Grafana, OTel Collector)
+# -----------------------------------------------------------------------------
+
+## Start the optional observability stack
+obs-up:
+	docker compose -f infra/docker-compose.yml --profile observability up -d
+
+## Stop the observability stack only
+obs-down:
+	docker compose -f infra/docker-compose.yml --profile observability down
+
+## Tail observability stack logs
+obs-logs:
+	docker compose -f infra/docker-compose.yml --profile observability logs -f
 
 # -----------------------------------------------------------------------------
 # Services
@@ -37,12 +53,12 @@ up:
 down:
 	@echo "Stopping all services..."
 	@pkill -f "npm run start:dev" || true
-	docker-compose down
+	docker compose -f infra/docker-compose.yml down
 	@echo "Done."
 
 ## View aggregated service logs (docker infrastructure)
 logs:
-	docker-compose logs -f
+	docker compose -f infra/docker-compose.yml logs -f
 
 # -----------------------------------------------------------------------------
 # Testing

@@ -8,61 +8,78 @@ Engineering Governance Document
 
 # Purpose
 
-This document defines the non-negotiable architectural and engineering rules of the platform.
+This document defines the mandatory architectural, engineering, security, and scalability rules of the platform.
 
-Violations must be considered invalid implementations.
+These rules are non-negotiable.
 
 ---
 
-# 1. System Definition
+# 1. Project Scope
 
-The platform is a:
+The platform exists to:
 
-Distributed Messaging Observability Platform.
-
-Its purpose is:
-
-* event ingestion
-* event processing
-* event observability
-* telemetry analysis
+* ingest events
+* process events
+* provide observability
+* demonstrate distributed systems patterns
 
 The platform is not:
 
 * an SMS gateway
-* a billing platform
+* a billing system
 * a CRM
-* a monolith
+* a marketing platform
 
 ---
 
-# 2. Event-Driven First Rule
+# 2. Event-Driven Rule
 
-All business flow must occur through events.
+All business flows must be event-driven.
 
-Kafka is the backbone of the platform.
+Kafka is the primary communication backbone.
 
-Direct business communication between services is forbidden.
+Avoid direct service-to-service business communication whenever possible.
 
 ---
 
 # 3. Stateless Services Rule
 
-All services must be stateless.
+All services must remain stateless.
 
-Allowed state stores:
+Persistent state belongs to:
 
+* Kafka
 * Redis
 * ClickHouse
-* Kafka
 
-Local memory must never be considered persistent state.
+Services must support horizontal scaling.
 
 ---
 
-# 4. Integration Boundary Rule
+# 4. Canonical Event Rule
 
-External systems are Edge Integrations.
+Every event entering the platform must be transformed into the Canonical Event Model.
+
+Required fields:
+
+* eventId
+* eventType
+* channel
+* timestamp
+* source
+* correlationId
+
+Events must be:
+
+* immutable
+* versioned
+* validated
+
+---
+
+# 5. Integration Boundary Rule
+
+External providers are considered Edge Integrations.
 
 Examples:
 
@@ -73,67 +90,34 @@ Examples:
 
 ---
 
-## 4.1 Integration Endpoint Rule
-
-External systems must communicate through dedicated integration endpoints.
-
-Examples:
-
-* /integrations/twilio/webhook
-* /integrations/infobip/webhook
-* /integrations/custom/webhook
-
----
-
-## 4.2 Integration Responsibilities
+## Integration Responsibilities
 
 Integration endpoints may:
 
 * receive payloads
-* validate signatures
+* validate requests
 * normalize payloads
 * create Canonical Events
 
 Integration endpoints must not:
 
 * contain business logic
-* write directly to databases
 * bypass Kafka
+* access analytics databases directly
 
 ---
 
-## 4.3 Canonical Event Enforcement
-
-Provider-specific payloads must be transformed into Canonical Events before entering Kafka.
+## Canonical Event Enforcement
 
 The core platform must never consume provider-specific payloads directly.
 
----
-
-# 5. Canonical Event Model
-
-Required:
-
-* eventId
-* eventType
-* timestamp
-* source
-* correlationId
-
-Optional:
-
-* metadata
-* payload
-
-Events are immutable.
-
-Events are versioned.
+Provider payloads must be transformed before entering Kafka.
 
 ---
 
 # 6. Backend Architecture Rule
 
-Backend must follow Clean Architecture.
+Backend services must follow Clean Architecture.
 
 Layers:
 
@@ -144,9 +128,9 @@ Layers:
 
 Rules:
 
-* Domain cannot depend on frameworks
-* Controllers cannot contain business logic
-* Infrastructure cannot leak into domain
+* Domain must remain framework independent
+* Controllers must remain thin
+* Business logic belongs in Application and Domain layers
 
 ---
 
@@ -156,38 +140,32 @@ Angular Signals is mandatory.
 
 Feature-based architecture is mandatory.
 
-Structure:
+Every feature owns:
 
-/features
+* components
+* state
+* services
+* models
 
-/dashboard
-/events
-/metrics
-/providers
+Avoid:
 
-Rules:
-
-* no global state libraries
-* no god modules
-* self-contained features
+* global stores
+* oversized services
+* god components
 
 ---
 
 # 8. Observability Rule
 
+Observability is a first-class concern.
+
 Every service must expose:
 
-* traces
 * metrics
+* traces
 * structured logs
 
-Required technologies:
-
-* OpenTelemetry
-* Prometheus
-* Loki
-
-Correlation IDs must propagate across the entire event flow.
+Correlation IDs must propagate through all services.
 
 ---
 
@@ -195,38 +173,36 @@ Correlation IDs must propagate across the entire event flow.
 
 All external payloads must be validated.
 
-Rate limiting is mandatory on ingestion endpoints.
+Required:
 
-Trust no external payload.
+* DTO validation
+* schema validation
+* rate limiting
+
+Never trust external input.
 
 ---
 
 # 10. Scalability Rule
 
-Services must support horizontal scaling.
+Services must support:
 
-No shared state.
+* horizontal scaling
+* retry-safe consumers
+* consumer lag handling
+* backpressure handling
 
-Backpressure handling is required.
-
-Consumer lag handling is required.
-
-Retry-safe consumers are required.
+Avoid shared in-memory state.
 
 ---
 
 # 11. Infrastructure Rule
 
-The platform must run locally via Docker Compose.
+The platform must run locally using Docker Compose.
 
-Required services:
+Cloud providers must remain optional.
 
-* Kafka
-* Zookeeper
-* Redis
-* ClickHouse
-
-Cloud services are optional and must not be required.
+Developers should be able to clone the repository and run the entire platform locally.
 
 ---
 
@@ -235,24 +211,41 @@ Cloud services are optional and must not be required.
 Prefer:
 
 * asynchronous processing
-* batch operations
-* non-blocking consumers
+* batching
+* event streaming
 
 Avoid:
 
-* synchronous bottlenecks
-* unnecessary serialization
+* unnecessary synchronous workflows
 * excessive abstractions
+* premature optimization
 
 ---
 
-# 13. Definition of Done
+# 13. Documentation Rule
+
+Architecture decisions must be documented.
+
+The docs directory is part of the project.
+
+Required documents:
+
+* architecture.md
+* event-model.md
+* integrations.md
+* observability.md
+
+Major architectural changes must update documentation.
+
+---
+
+# 14. Definition of Done
 
 A feature is complete only if:
 
 * architecture rules are respected
 * tests pass
 * observability exists
-* Docker environment works
-* Kafka flow is preserved
 * documentation is updated
+* Docker environment works
+* Kafka flow remains intact

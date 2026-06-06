@@ -1,0 +1,20 @@
+# =============================================================================
+# Grafana — dashboards provider (file-based provisioning)
+# =============================================================================
+# Reads JSON dashboard definitions from /var/lib/grafana/dashboards.
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: 'EventStream'
+    orgId: 1
+    folder: 'EventStream'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

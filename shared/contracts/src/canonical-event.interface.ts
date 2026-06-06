@@ -1,4 +1,9 @@
+import { Channel } from './channel.enum';
+import { EventSource } from './event-source.enum';
 import { EventType } from './event-type.enum';
+
+/** Current canonical-event schema version. Bump on breaking changes. */
+export const CANONICAL_EVENT_VERSION = '1.0' as const;
 
 /**
  * CanonicalEvent — the core data contract of the entire platform.
@@ -7,8 +12,8 @@ import { EventType } from './event-type.enum';
  * before being published to Kafka. Provider-specific payloads must never
  * pass this boundary in raw form.
  *
- * Rules (see HARDNESS.md §5):
- *   - eventId, eventType, timestamp, source, and correlationId are required.
+ * Rules (MASTER_PROMPT — Canonical Event Model, HARDNESS §4):
+ *   - eventId, eventType, channel, timestamp, source, correlationId are required.
  *   - Events are immutable after creation.
  *   - Events are versioned via the `version` field.
  *
@@ -19,47 +24,53 @@ export interface CanonicalEvent<T = Record<string, unknown>> {
    * Unique identifier for this event instance.
    * Must be a v4 UUID generated at ingestion time.
    */
-  eventId: string;
+  readonly eventId: string;
 
   /**
    * The type of event. Must be a value from the EventType enum
    * or a custom string for extensibility with third-party integrations.
    */
-  eventType: EventType | string;
+  readonly eventType: EventType | string;
+
+  /**
+   * The communication channel through which the event flows.
+   * Required field per MASTER_PROMPT and HARDNESS §4.
+   */
+  readonly channel: Channel;
 
   /**
    * ISO 8601 timestamp indicating when the event was created.
    * @example "2026-06-05T12:00:00.000Z"
    */
-  timestamp: string;
+  readonly timestamp: string;
 
   /**
    * The origin system or provider that produced this event.
    * @example "twilio" | "infobip" | "sendgrid" | "internal"
    */
-  source: string;
+  readonly source: EventSource | string;
 
   /**
    * Correlation ID for distributed tracing across the entire event flow.
    * Must be propagated through all services and logged with every operation.
    */
-  correlationId: string;
+  readonly correlationId: string;
 
   /**
    * Schema version for backward-compatibility tracking.
    * @default "1.0"
    */
-  version?: string;
+  readonly version?: string;
 
   /**
    * Arbitrary key-value metadata for routing, filtering, or tagging.
    * Must not contain sensitive information.
    */
-  metadata?: Record<string, unknown>;
+  readonly metadata?: Readonly<Record<string, unknown>>;
 
   /**
    * Provider-specific or event-specific data payload.
    * Strongly typed via the generic parameter T.
    */
-  payload?: T;
+  readonly payload?: Readonly<T>;
 }
