@@ -135,7 +135,7 @@ curl -X POST http://localhost:3001/ingest \
     "source": "twilio",
     "payload": { "messageId": "MSG-001", "status": "delivered", "to": "+5511999999999" }
   }'
-# Expected: {"eventId":"...","status":"accepted"}
+# Expected: {"accepted":true,"eventId":"...","correlationId":"..."}
 ```
 
 ### Simulate a Twilio webhook

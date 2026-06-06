@@ -18,7 +18,7 @@ export class EnvService {
   }
 
   get httpPort(): number {
-    return Number(this.config.get<string>('PROCESSING_SERVICE_PORT', '3002'));
+    return Number(this.config.get<string>('PROCESSING_PORT', '3003'));
   }
 
   // -------- Kafka -------------------------------------------------------

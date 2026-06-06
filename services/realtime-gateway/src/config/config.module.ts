@@ -18,7 +18,7 @@ export class EnvService {
   }
 
   get httpPort(): number {
-    return Number(this.config.get<string>('REALTIME_GATEWAY_PORT', '3003'));
+    return Number(this.config.get<string>('GATEWAY_PORT', '3004'));
   }
 
   get wsPath(): string {
