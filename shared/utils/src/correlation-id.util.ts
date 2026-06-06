@@ -2,12 +2,8 @@ import { generateUuid } from './uuid.util';
 
 /**
  * HTTP header used to propagate the correlation ID across services.
- * Mirrors the value defined in `.env.example` (`CORRELATION_ID_HEADER`).
  */
 export const CORRELATION_ID_HEADER = 'x-correlation-id';
-
-/** Kafka header key for correlation propagation. */
-export const CORRELATION_ID_KAFKA_HEADER = 'x-correlation-id';
 
 /**
  * Returns the correlation ID from any header bag, generating one when absent.

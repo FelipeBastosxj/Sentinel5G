@@ -3,9 +3,8 @@
  *
  * Reference: https://www.twilio.com/docs/sms/api/message-resource#message-status-values
  *
- * NOTE: This type lives at the integration boundary. Per HARDNESS §5, it must
- *       NEVER cross into Kafka — webhook-service normalizes it into a
- *       CanonicalEvent before publishing.
+ * NOTE: This type lives at the integration boundary. The processing-service
+ *       normalises it into a WebhookEvent before persisting to PostgreSQL.
  */
 export interface TwilioWebhookPayload {
   MessageSid: string;

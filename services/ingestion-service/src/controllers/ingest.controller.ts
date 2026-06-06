@@ -1,45 +1,47 @@
 import {
-  Body,
+  All,
   Controller,
   HttpCode,
   HttpStatus,
-  Post,
+  Param,
+  Req,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
-import { CanonicalEvent } from '@eventstream/contracts';
 import { IngestEventUseCase } from '../application/use-cases/ingest-event.use-case';
 
-interface IngestResponse {
-  readonly accepted: true;
-  readonly eventId: string;
-  readonly correlationId: string;
-}
-
 /**
- * HTTP entry point for the ingestion pipeline.
+ * HTTP entry point for all inbound webhook providers.
  *
- * Stays intentionally thin (HARDNESS §6 — controllers must remain thin).
- * Validation, normalization, and Kafka publishing live in the use case.
+ * Endpoint: POST /:workspaceId/:endpointToken
+ *
+ * Stays thin (HARDNESS §6): token validation, header capture, and body
+ * capture are delegated to the use case.
  */
-@Controller('ingest')
+@Controller(':workspaceId/:endpointToken')
 export class IngestController {
   constructor(private readonly ingestEvent: IngestEventUseCase) {}
 
-  /**
-   * Ingest a single CanonicalEvent.
-   *
-   * Rate-limited per HARDNESS §9. The actual TTL/limit values come from
-   * `INGESTION_SERVICE_RATE_LIMIT_*` and are applied by the global Throttler.
-   */
-  @Post()
+  @All()
   @HttpCode(HttpStatus.ACCEPTED)
-  @Throttle({ default: { ttl: 60_000, limit: 1000 } })
-  async ingest(@Body() body: unknown): Promise<IngestResponse> {
-    const event = await this.ingestEvent.execute({ payload: body });
-    return {
-      accepted: true,
-      eventId: event.eventId,
-      correlationId: event.correlationId,
-    };
+  @Throttle({ default: { ttl: 60_000, limit: 500 } })
+  async receive(
+    @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
+  ): Promise<{ accepted: true }> {
+    const headers = Object.fromEntries(
+      Object.entries(req.headers).map(([k, v]) => [
+        k.toLowerCase(),
+        Array.isArray(v) ? v.join(', ') : (v ?? ''),
+      ]),
+    );
+
+    await this.ingestEvent.execute({
+      workspaceId,
+      headers,
+      body: (req.body as Record<string, unknown>) ?? {},
+    });
+
+    return { accepted: true };
   }
 }

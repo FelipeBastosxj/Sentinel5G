@@ -1,264 +1,91 @@
 # =============================================================================
-# EventStream Observability Engine — Infrastructure
+# Open Telecom Webhook Observability — Infrastructure
 # =============================================================================
 # Starts all required infrastructure services for local development.
 #
 # Usage:
-#   docker-compose up -d          Start all services in background
-#   docker-compose down           Stop all services
-#   docker-compose down -v        Stop and remove volumes (full reset)
-#   docker-compose logs -f kafka  Tail Kafka logs
+#   docker compose up -d                             Start all infra services
+#   docker compose --profile services up -d --build  Build + start app services
+#   docker compose down                              Stop all services
+#   docker compose down -v                           Full reset (removes volumes)
+#   docker compose logs -f <service>                 Tail a service's logs
 # =============================================================================
 
 services:
 
   # ---------------------------------------------------------------------------
-  # Zookeeper — Kafka coordination service
+  # PostgreSQL — primary database for events, workspaces, tokens
   # ---------------------------------------------------------------------------
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.1
-    container_name: eventstream-zookeeper
+  postgres:
+    image: postgres:16-alpine
+    container_name: telecom-webhook-postgres
     restart: unless-stopped
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
     ports:
-      - "2181:2181"
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-telecom_webhooks}
+      POSTGRES_USER: ${POSTGRES_USER:-webhook_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-webhook_pass}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
-      - eventstream-network
+      - telecom-webhook-network
     healthcheck:
-      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-webhook_user} -d ${POSTGRES_DB:-telecom_webhooks}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # Kafka — Event streaming backbone
-  # ---------------------------------------------------------------------------
-  kafka:
-    image: confluentinc/cp-kafka:7.6.1
-    container_name: eventstream-kafka
-    restart: unless-stopped
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    ports:
-      - "9092:9092"   # External (host access)
-      - "29092:29092" # Internal (container-to-container)
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_RETENTION_HOURS: 168
-    networks:
-      - eventstream-network
-    healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-      interval: 10s
-      timeout: 10s
-      retries: 15
-      start_period: 60s
-
-  # ---------------------------------------------------------------------------
-  # Kafka UI — Web interface for Kafka topic management and event inspection
-  # ---------------------------------------------------------------------------
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: eventstream-kafka-ui
-    restart: unless-stopped
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: eventstream-local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-    networks:
-      - eventstream-network
-
-  # ---------------------------------------------------------------------------
-  # Redis — Cache and pub/sub for realtime gateway
+  # Redis — rate limiting, query cache, session store (optional)
   # ---------------------------------------------------------------------------
   redis:
     image: redis:7.2-alpine
-    container_name: eventstream-redis
+    container_name: telecom-webhook-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     command: redis-server --save 60 1 --loglevel warning
     volumes:
       - redis-data:/data
     networks:
-      - eventstream-network
+      - telecom-webhook-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ---------------------------------------------------------------------------
-  # ClickHouse — Analytical storage for historical event queries
-  # ---------------------------------------------------------------------------
-  clickhouse:
-    image: clickhouse/clickhouse-server:24.4
-    container_name: eventstream-clickhouse
-    restart: unless-stopped
-    ports:
-      - "8123:8123"  # HTTP interface
-      - "9000:9000"  # Native TCP interface
-    environment:
-      CLICKHOUSE_DB: eventstream
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - eventstream-network
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-
-  # ===========================================================================
-  # Observability stack (optional)
-  # ---------------------------------------------------------------------------
-  # Start with: `docker compose --profile observability up -d`
-  # ===========================================================================
-
-  # ---------------------------------------------------------------------------
-  # OpenTelemetry Collector — receives OTLP from services and routes
-  # ---------------------------------------------------------------------------
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.103.0
-    container_name: eventstream-otel-collector
-    restart: unless-stopped
-    profiles: ["observability"]
-    command: ["--config=/etc/otel-collector-config.yml"]
-    volumes:
-      - ./otel/otel-collector-config.yml:/etc/otel-collector-config.yml:ro
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8889:8889"   # Prometheus exporter (metrics)
-    networks:
-      - eventstream-network
-
-  # ---------------------------------------------------------------------------
-  # Prometheus — metrics scraping & storage
-  # ---------------------------------------------------------------------------
-  prometheus:
-    image: prom/prometheus:v2.54.1
-    container_name: eventstream-prometheus
-    restart: unless-stopped
-    profiles: ["observability"]
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=15d"
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    ports:
-      - "9090:9090"
-    networks:
-      - eventstream-network
-
-  # ---------------------------------------------------------------------------
-  # Loki — log aggregation
-  # ---------------------------------------------------------------------------
-  loki:
-    image: grafana/loki:3.0.0
-    container_name: eventstream-loki
-    restart: unless-stopped
-    profiles: ["observability"]
-    command: ["-config.file=/etc/loki/loki-config.yml"]
-    volumes:
-      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
-      - loki-data:/loki
-    ports:
-      - "3100:3100"
-    networks:
-      - eventstream-network
-
-  # ---------------------------------------------------------------------------
-  # Tempo — distributed traces storage
-  # ---------------------------------------------------------------------------
-  tempo:
-    image: grafana/tempo:2.5.0
-    container_name: eventstream-tempo
-    restart: unless-stopped
-    profiles: ["observability"]
-    command: ["-config.file=/etc/tempo.yml"]
-    volumes:
-      - ./tempo/tempo.yml:/etc/tempo.yml:ro
-      - tempo-data:/var/tempo
-    ports:
-      - "3200:3200"   # tempo HTTP
-    networks:
-      - eventstream-network
-
-  # ---------------------------------------------------------------------------
-  # Grafana — dashboards over Prometheus / Loki / Tempo
-  # ---------------------------------------------------------------------------
-  grafana:
-    image: grafana/grafana:11.1.0
-    container_name: eventstream-grafana
-    restart: unless-stopped
-    profiles: ["observability"]
-    depends_on:
-      - prometheus
-      - loki
-      - tempo
-    environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_AUTH_DISABLE_LOGIN_FORM: "true"
-    volumes:
-      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
-      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana-data:/var/lib/grafana
-    ports:
-      - "3000:3000"
-    networks:
-      - eventstream-network
-
   # ─── Backend Services (profile: services) ───────────────────────────────────
 
+  # ---------------------------------------------------------------------------
+  # Webhook Receiver — accepts inbound webhooks from telecom providers
+  # ---------------------------------------------------------------------------
   ingestion-service:
     profiles: [services]
     build:
       context: ..
       dockerfile: services/ingestion-service/Dockerfile
-    container_name: eventstream-ingestion
+    container_name: telecom-webhook-ingestion
     restart: unless-stopped
     ports:
       - "${INGESTION_PORT:-3001}:3001"
     environment:
       NODE_ENV: production
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_CLIENT_ID: ingestion-service
       INGESTION_PORT: "3001"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      KAFKAJS_NO_PARTITIONER_WARNING: "1"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-webhook_user}:${POSTGRES_PASSWORD:-webhook_pass}@postgres:5432/${POSTGRES_DB:-telecom_webhooks}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      PROCESSING_BASE_URL: http://processing-service:3003
     depends_on:
-      kafka:
+      postgres:
         condition: service_healthy
-    networks: [eventstream-network]
+      redis:
+        condition: service_healthy
+      processing-service:
+        condition: service_healthy
+    networks: [telecom-webhook-network]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 15s
@@ -266,59 +93,26 @@ services:
       retries: 5
       start_period: 30s
 
-  webhook-service:
-    profiles: [services]
-    build:
-      context: ..
-      dockerfile: services/webhook-service/Dockerfile
-    container_name: eventstream-webhook
-    restart: unless-stopped
-    ports:
-      - "${WEBHOOK_PORT:-3002}:3002"
-    environment:
-      NODE_ENV: production
-      WEBHOOK_PORT: "3002"
-      INGESTION_BASE_URL: http://ingestion-service:3001
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-    depends_on:
-      ingestion-service:
-        condition: service_healthy
-    networks: [eventstream-network]
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
+  # ---------------------------------------------------------------------------
+  # Processing Service — normalises, enriches, and stores events
+  # ---------------------------------------------------------------------------
   processing-service:
     profiles: [services]
     build:
       context: ..
       dockerfile: services/processing-service/Dockerfile
-    container_name: eventstream-processing
+    container_name: telecom-webhook-processing
     restart: unless-stopped
     ports:
       - "${PROCESSING_PORT:-3003}:3003"
     environment:
       NODE_ENV: production
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_CLIENT_ID: processing-service
-      KAFKA_CONSUMER_GROUP_ID: processing-service-group
       PROCESSING_PORT: "3003"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      KAFKAJS_NO_PARTITIONER_WARNING: "1"
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "8123"
-      CLICKHOUSE_DATABASE: eventstream
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
+      DATABASE_URL: postgresql://${POSTGRES_USER:-webhook_user}:${POSTGRES_PASSWORD:-webhook_pass}@postgres:5432/${POSTGRES_DB:-telecom_webhooks}
     depends_on:
-      kafka:
+      postgres:
         condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    networks: [eventstream-network]
+    networks: [telecom-webhook-network]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3003/health"]
       interval: 15s
@@ -326,31 +120,31 @@ services:
       retries: 5
       start_period: 30s
 
+  # ---------------------------------------------------------------------------
+  # Realtime Gateway — WebSocket / SSE server for live event push
+  # ---------------------------------------------------------------------------
   realtime-gateway:
     profiles: [services]
     build:
       context: ..
       dockerfile: services/realtime-gateway/Dockerfile
-    container_name: eventstream-gateway
+    container_name: telecom-webhook-gateway
     restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-3004}:3004"
     environment:
       NODE_ENV: production
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_CLIENT_ID: realtime-gateway
-      KAFKA_CONSUMER_GROUP_ID: realtime-gateway-group
+      GATEWAY_PORT: "3004"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-webhook_user}:${POSTGRES_PASSWORD:-webhook_pass}@postgres:5432/${POSTGRES_DB:-telecom_webhooks}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      GATEWAY_PORT: "3004"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      KAFKAJS_NO_PARTITIONER_WARNING: "1"
+      REALTIME_GATEWAY_CORS_ORIGIN: "http://localhost:4200"
     depends_on:
-      kafka:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks: [eventstream-network]
+    networks: [telecom-webhook-network]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3004/health"]
       interval: 15s
@@ -358,27 +152,44 @@ services:
       retries: 5
       start_period: 30s
 
+  # ---------------------------------------------------------------------------
+  # Angular Dashboard — built with ng build, served via nginx on port 4200
+  # ---------------------------------------------------------------------------
+  frontend:
+    profiles: [services]
+    build:
+      context: ..
+      dockerfile: frontend/angular-dashboard/Dockerfile
+    container_name: telecom-webhook-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-4200}:4200"
+    depends_on:
+      processing-service:
+        condition: service_healthy
+      realtime-gateway:
+        condition: service_healthy
+    networks: [telecom-webhook-network]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4200/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 # =============================================================================
 # Volumes
 # =============================================================================
 volumes:
+  postgres-data:
+    driver: local
   redis-data:
-    driver: local
-  clickhouse-data:
-    driver: local
-  prometheus-data:
-    driver: local
-  loki-data:
-    driver: local
-  tempo-data:
-    driver: local
-  grafana-data:
     driver: local
 
 # =============================================================================
 # Networks
 # =============================================================================
 networks:
-  eventstream-network:
+  telecom-webhook-network:
     driver: bridge
-    name: eventstream-network
+    name: telecom-webhook-network

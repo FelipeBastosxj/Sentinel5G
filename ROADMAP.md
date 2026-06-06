@@ -1,130 +1,106 @@
 # Roadmap
 
-This document describes the phased delivery plan for **EventStream Observability Engine**.
+**Open Telecom Webhook Observability** — phased delivery plan.
 
-Each phase has a clear scope and set of deliverables. Phases are sequential but features within a phase may be developed in parallel.
-
----
-
-## Phase 1 — Foundation
-
-> **Goal:** Establish the core infrastructure, data contracts, and event ingestion pipeline.
-
-- [x] Docker Compose infrastructure (Kafka, Zookeeper, Redis, ClickHouse)
-- [x] Canonical Event Model schema and validation
-- [x] Shared contracts library (`/shared/contracts`)
-- [x] Ingestion Service scaffold (NestJS)
-- [x] Ingestion Service — generic webhook endpoint
-- [x] Ingestion Service — payload normalization to Canonical Event
-- [x] Ingestion Service — publish to Kafka `events.raw`
-- [x] `npm run` scripts for all developer workflow commands (`up`, `down`, `logs`, `test`, `reset`)
-- [x] `.env.example` with all required variables
+Phases are sequential. Features within a phase may be developed in parallel.
+Community contributions are welcome at every phase — see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ---
 
-## Phase 2 — Event Processing
+## Phase 1 — MVP: Twilio Webhook Inspector (current)
 
-> **Goal:** Consume raw events and build a reliable processing pipeline.
+> **Goal:** Working end-to-end webhook receiver and real-time inspector for Twilio.
 
-- [x] Processing Service scaffold (NestJS)
-- [x] Kafka consumer for `events.raw` topic
-- [x] Event enrichment pipeline
-- [x] Event validation against Canonical Event Model
-- [x] Retry mechanism with exponential backoff
-- [x] Dead Letter Queue (DLQ) for failed events — `events.alerts`
-- [x] Event publishing to `events.processed` topic
-- [x] Correlation ID propagation across services
+### Infrastructure
+- [x] PostgreSQL schema (`workspaces`, `webhook_events`, `event_timelines` view)
+- [x] Redis (rate limiting, optional query cache)
+- [x] Docker Compose with one-command startup
 
----
+### Backend
+- [x] `ingestion-service` — `POST /:workspaceId/:token` endpoint
+- [x] Token validation per workspace
+- [x] Raw header + payload capture
+- [x] `processing-service` — Twilio payload normalisation to `WebhookEvent`
+- [x] PostgreSQL persistence
+- [x] `realtime-gateway` — WebSocket server for live event push
+- [x] `GET /events` with filter params (type, status, from, to, sid, time range)
+- [x] `GET /events/:id` full event detail
+- [x] `GET /timelines/:threadId` — MessageSid / CallSid timeline
+- [x] `GET /metrics` — aggregated metrics from PostgreSQL
+- [x] Health check endpoints on all services
 
-## Phase 3 — Analytics & Storage
+### Frontend (Angular)
+- [x] Workspace selector
+- [x] Live event list (WebSocket-driven)
+- [x] Event detail panel (headers + formatted payload)
+- [x] Event timeline view (by MessageSid / CallSid)
+- [x] Metrics dashboard (delivery rate, failure rate, volume)
+- [x] Search and filter bar
 
-> **Goal:** Persist processed events and expose historical analytics.
-
-- [x] ClickHouse schema design for events (`eventstream.events`, MergeTree, 90-day TTL)
-- [x] ClickHouse writer from `events.processed` (non-blocking, non-fatal — HARDNESS §10)
-- [ ] Aggregation pipelines (delivery rates, error rates, latency p95/p99)
-- [x] Historical query API endpoints (`GET /events/recent?limit&channel&source`)
-- [x] Event metrics publishing to `events.metrics`
-- [ ] Time-series data modeling
-
----
-
-## Phase 4 — Realtime Gateway
-
-> **Goal:** Expose real-time event streams to the frontend dashboard.
-
-- [x] Realtime Gateway scaffold (NestJS + WebSockets)
-- [x] Kafka consumer bridging to WebSocket clients
-- [x] Live event stream feed
-- [x] Live metrics feed
-- [ ] WebSocket authentication
-- [x] Redis pub/sub for multi-instance gateway support
+### Twilio Events Supported
+- [x] `message.inbound` (incoming SMS / WhatsApp)
+- [x] `message.status.*` (sent, delivered, undelivered, failed, read)
+- [x] `call.inbound` / `call.outbound`
+- [x] `call.status.*` (initiated, ringing, in-progress, completed, busy, no-answer, failed)
 
 ---
 
-## Phase 5 — Angular Dashboard
+## Phase 2 — Provider Expansion
 
-> **Goal:** Build the real-time observability frontend.
+> **Goal:** Support additional major telecom providers.
 
-- [x] Angular 20 project scaffold with feature-based architecture
-- [x] Angular Signals for state management
-- [x] WebSocket integration service
-- [x] Live Event Stream view
-- [x] Live Metrics view (ECharts — bar, doughnut, line/area charts)
-- [x] Provider health dashboard
-- [x] Event detail panel with full Canonical Event view
-- [x] ClickHouse hydration on startup (events persisted across browser close)
-- [x] `localStorage` persistence (data survives F5)
-- [ ] Correlation ID trace explorer
+- [ ] Vonage SMS webhooks
+- [ ] Vonage Voice webhooks
+- [ ] MessageBird SMS status callbacks
+- [ ] Infobip delivery reports
+- [ ] Plivo SMS + voice webhooks
+- [ ] Configurable signature validation per provider
+- [ ] Provider health badge in dashboard
 
 ---
 
-## Phase 6 — Observability Stack
+## Phase 3 — Developer Experience
 
-> **Goal:** Full distributed tracing, metrics, and log aggregation.
+> **Goal:** Make the platform indispensable for debugging integrations.
 
-- [x] OpenTelemetry SDK integration in all backend services
-- [x] Prometheus metrics exposure (`/metrics` endpoint) per service
-- [x] Loki structured log shipping
-- [x] OpenTelemetry Collector in Docker Compose
-- [x] Correlation ID propagation in traces and logs
-- [x] Grafana dashboards for Prometheus and Loki (stable datasource UIDs provisioned)
-
----
-
-## Phase 7 — Provider Integrations
-
-> **Goal:** Add first-class integration endpoints for major messaging providers.
-
-- [x] Twilio webhook endpoint with signature validation
-- [x] Infobip webhook endpoint with signature validation
-- [x] SendGrid webhook endpoint with signature validation
-- [x] Custom Integration SDK for generic providers
-- [ ] Integration test suite per provider
+- [ ] Webhook Replay — resend any stored event to a target URL
+- [ ] Request diff — compare two events side-by-side
+- [ ] Workspace API key management UI
+- [ ] Event export (JSON / CSV)
+- [ ] Shareable event permalink
+- [ ] Public read-only workspace links
+- [ ] CLI tool (`npx telecom-webhook inspect`)
 
 ---
 
-## Phase 8 — Production Hardening
+## Phase 4 — Alerting and Automation
 
-> **Goal:** Prepare the platform for production-grade reliability and security.
+> **Goal:** Notify developers when things go wrong.
 
-- [x] Rate limiting on all ingestion endpoints
-- [x] Input validation and sanitization
-- [x] Service-level health checks (`/health`)
-- [ ] Consumer lag monitoring and alerting
-- [ ] Backpressure handling
-- [ ] Horizontal scaling documentation
-- [ ] Load testing report
-- [ ] Security audit checklist
+- [ ] Alert rules engine (e.g. failure rate > 5% in 5 min)
+- [ ] Notification channels: email, Slack, webhook
+- [ ] Event retention policy (configurable TTL per workspace)
+- [ ] Automated silence / acknowledge rules
+
+---
+
+## Phase 5 — Scale and Production
+
+> **Goal:** Prepare for high-volume production deployments.
+
+- [ ] Horizontal scaling documentation + load testing report
+- [ ] Helm chart for Kubernetes
+- [ ] Multi-region ingestion (optional Kafka layer for fan-out)
+- [ ] OpenAPI specification (`/openapi.json`)
+- [ ] Official SDK packages (`@telecom-webhook/node`, `@telecom-webhook/python`)
+- [ ] Rate limiting per workspace (configurable)
+- [ ] Tenant isolation (row-level security in PostgreSQL)
 
 ---
 
 ## Long-Term Vision
 
-- Multi-tenant event isolation
-- Custom alerting rules engine
-- Event replay from ClickHouse
-- Provider SDK for custom integrations
-- Public API documentation (OpenAPI)
-- Helm charts for Kubernetes deployment
+- White-label / self-hosted SaaS mode
+- Plugin system for custom normalisers
+- AI-assisted failure diagnostics
+- Integration test runner (record + replay flows)

@@ -1,46 +1,49 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
-import { CanonicalEvent } from '@eventstream/contracts';
+import { WebhookEventSummary } from '@telecom-webhook/contracts';
 import { RealtimeClient } from '../../../core/services/realtime-client.service';
+import { WorkspaceSessionService } from '../../../core/services/workspace-session.service';
+import { EventsApiService } from '../../../core/services/events-api.service';
 
 /**
- * Feature-scoped state for the dashboard page.
+ * DashboardStore — feature-scoped state for the live events dashboard.
  *
- * Owned by the feature, never imported elsewhere (HARDNESS §7 — no global
- * stores, no shared mutable state).
+ * Connects to the realtime gateway only after the workspace session is ready,
+ * then hydrates with recent historical events from the REST API.
  */
 @Injectable()
 export class DashboardStore {
-  private readonly client = inject(RealtimeClient);
+  private readonly client  = inject(RealtimeClient);
+  private readonly ws      = inject(WorkspaceSessionService);
+  private readonly api     = inject(EventsApiService);
 
-  private readonly window = signal<CanonicalEvent[]>([]);
-  private readonly metricsWindow = signal<CanonicalEvent[]>([]);
+  private readonly _events = signal<WebhookEventSummary[]>([]);
 
-  /** Total CanonicalEvents observed since the page was opened. */
-  readonly totalEvents = computed(() => this.window().length);
-  /** Distinct providers seen on this session. */
-  readonly distinctSources = computed(
-    () => new Set(this.window().map((e) => String(e.source))).size,
+  readonly events         = computed(() => this._events().slice().reverse());
+  readonly totalEvents    = computed(() => this._events().length);
+  readonly distinctProviders = computed(
+    () => new Set(this._events().map((e) => e.provider)).size,
   );
-  /** Last 50 events (latest first). */
-  readonly recentEvents = computed(() => this.window().slice(-50).reverse());
-  /** Last 50 metric events. */
-  readonly recentMetrics = computed(() => this.metricsWindow().slice(-50).reverse());
-  /** Pass-through of connection status from RealtimeClient. */
-  readonly status = this.client.status;
+  readonly status         = this.client.status;
 
   constructor() {
-    this.client.connect();
+    // Connect once workspace session is ready
+    effect(() => {
+      const session = this.ws.session();
+      if (!session) return;
+      this.client.connect(session.workspaceId);
+      // Hydrate with historical events
+      void this.api
+        .fetchRecent({ limit: 50, workspaceId: session.workspaceId })
+        .then((rows) => this._events.set(rows));
+    });
 
-    // Append every new event into the dashboard window.
+    // Append incoming real-time events
     effect(() => {
       const evt = this.client.lastEvent();
       if (!evt) return;
-      this.window.update((prev) => [...prev.slice(-499), evt]);
-    });
-    effect(() => {
-      const m = this.client.lastMetric();
-      if (!m) return;
-      this.metricsWindow.update((prev) => [...prev.slice(-499), m]);
+      const session = this.ws.session();
+      if (session && evt.workspaceId !== session.workspaceId) return;
+      this._events.update((prev) => [...prev.slice(-499), evt]);
     });
   }
 }

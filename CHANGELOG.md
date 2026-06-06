@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **EventStream Observability Engine** will be documented in this file.
+All notable changes to **Open Telecom Webhook Observability** will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/) and follows the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
 
@@ -9,13 +9,51 @@ This project adheres to [Semantic Versioning](https://semver.org/) and follows t
 ## [Unreleased]
 
 ### Planned
-- Consumer lag exporter for Prometheus
 - WebSocket JWT authentication
-- Correlation ID trace explorer (frontend)
-- Aggregation pipelines (delivery rates, error rates, latency p95/p99)
-- Time-series data modeling in ClickHouse
+- Webhook Replay (resend stored event to target URL)
+- Event export (JSON / CSV)
+- Vonage provider support (Phase 2)
 
 ---
+
+## [1.0.0] — 2026-06-06
+
+### Changed — Architecture Pivot
+
+Complete architectural pivot from a distributed event-streaming engine to a focused
+**open source telecom webhook observability platform**.
+
+#### Removed
+- **Kafka + Zookeeper** — replaced by direct PostgreSQL writes + `pg_notify`
+- **ClickHouse** — replaced by PostgreSQL for all storage and analytics
+- **OpenTelemetry Collector, Prometheus, Loki, Tempo, Grafana** — removed from MVP scope to reduce
+  setup complexity and accelerate community adoption. Can be re-added via Docker Compose profile.
+- `webhook-service` merged into `ingestion-service` (single receiver endpoint)
+- Canonical Event Model, EventType, Channel, EventSource enums — replaced by `WebhookEvent`
+- Kafka topic enums and consumer group contracts
+
+#### Added
+- **`infra/postgres/init.sql`** — full PostgreSQL schema:
+  `workspaces`, `webhook_events` (with JSONB headers + payload), `event_timelines` view,
+  GIN index for full-text payload search, seed workspace for local development.
+- **`infra/docker-compose.yml`** — simplified to PostgreSQL + Redis + three app services.
+  Startup time reduced from ~90 s (Kafka warm-up) to ~10 s.
+- **`shared/contracts/src/webhook-event.interface.ts`** — new core data model `WebhookEvent`
+  with `TelecomProvider`, `TelecomEventType`, and `WebhookEventSummary` types.
+- **`shared/contracts/src/workspace.interface.ts`** — `Workspace` entity contract.
+- Workspace-scoped webhook URL: `POST /:workspaceId/:endpointToken`
+- PostgreSQL-native metrics (delivery rate, failure rate, volume per provider) via SQL aggregates
+- `event_timelines` view groups related events by `MessageSid` / `CallSid`
+
+#### Updated
+- `package.json` — new project name (`open-telecom-webhook-observability`), v1.0.0,
+  removed `obs:*` and `services:webhook` scripts
+- `README.md` — complete rewrite with new architecture, quick start, and provider table
+- `ROADMAP.md` — new phased plan: MVP → Provider Expansion → DX → Alerting → Production Scale
+- `CONTRIBUTING.md` — updated engineering standards (no Kafka requirement in MVP)
+- `HARDNESS.md` — updated to reflect PostgreSQL-first architecture
+
+
 
 ## [0.4.0] — 2026-06-06
 

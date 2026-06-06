@@ -24,46 +24,40 @@ export class EnvService {
       | 'error';
   }
 
-  get correlationIdHeader(): string {
-    return this.config.get<string>('CORRELATION_ID_HEADER', 'x-correlation-id');
-  }
-
   // -------- HTTP --------------------------------------------------------
   get httpPort(): number {
-    return Number(this.config.get<string>('INGESTION_SERVICE_PORT', '3001'));
+    return Number(this.config.get<string>('INGESTION_PORT', '3001'));
   }
 
-  // -------- Kafka -------------------------------------------------------
-  get kafkaBrokers(): string[] {
-    return this.config
-      .get<string>('KAFKA_BROKERS', 'localhost:9092')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+  // -------- Database ----------------------------------------------------
+  get databaseUrl(): string {
+    return this.config.get<string>(
+      'DATABASE_URL',
+      'postgresql://webhook_user:webhook_pass@localhost:5432/telecom_webhooks',
+    );
   }
 
-  get kafkaClientId(): string {
-    return this.config.get<string>('KAFKA_CLIENT_ID', 'ingestion-service');
+  // -------- Processing service (internal forwarding) --------------------
+  get processingBaseUrl(): string {
+    return this.config.get<string>('PROCESSING_BASE_URL', 'http://localhost:3003');
   }
 
-  get kafkaTopicEventsRaw(): string {
-    return this.config.get<string>('KAFKA_TOPIC_EVENTS_RAW', 'events.raw');
+  // -------- Redis -------------------------------------------------------
+  get redisHost(): string {
+    return this.config.get<string>('REDIS_HOST', 'localhost');
+  }
+
+  get redisPort(): number {
+    return Number(this.config.get<string>('REDIS_PORT', '6379'));
   }
 
   // -------- Throttler ---------------------------------------------------
   get rateLimitTtlSeconds(): number {
-    return Number(this.config.get<string>('INGESTION_SERVICE_RATE_LIMIT_TTL', '60'));
+    return Number(this.config.get<string>('RATE_LIMIT_TTL_SECONDS', '60'));
   }
 
   get rateLimitMax(): number {
-    return Number(this.config.get<string>('INGESTION_SERVICE_RATE_LIMIT_MAX', '1000'));
-  }
-
-  // -------- Observability ----------------------------------------------
-  get otelServiceName(): string {
-    return this.config.get<string>(
-      'OTEL_SERVICE_NAME_INGESTION',
-      'ingestion-service',
-    );
+    return Number(this.config.get<string>('RATE_LIMIT_MAX', '500'));
   }
 }
+

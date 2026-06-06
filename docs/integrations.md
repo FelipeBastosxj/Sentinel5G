@@ -1,194 +1,132 @@
-# Integrations Guide
+# Provider Integrations Guide
 
-External providers integrate with the EventStream Observability Engine
-exclusively through the **`webhook-service`**. This document describes how
-each supported provider is wired in, the signature scheme used to verify
-authenticity, and how to add a new provider.
+This document describes how each supported telecom provider sends webhooks to the platform,
+how signatures are validated, and how to add a new provider.
 
-> **Architectural rule (HARDNESS §5).**  
-> The `webhook-service` is the **only** integration boundary. It validates
-> provider signatures, normalizes the payload to `CanonicalEvent`, and
-> forwards the result to `ingestion-service` over HTTP. Providers never
-> talk to Kafka directly.
+---
+
+## How it Works
+
+Every provider delivers webhooks to the **ingestion endpoint**:
 
 ```
-External provider  ──HTTP──►  webhook-service  ──HTTP──►  ingestion-service  ──Kafka──►  events.raw
-   (raw payload)       (validate signature)        (validate schema)
-                       (normalize → CanonicalEvent)
+POST /:workspaceId/:endpointToken
+```
+
+The `ingestion-service` accepts and captures the request; the `processing-service` detects
+the provider, validates the signature, and normalises the body into a `WebhookEvent`.
+
+```
+Provider  ──POST──►  ingestion-service  ──HTTP──►  processing-service  ──INSERT──►  PostgreSQL
+                     (capture)                      (normalise + validate)
 ```
 
 ---
 
-## Supported providers
+## Provider Reference
 
-| Provider | Endpoint | Channel | Signature scheme | Header(s) |
-|----------|----------|---------|------------------|-----------|
-| **Twilio** | `POST /integrations/twilio/webhook` | `sms` | HMAC-SHA1 (Base64) over `fullUrl + sortedFormParams` | `X-Twilio-Signature` |
-| **Infobip** | `POST /integrations/infobip/webhook` | `sms` | Static Bearer token | `Authorization: Bearer <token>` |
-| **SendGrid** | `POST /integrations/sendgrid/webhook` | `email` | HMAC-SHA256 over `timestamp + rawBody` | `X-Twilio-Email-Event-Webhook-Signature`, `X-Twilio-Email-Event-Webhook-Timestamp` |
-| **Custom** | `POST /integrations/custom/webhook` | depends on payload | None (network-level auth assumed) | — |
+### Twilio ✅ (Supported — Phase 1)
 
-All four endpoints respond with **HTTP 202 Accepted** on success and
-**HTTP 401 Unauthorized** on signature failure. The forwarder propagates
-the inbound `x-correlation-id` header (or generates one if absent).
+**Events:** Incoming SMS/WhatsApp, message status callbacks, voice calls, voice status updates.
 
-The `webhook-service` listens on **`WEBHOOK_PORT`** (default `3002`).
+**Signature scheme:** HMAC-SHA1 over `fullUrl + sortedFormParams`, Base64-encoded.
 
----
-
-## Twilio
-
-### Signature
-
-Twilio signs every webhook with HMAC-SHA1 over `URL + sortedFormParams`,
-encoded as Base64. The validator implementation is in
-`services/webhook-service/src/infrastructure/signatures/twilio-signature.validator.ts`.
-
-```text
-expected = base64( HMAC_SHA1(authToken, fullUrl + sortedConcat(params)) )
-match    = expected === request.header('X-Twilio-Signature')
+```
+X-Twilio-Signature: <base64(HMAC_SHA1(authToken, url + sortedParams))>
 ```
 
-### Configuration
+**Configuration:**
 
 ```dotenv
-TWILIO_WEBHOOK_SECRET=your-twilio-auth-token
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
 ```
 
-In non-production environments, validation is skipped if `TWILIO_WEBHOOK_SECRET`
-is not set, with a warning logged.
+In development (`NODE_ENV !== production`), signature validation is skipped
+with a warning if `TWILIO_AUTH_TOKEN` is not set.
 
-### Normalization
+**Twilio Dashboard Setup:**
 
-Twilio form payloads (`MessageStatus=delivered`, `From=+1...`, etc.) are
-mapped to one `CanonicalEvent` with:
+Point any of these to your ingestion endpoint:
+- SMS/WhatsApp → *A Message Comes In* callback
+- Voice → *A Call Comes In* callback
+- Messaging → *Status Callback URL*
 
-* `channel = SMS`
-* `source  = twilio`
-* `eventType = STATUS_EVENT` (or `ERROR_EVENT` if `ErrorCode` is present)
+```
+http://<your-host>:3001/<workspaceId>/<endpointToken>
+```
 
 ---
 
-## Infobip
+### Vonage 🔜 (Phase 2)
 
-### Signature
+Not yet implemented.
 
-Infobip uses static Bearer authentication on the inbound webhook. We compare
-`Authorization` against the configured token (`INFOBIP_WEBHOOK_SECRET`). The
-validator implementation is in
-`services/webhook-service/src/infrastructure/signatures/infobip-signature.validator.ts`.
+Normaliser target: `services/processing-service/src/normalizers/vonage.normalizer.ts`
 
-### Configuration
-
-```dotenv
-INFOBIP_WEBHOOK_SECRET=your-infobip-webhook-token
-```
-
-### Normalization
-
-Infobip batches multiple messages per request (`results: [...]`). Each entry
-becomes its own `CanonicalEvent`, sharing the same `correlationId`.
+Signature scheme: HMAC-SHA256, header `X-Vonage-Signature`.
 
 ---
 
-## SendGrid
+### MessageBird 🔜 (Phase 2)
 
-### Signature
+Not yet implemented.
 
-SendGrid signs the body with HMAC-SHA256 using a shared key:
-
-```text
-toSign   = timestampHeader + rawBody
-expected = base64( HMAC_SHA256(secret, toSign) )
-```
-
-The validator implementation is in
-`services/webhook-service/src/infrastructure/signatures/sendgrid-signature.validator.ts`.
-
-> SendGrid sends a JSON **array** of events; we map each entry to a
-> separate `CanonicalEvent` (`channel = EMAIL`).
-
-### Configuration
-
-```dotenv
-SENDGRID_WEBHOOK_SECRET=your-sendgrid-shared-secret
-```
-
-The raw request body must be available for HMAC verification — the
-`webhook-service` registers `express.json({ verify })` to capture
-`req.rawBody` before parsing.
+Signature scheme: HMAC-SHA256, header `MessageBird-Signature-JWT`.
 
 ---
 
-## Custom
+### Infobip 🔜 (Phase 2)
 
-The `custom` endpoint accepts any JSON payload that already conforms to
-`CanonicalEvent`. It is intended for internal or test integrations.
+Not yet implemented.
 
-> **Auth model.** The custom endpoint uses a `NoopSignatureValidator` —
-> authentication is delegated to the platform networking layer (private
-> VPC, mTLS, API gateway). Add a real validator before exposing it to
-> the public internet (HARDNESS §9).
-
-### Normalization
-
-The payload is validated against `canonicalEventSchema` and forwarded
-verbatim. Any missing field that has a default (eventId, timestamp,
-version) is auto-filled by `buildCanonicalEvent()`.
+Signature scheme: Bearer token, header `Authorization`.
 
 ---
 
-## Adding a new provider
+### Plivo 🔜 (Phase 2)
 
-1. **Define the raw payload type** in
-   `shared/contracts/src/provider-payloads/<provider>.payload.ts`.
-2. **Add a Zod schema** for the payload in
-   `shared/schemas/src/provider-payloads/<provider>.schema.ts`.
-3. **Implement the normalizer** in
-   `services/webhook-service/src/domain/normalizers/<provider>.normalizer.ts`,
-   mapping the raw payload to `CanonicalEvent[]` via
-   `buildCanonicalEvent()`.
-4. **Implement the signature validator** under
-   `services/webhook-service/src/infrastructure/signatures/`.
-5. **Wire a thin controller** under
-   `services/webhook-service/src/controllers/` that delegates to the
-   `ProcessWebhookUseCase`.
-6. **Add unit tests** for the normalizer and signature validator
-   (mandatory per HARDNESS §11).
-7. **Document the provider** in this file (signature scheme, channel,
-   environment variables).
+Not yet implemented.
 
-> The forwarder, correlation propagation, error handling, observability
-> hooks and DI plumbing are reused — you only ship domain logic.
+Signature scheme: HMAC-SHA256, header `X-Plivo-Signature-V2`.
 
 ---
 
-## Testing webhooks locally
+## Adding a New Provider
 
-```powershell
-# Twilio (form-encoded)
-curl -X POST http://localhost:3002/integrations/twilio/webhook `
-  -H "X-Twilio-Signature: <hash>" `
-  -d "MessageSid=SM123&AccountSid=AC123&MessageStatus=delivered&From=%2B15551234567&To=%2B15557654321"
+1. **Add a normaliser** in `services/processing-service/src/normalizers/<provider>.normalizer.ts`:
 
-# Infobip (Bearer)
-curl -X POST http://localhost:3002/integrations/infobip/webhook `
-  -H "Authorization: Bearer $env:INFOBIP_WEBHOOK_SECRET" `
-  -H "Content-Type: application/json" `
-  -d "{\"results\":[{\"messageId\":\"m1\",\"to\":\"+15551234567\",\"status\":{\"id\":5,\"groupId\":3,\"groupName\":\"DELIVERED\",\"name\":\"DELIVERED_TO_HANDSET\"}}]}"
+```typescript
+import { WebhookEvent } from '@telecom-webhook/contracts';
 
-# SendGrid (JSON array)
-curl -X POST http://localhost:3002/integrations/sendgrid/webhook `
-  -H "Content-Type: application/json" `
-  -H "X-Twilio-Email-Event-Webhook-Signature: <sig>" `
-  -H "X-Twilio-Email-Event-Webhook-Timestamp: 1700000000" `
-  -d "[{\"event\":\"delivered\",\"email\":\"a@b.com\",\"sg_event_id\":\"abc\",\"timestamp\":1700000000}]"
-
-# Custom (any CanonicalEvent-shaped payload)
-curl -X POST http://localhost:3002/integrations/custom/webhook `
-  -H "Content-Type: application/json" `
-  -d "{\"channel\":\"internal\",\"eventType\":\"DELIVERY_EVENT\",\"source\":\"my-app\",\"correlationId\":\"corr-1\"}"
+export function normalizeTwilio(
+  workspaceId: string,
+  headers: Record<string, string>,
+  body: Record<string, unknown>,
+): WebhookEvent {
+  return {
+    id: generateUUID(),
+    workspaceId,
+    provider: 'twilio',
+    eventType: detectEventType(body),
+    receivedAt: new Date(),
+    headers,
+    payload: body,
+    messageSid: body.MessageSid as string | undefined,
+    from: body.From as string | undefined,
+    to: body.To as string | undefined,
+    status: (body.MessageStatus ?? body.CallStatus) as string | undefined,
+  };
+}
 ```
 
-The accepted event will appear in real time on the Angular dashboard
-(`Events` page) and on the Kafka topic `events.raw`.
+2. **Register the normaliser** in the provider registry:
+   `services/processing-service/src/normalizers/provider-registry.ts`
+
+3. **Add signature validation** in:
+   `services/processing-service/src/validators/<provider>-signature.validator.ts`
+
+4. **Add to `TelecomProvider` union** in `shared/contracts/src/webhook-event.interface.ts`
+
+5. **Write unit tests** with a sample real payload from the provider's documentation.
+
+6. **Update this document** and the provider table in `README.md`.

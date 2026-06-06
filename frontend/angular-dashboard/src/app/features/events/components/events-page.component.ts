@@ -46,25 +46,27 @@ import { EventsStore } from '../state/events.store';
       <table class="es-table">
         <thead>
           <tr>
-            <th>Event ID</th>
+            <th>ID</th>
+            <th>Provider</th>
             <th>Type</th>
-            <th>Channel</th>
-            <th>Source</th>
-            <th>Correlation</th>
-            <th>Timestamp</th>
+            <th>From</th>
+            <th>To</th>
+            <th>Status</th>
+            <th>Received</th>
           </tr>
         </thead>
         <tbody>
           <tr *ngFor="let r of store.filtered(); trackBy: trackById">
-            <td class="es-mono">{{ r.eventId }}</td>
-            <td><span class="es-tag">{{ r.eventType }}</span></td>
-            <td>{{ r.channel }}</td>
-            <td>{{ r.source }}</td>
-            <td class="es-mono">{{ r.correlationId }}</td>
-            <td class="es-mono">{{ r.timestamp }}</td>
+            <td class="es-mono">{{ r.id | slice:0:8 }}…</td>
+            <td><span class="es-tag">{{ r.provider }}</span></td>
+            <td>{{ r.eventType }}</td>
+            <td class="es-mono">{{ r.from }}</td>
+            <td class="es-mono">{{ r.to }}</td>
+            <td>{{ r.status }}</td>
+            <td class="es-mono">{{ r.receivedAt | date:'HH:mm:ss' }}</td>
           </tr>
           <tr *ngIf="store.filtered().length === 0">
-            <td colspan="6" class="es-empty">No events match the filters yet.</td>
+            <td colspan="7" class="es-empty">No events match the filters yet.</td>
           </tr>
         </tbody>
       </table>
@@ -93,7 +95,7 @@ import { EventsStore } from '../state/events.store';
 })
 export class EventsPageComponent {
   protected readonly store = inject(EventsStore);
-  protected trackById(_i: number, r: { eventId: string }): string {
-    return r.eventId;
+  protected trackById(_i: number, r: { id: string }): string {
+    return r.id;
   }
 }

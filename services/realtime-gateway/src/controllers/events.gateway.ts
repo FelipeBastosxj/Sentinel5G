@@ -7,26 +7,25 @@ import {
   OnGatewayInit,
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
-import { CanonicalEvent } from '@eventstream/contracts';
 import { EnvService } from '../config/config.module';
 import {
   EventBroadcasterPort,
-  EventStream,
+  WebhookEventSummary,
 } from '../domain/ports/event-broadcaster.port';
 import { MetricsService } from '../common/observability.module';
 import { AppLoggerService } from '../common/common-infra.module';
 
 /**
- * Socket.IO gateway exposing two streams:
- *   - "events"   → CanonicalEvents from Kafka topic events.processed
- *   - "metrics"  → CanonicalEvents from Kafka topic events.metrics
+ * Socket.IO gateway exposing a single 'webhook_event' stream.
+ *
+ * Clients can optionally filter by workspaceId by joining a room:
+ *   socket.emit('subscribe', { workspaceId: '...' })
  *
  * Implements EventBroadcasterPort so the application layer can broadcast
  * without depending on socket.io directly.
  */
 @Injectable()
 @WebSocketGateway({
-  // path is set dynamically through createIOServer at bootstrap
   cors: { origin: '*' },
   transports: ['websocket'],
 })
@@ -50,24 +49,38 @@ export class EventsGateway
 
   afterInit(): void {
     this.nest.log(
-      `WebSocket gateway initialized on path=${this.env.wsPath} cors=${this.env.corsOrigin.join(',')}`,
+      `WebSocket gateway initialized path=${this.env.wsPath} cors=${this.env.corsOrigin.join(',')}`,
     );
   }
 
   handleConnection(client: Socket): void {
-    this.metrics.connectedClients.inc();
+    this.metrics.incConnectedClients();
     this.logger.info('Client connected', { clientId: client.id });
+
+    // Allow clients to subscribe to a specific workspace room
+    client.on('subscribe', (data: { workspaceId?: string }) => {
+      if (data?.workspaceId) {
+        void client.join(data.workspaceId);
+        this.logger.info('Client subscribed to workspace', {
+          clientId: client.id,
+          workspaceId: data.workspaceId,
+        });
+      }
+    });
   }
 
   handleDisconnect(client: Socket): void {
-    this.metrics.connectedClients.dec();
+    this.metrics.decConnectedClients();
     this.logger.info('Client disconnected', { clientId: client.id });
   }
 
   // -------- EventBroadcasterPort --------------------------------------
-  broadcast(stream: EventStream, event: CanonicalEvent): void {
+  broadcast(workspaceId: string, event: WebhookEventSummary): void {
     if (!this.server) return;
-    this.server.emit(stream, event);
+    // Broadcast to the workspace room + global 'all' listener
+    this.server.to(workspaceId).emit('webhook_event', event);
+    this.server.emit('webhook_event_all', event);
+    this.metrics.incBroadcasts();
   }
 
   connectedClientsCount(): number {

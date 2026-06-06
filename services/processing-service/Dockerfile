@@ -5,13 +5,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY shared/contracts/package.json ./shared/contracts/
 COPY shared/utils/package.json      ./shared/utils/
-COPY shared/schemas/package.json    ./shared/schemas/
 COPY services/processing-service/package.json ./services/processing-service/
 
 RUN npm install \
       --workspace=shared/contracts \
       --workspace=shared/utils \
-      --workspace=shared/schemas \
       --workspace=services/processing-service \
       --include=dev \
       --ignore-scripts && \
@@ -26,23 +24,18 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY tsconfig.base.json ./
 COPY shared/contracts/ ./shared/contracts/
 COPY shared/utils/      ./shared/utils/
-COPY shared/schemas/    ./shared/schemas/
 COPY services/processing-service/ ./services/processing-service/
 
-# ─── Build shared packages in dependency order ────────────────────────────────
 WORKDIR /app/shared/contracts
 RUN npx tsc -p tsconfig.json
 
 WORKDIR /app/shared/utils
 RUN npx tsc -p tsconfig.build.json
 
-WORKDIR /app/shared/schemas
-RUN npx tsc -p tsconfig.build.json
-
 WORKDIR /app/services/processing-service
 RUN npx tsc -p tsconfig.json && \
     MAIN=$(find dist -name 'main.js' -type f | head -1) && \
-    test -n "$MAIN" || (echo "❌ main.js not found anywhere in dist/" && exit 1) && \
+    test -n "$MAIN" || (echo "❌ main.js not found in dist/" && exit 1) && \
     echo "✅ main.js → $MAIN"
 
 # ─── Runtime ──────────────────────────────────────────────────────────────────
@@ -52,7 +45,6 @@ WORKDIR /app
 COPY --from=build /app/node_modules                ./node_modules
 COPY --from=build /app/shared/contracts             ./shared/contracts
 COPY --from=build /app/shared/utils                 ./shared/utils
-COPY --from=build /app/shared/schemas               ./shared/schemas
 COPY --from=build /app/services/processing-service  ./services/processing-service
 
 WORKDIR /app/services/processing-service

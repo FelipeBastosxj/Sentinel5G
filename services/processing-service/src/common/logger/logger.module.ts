@@ -1,5 +1,5 @@
 import { Global, Inject, Injectable, Module } from '@nestjs/common';
-import { createLogger, StructuredLogger } from '@eventstream/utils';
+import { createLogger, StructuredLogger } from '@telecom-webhook/utils';
 import { EnvService } from '../../config/config.module';
 import { CorrelationService } from '../correlation/correlation.module';
 

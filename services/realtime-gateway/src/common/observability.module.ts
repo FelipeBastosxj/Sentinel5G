@@ -1,32 +1,31 @@
-import { Controller, Get, Header, Global, Module, Injectable } from '@nestjs/common';
-import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
+import { Controller, Get, Global, Module, Injectable } from '@nestjs/common';
 
+/**
+ * Simple in-process metrics — no prom-client dependency.
+ * Exposes GET /metrics as a plain JSON snapshot.
+ */
 @Injectable()
 export class MetricsService {
-  readonly registry = new Registry();
+  private _broadcasts = 0;
+  private _connectedClients = 0;
+  private _redisFanoutIn = 0;
+  private _redisFanoutOut = 0;
 
-  readonly broadcastsTotal = new Counter({
-    name: 'gateway_broadcasts_total',
-    help: 'Events broadcast over WebSocket',
-    labelNames: ['stream'] as const,
-    registers: [this.registry],
-  });
+  incBroadcasts(): void { this._broadcasts++; }
+  incConnectedClients(): void { this._connectedClients++; }
+  decConnectedClients(): void { if (this._connectedClients > 0) this._connectedClients--; }
+  incRedisFanout(dir: 'in' | 'out'): void {
+    if (dir === 'in') this._redisFanoutIn++;
+    else this._redisFanoutOut++;
+  }
 
-  readonly connectedClients = new Gauge({
-    name: 'gateway_connected_clients',
-    help: 'Currently connected WebSocket clients',
-    registers: [this.registry],
-  });
-
-  readonly redisFanoutTotal = new Counter({
-    name: 'gateway_redis_fanout_total',
-    help: 'Messages broadcast via Redis pub/sub for multi-instance fanout',
-    labelNames: ['direction'] as const,
-    registers: [this.registry],
-  });
-
-  constructor() {
-    collectDefaultMetrics({ register: this.registry });
+  snapshot() {
+    return {
+      broadcasts: this._broadcasts,
+      connectedClients: this._connectedClients,
+      redisFanout: { in: this._redisFanoutIn, out: this._redisFanoutOut },
+      uptimeSeconds: Math.floor(process.uptime()),
+    };
   }
 }
 
@@ -34,9 +33,8 @@ export class MetricsService {
 export class MetricsController {
   constructor(private readonly metrics: MetricsService) {}
   @Get()
-  @Header('Cache-Control', 'no-cache')
-  scrape(): Promise<string> {
-    return this.metrics.registry.metrics();
+  scrape() {
+    return this.metrics.snapshot();
   }
 }
 
@@ -50,8 +48,8 @@ export class HealthController {
 
 @Global()
 @Module({
-  controllers: [MetricsController, HealthController],
   providers: [MetricsService],
+  controllers: [MetricsController, HealthController],
   exports: [MetricsService],
 })
 export class ObservabilityModule {}

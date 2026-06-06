@@ -6,18 +6,11 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { SchemaValidationError } from '@eventstream/schemas';
 import { AppLoggerService } from '../logger/logger.module';
 
 /**
- * Global exception filter that translates every error type into a
- * structured JSON response and a single log line.
- *
- * - {@link SchemaValidationError} → 400 with the offending field paths.
- * - {@link HttpException}         → preserves status and body.
- * - everything else                → 500 with a generic error code.
- *
- * Sensitive details are kept out of the response body (HARDNESS §9).
+ * Global exception filter — translates every error into a structured JSON
+ * response and a single log line. Sensitive details stay out of the body.
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -27,30 +20,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
 
-    if (exception instanceof SchemaValidationError) {
-      this.logger.warn('Schema validation failed', { issues: exception.issues });
-      response.status(HttpStatus.BAD_REQUEST).json({
-        statusCode: HttpStatus.BAD_REQUEST,
-        error: 'SchemaValidationError',
-        message: 'Payload does not satisfy CanonicalEvent schema.',
-        issues: exception.issues,
-      });
-      return;
-    }
-
     if (exception instanceof HttpException) {
-      const status = exception.getStatus();
       const body = exception.getResponse();
-      this.logger.warn('HTTP exception', { status, body });
-      response.status(status).json(typeof body === 'string' ? { message: body } : body);
+      this.logger.warn('HTTP exception', { status: exception.getStatus() });
+      response.status(exception.getStatus()).json(body);
       return;
     }
 
-    const err = exception as Error;
     this.logger.error('Unhandled exception', {
-      name: err?.name,
-      message: err?.message,
-      stack: err?.stack,
+      error: (exception as Error)?.message ?? String(exception),
     });
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
       statusCode: HttpStatus.INTERNAL_SERVER_ERROR,

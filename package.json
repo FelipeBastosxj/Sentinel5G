@@ -1,8 +1,8 @@
 {
-  "name": "eventstream-observability-engine",
-  "version": "0.4.0",
+  "name": "open-telecom-webhook-observability",
+  "version": "1.0.0",
   "private": true,
-  "description": "Distributed Messaging Observability Platform for real-time event ingestion, processing, telemetry, and reliability analytics.",
+  "description": "Open source webhook observability platform for telecom providers (Twilio, Vonage, and more). Inspect, debug, and analyse telecom webhooks in real time.",
   "workspaces": [
     "shared/*",
     "services/*",
@@ -13,49 +13,45 @@
     "npm": ">=10.0.0"
   },
   "scripts": {
-    "infra:up":         "docker compose -f infra/docker-compose.yml up -d",
-    "infra:down":       "docker compose -f infra/docker-compose.yml down",
-    "infra:reset":      "docker compose -f infra/docker-compose.yml down -v",
-    "infra:logs":       "docker compose -f infra/docker-compose.yml logs -f",
-    "obs:up":           "docker compose -f infra/docker-compose.yml --profile observability up -d",
-    "obs:down":         "docker compose -f infra/docker-compose.yml --profile observability down",
-    "obs:logs":         "docker compose -f infra/docker-compose.yml --profile observability logs -f",
-    "services:up":         "docker compose -f infra/docker-compose.yml --profile services up -d",
+    "up":                  "docker compose -f infra/docker-compose.yml --profile services up -d --build",
+    "down":                "docker compose -f infra/docker-compose.yml --profile services down",
+    "logs":                "docker compose -f infra/docker-compose.yml --profile services logs -f",
+    "restart":             "npm run down && npm run up",
+
+    "infra:up":            "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down":          "docker compose -f infra/docker-compose.yml down",
+    "infra:reset":         "docker compose -f infra/docker-compose.yml down -v",
+    "infra:logs":          "docker compose -f infra/docker-compose.yml logs -f",
+
+    "services:up":         "docker compose -f infra/docker-compose.yml --profile services up -d --build",
     "services:down":       "docker compose -f infra/docker-compose.yml --profile services down",
     "services:build":      "docker compose -f infra/docker-compose.yml --profile services build",
     "services:logs":       "docker compose -f infra/docker-compose.yml --profile services logs -f",
     "services:ingestion":  "npm run start:dev --workspace=services/ingestion-service",
-    "services:webhook":    "npm run start:dev --workspace=services/webhook-service",
     "services:processing": "npm run start:dev --workspace=services/processing-service",
     "services:gateway":    "npm run start:dev --workspace=services/realtime-gateway",
 
-    "logs":             "docker compose -f infra/docker-compose.yml logs -f",
-    "reset":            "docker compose -f infra/docker-compose.yml down -v",
-
     "build":               "npm run build --workspaces --if-present",
     "build:ingestion":     "npm run build --workspace=services/ingestion-service",
-    "build:webhook":       "npm run build --workspace=services/webhook-service",
     "build:processing":    "npm run build --workspace=services/processing-service",
     "build:gateway":       "npm run build --workspace=services/realtime-gateway",
 
     "lint":                "npm run lint --workspaces --if-present",
     "lint:ingestion":      "npm run lint --workspace=services/ingestion-service",
-    "lint:webhook":        "npm run lint --workspace=services/webhook-service",
     "lint:processing":     "npm run lint --workspace=services/processing-service",
     "lint:gateway":        "npm run lint --workspace=services/realtime-gateway",
 
     "test":                "npm run test --workspaces --if-present",
     "test:ingestion":      "npm run test --workspace=services/ingestion-service",
-    "test:webhook":        "npm run test --workspace=services/webhook-service",
     "test:processing":     "npm run test --workspace=services/processing-service",
     "test:gateway":        "npm run test --workspace=services/realtime-gateway",
 
     "frontend":            "cd frontend/angular-dashboard && node ../../node_modules/@angular/cli/bin/ng.js serve --host 0.0.0.0 --port 4200",
     "frontend:build":      "cd frontend/angular-dashboard && node ../../node_modules/@angular/cli/bin/ng.js build",
 
-    "env":                 "node -e \"require('fs').copyFileSync('.env.example','.env');console.log('.env criado. Preencha os valores antes de iniciar os servicos.');\"",
+    "env":                 "node -e \"require('fs').copyFileSync('.env.example','.env');console.log('.env created from .env.example');\"",
 
-    "help":                "node -e \"const s=require('./package.json').scripts;console.log('\\nEventStream — Comandos disponíveis\\n');Object.keys(s).forEach(k=>console.log('  npm run '+k))\""
+    "help":                "node -e \"const s=require('./package.json').scripts;console.log('\\nOpen Telecom Webhook Observability — Available commands\\n');Object.keys(s).forEach(k=>console.log('  npm run '+k))\""
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

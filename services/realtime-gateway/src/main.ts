@@ -1,8 +1,4 @@
 import 'reflect-metadata';
-import { startTracing } from './observability/tracing';
-
-startTracing(process.env.OTEL_SERVICE_NAME_GATEWAY ?? 'realtime-gateway');
-
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
