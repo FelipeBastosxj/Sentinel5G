@@ -9,12 +9,117 @@ This project adheres to [Semantic Versioning](https://semver.org/) and follows t
 ## [Unreleased]
 
 ### Planned
-- ClickHouse writer service (`events.processed` → analytical storage)
-- Historical query REST API (top of ClickHouse)
 - Consumer lag exporter for Prometheus
 - WebSocket JWT authentication
-- Multi-instance gateway scale-out via Redis pub/sub backplane (currently scaffolded)
-- ECharts visualizations wired to real metrics streams
+- Correlation ID trace explorer (frontend)
+- Aggregation pipelines (delivery rates, error rates, latency p95/p99)
+- Time-series data modeling in ClickHouse
+
+---
+
+## [0.4.0] — 2026-06-06
+
+### Fixed
+
+- **`infra/grafana/datasources.yml` — stable datasource UIDs**
+  - Added explicit `uid: prometheus`, `uid: loki`, and `uid: tempo` to all provisioned datasources.
+  Without fixed UIDs Grafana assigns a random string on every restart; the pre-provisioned
+  dashboard references all datasources by `uid`, so every panel showed "datasource not found"
+  even with Prometheus fully healthy and scraping all targets.
+
+- **`processing-service` — ClickHouse DDL uses HTTP POST**
+  - `ClickHouseAdapter.exec()` now always sends `POST` requests.
+  Previously DDL statements (no body) were sent with `GET`, but the ClickHouse HTTP interface
+  is read-only for `GET` requests (error 164: `READONLY`). As a result `CREATE TABLE` failed
+  silently on every startup, the `eventstream.events` table was never created, and every
+  `save()` call raised "Table does not exist" — ClickHouse remained permanently empty.
+
+- **`shared/schemas` — `CanonicalEvent` schema: optional server-side fields**
+  - `eventId`, `timestamp`, and `correlationId` are now `.optional()` in the Zod schema.
+  The `IngestEventUseCase` backfills these three fields server-side (UUID v4, UTC ISO-8601,
+  `X-Correlation-ID` header) so clients are not required to send them. Making them `.required()`
+  was rejecting every valid inbound payload and returning HTTP 400.
+
+- **Port and URL alignment across all services**
+  - `webhook-service/EnvService`: now reads `WEBHOOK_PORT` (default `3002`) and
+    `INGESTION_BASE_URL` (default `http://localhost:3001`) — matching docker-compose env keys.
+  - `processing-service/EnvService`: now reads `PROCESSING_PORT` (default `3003`).
+  - `realtime-gateway/EnvService`: now reads `GATEWAY_PORT` (default `3004`).
+
+- **`webhook-service` — `publish is not a function` runtime error**
+  - `ProcessWebhookUseCase` was injecting `EVENT_PUBLISHER_TOKEN` / `EventPublisherPort`
+    (the Kafka-style `publish()` port) instead of `CANONICAL_EVENT_FORWARDER_PORT` /
+    `CanonicalEventForwarderPort` (the HTTP `forward()` port implemented by
+    `IngestionHttpClient`). Fixed injection token, renamed `publisher` → `forwarder`,
+    `publish()` → `forward()`. `IntegrationsModule` now uses `useExisting` so the
+    adapter is constructed with its own dependencies.
+
+### Added — Phase 3: Historical Event Storage
+
+- **`infra/clickhouse/init.sql`**
+  Schema for `eventstream.events` — MergeTree engine, partitioned by month, ordered by
+  `(toDate(timestamp), event_id)`, 90-day TTL on `timestamp`. Mounted as
+  `/docker-entrypoint-initdb.d/init.sql:ro` in docker-compose.
+
+- **`processing-service` — `EventStorePort` outbound port**
+  Hexagonal `EventStorePort` interface (`save(event)`, `findRecent(options)`) in
+  `domain/ports/`. `EVENT_STORE_PORT` symbol for NestJS DI. Domain layer stays
+  framework-agnostic (HARDNESS §6).
+
+- **`processing-service` — `ClickHouseAdapter` + `ClickHouseModule`**
+  HTTP-based adapter using Node 22 native `fetch` (no extra dependencies).
+  `OnModuleInit` creates the table with `CREATE TABLE IF NOT EXISTS` using POST.
+  `save()` inserts via `INSERT INTO events FORMAT JSONEachRow`.
+  Both `save()` and `findRecent()` are non-fatal — errors are logged as warnings
+  and never interrupt the Kafka processing pipeline (HARDNESS §10).
+
+- **`processing-service` — `GET /events/recent` REST endpoint**
+  `EventsQueryController` exposes historical queries:
+  `GET /events/recent?limit=100&channel=SMS&source=twilio`.
+  CORS enabled in `main.ts` (`origin: '*'`, `methods: 'GET'`) so the Angular
+  frontend can call it directly.
+
+- **`infra/docker-compose.yml` — ClickHouse wiring for processing-service**
+  Added `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER`,
+  `CLICKHOUSE_PASSWORD` env vars. Added `depends_on: clickhouse: condition: service_healthy`
+  so processing-service never starts before ClickHouse is ready.
+
+### Added — Frontend: ECharts + Persistence
+
+- **`MetricsPageComponent` — three live ECharts charts**
+  Native `echarts` (no `ngx-echarts`) loaded via dynamic `import('echarts')` so it ships
+  as a separate lazy chunk and never bloats the initial bundle:
+  - **Horizontal bar** — events per channel
+  - **Doughnut / pie** — events per event type
+  - **Line / area** — throughput per minute (last 30 buckets)
+  All chart options are `computed<EChartsOption>()` signals; an `effect()` calls
+  `chart.setOption()` on every signal change. Charts are disposed in `ngOnDestroy()`
+  to prevent memory leaks (HARDNESS §7).
+
+- **`EventsApiService`** (`core/services/events-api.service.ts`)
+  Calls `GET /events/recent` on processing-service with a 5-second `AbortController`
+  timeout. Returns an empty array on any error — frontend never fails on a cold backend.
+
+- **`MetricsStore` + `EventsStore` — ClickHouse hydration and localStorage persistence**
+  On construction both stores:
+  1. Restore the last known state from `localStorage` (keys `es:metrics:events` /
+     `es:events:all`) so data survives an F5 or browser restart.
+  2. Call `EventsApiService.fetchRecent()` to hydrate from ClickHouse — events that
+     arrived while the browser was closed are merged in (deduped by `eventId`).
+  A persisting `effect()` writes back to `localStorage` on every signal change.
+  Capacity: `MetricsStore` 5 000 events, `EventsStore` 1 000 events (LRU-trim).
+
+- **`environments/environment.ts`** — `processingUrl: 'http://localhost:3003'` added.
+
+### Added — Scripts
+
+- **`check_infra.sh`** — diagnostic script that checks Prometheus target health,
+  ClickHouse event count, processing-service metrics, and ingestion-service metrics
+  in a single pass. Useful to verify the full stack is wired before load-testing.
+
+- **`test_event.sh`** — quick smoke test that sends a `STATUS_EVENT` via
+  `POST /ingest` and prints the response, useful for verifying the ingestion
+  pipeline end-to-end.
 
 ---
 
@@ -137,7 +242,8 @@ This project adheres to [Semantic Versioning](https://semver.org/) and follows t
 
 ---
 
-[Unreleased]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/FelipeBastosxj/eventstream-observability-engine/releases/tag/v0.1.0

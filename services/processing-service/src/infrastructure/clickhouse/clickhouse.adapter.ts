@@ -135,11 +135,14 @@ export class ClickHouseAdapter implements EventStorePort, OnModuleInit {
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  /** Execute a DDL or INSERT query via the ClickHouse HTTP interface. */
+  /** Execute a DDL or INSERT query via the ClickHouse HTTP interface.
+   *  Always uses POST — ClickHouse HTTP requires POST for all write operations
+   *  (DDL, INSERT). GET is read-only mode only.
+   */
   private async exec(sql: string, body?: string): Promise<void> {
     const url = `${this.base}/?query=${encodeURIComponent(sql.trim())}`;
     const res = await fetch(url, {
-      method:  body ? 'POST' : 'GET',
+      method:  'POST',
       headers: { ...this.headers, 'Content-Type': 'text/plain' },
       body,
     });

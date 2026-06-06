@@ -9,17 +9,18 @@ import { Channel, EventType } from '@eventstream/contracts';
  */
 export const canonicalEventSchema = z
   .object({
-    eventId: z.string().uuid(),
-    eventType: z.union([z.nativeEnum(EventType), z.string().min(1)]),
-    channel: z.nativeEnum(Channel),
-    timestamp: z
+    eventId:       z.string().uuid().optional(),
+    eventType:     z.union([z.nativeEnum(EventType), z.string().min(1)]),
+    channel:       z.nativeEnum(Channel),
+    timestamp:     z
       .string()
-      .refine((v) => Number.isFinite(Date.parse(v)), 'invalid ISO-8601 timestamp'),
-    source: z.string().min(1),
-    correlationId: z.string().min(1),
-    version: z.string().min(1).optional(),
-    metadata: z.record(z.string(), z.unknown()),
-    payload: z.unknown().optional(),
+      .refine((v) => Number.isFinite(Date.parse(v)), 'invalid ISO-8601 timestamp')
+      .optional(),
+    source:        z.string().min(1),
+    correlationId: z.string().min(1).optional(),
+    version:       z.string().min(1).optional(),
+    metadata:      z.record(z.string(), z.unknown()),
+    payload:       z.unknown().optional(),
   })
   .strict();
 
