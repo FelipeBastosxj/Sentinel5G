@@ -11,6 +11,7 @@ import { EnvService } from './config/config.module';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.enableShutdownHooks();
+  app.enableCors({ origin: '*', methods: 'GET' });
   const env = app.get(EnvService);
   await app.listen(env.httpPort);
   Logger.log(
