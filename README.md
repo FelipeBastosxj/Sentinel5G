@@ -258,7 +258,7 @@ cd eventstream-observability-engine
 ## Start Infrastructure
 
 ```bash
-docker-compose up -d
+docker-compose -f infra/docker-compose.yml up -d
 ```
 
 This starts:
@@ -267,6 +267,27 @@ This starts:
 * Zookeeper
 * Redis
 * ClickHouse
+* Kafka UI (http://localhost:8080)
+
+To start the optional observability stack (Prometheus, Loki, Tempo, Grafana, OTel Collector):
+
+```bash
+make obs-up                 # or: docker compose -f infra/docker-compose.yml --profile observability up -d
+```
+
+Grafana is then available at http://localhost:3000 with the **EventStream — Overview** dashboard preloaded.
+
+---
+
+## Service ports
+
+| Service | URL |
+|---------|-----|
+| ingestion-service | http://localhost:3001 (`POST /ingest`, `/health`, `/metrics`) |
+| processing-service | http://localhost:3002 (`/health`, `/metrics`) |
+| realtime-gateway | http://localhost:3003 (WebSocket `/ws`, `/health`, `/metrics`) |
+| webhook-service | http://localhost:3004 (`POST /integrations/{provider}/webhook`, `/health`, `/metrics`) |
+| Angular dashboard | http://localhost:4200 |
 
 ---
 

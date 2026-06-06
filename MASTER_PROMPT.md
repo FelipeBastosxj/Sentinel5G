@@ -1,69 +1,59 @@
-# MASTER_PROMPT.md
-
 # EventStream Observability Engine
 
 ## Mission
 
-Build a production-grade open-source Distributed Messaging Observability Platform.
+Build a production-grade open-source platform for studying, implementing, and operating distributed messaging systems.
 
-The platform provides:
+The platform focuses on:
 
 * event ingestion
 * event processing
-* event observability
-* real-time telemetry
-* reliability analytics
-* distributed messaging infrastructure insights
+* messaging observability
+* telemetry analytics
+* provider integrations
+* distributed systems patterns
 
-The platform must be provider-agnostic.
-
-It must support integration with external messaging systems through dedicated Integration Endpoints while maintaining a Canonical Event Model internally.
+The goal is to provide a practical reference implementation for engineers working with messaging infrastructures and event-driven architectures.
 
 ---
 
-# Core Identity
+# Project Identity
 
-This system IS:
+EventStream Observability Engine is a:
 
-* a distributed event processing platform
-* a messaging observability engine
-* a real-time telemetry platform
-* a distributed systems reference architecture
+* Distributed Messaging Observability Platform
+* Event-Driven Architecture Reference Project
+* Real-Time Telemetry Platform
+* Open Source Engineering Project
 
-This system is NOT:
-
-* a telecom billing system
-* an SMS gateway
-* an SMPP server
-* a CRM
-* a monolithic application
+The platform is intended to demonstrate practical engineering patterns that can be applied to messaging systems and distributed infrastructures.
 
 ---
 
-# Architecture Principles
+# Architectural Principles
 
 Mandatory:
 
 * Event-Driven Architecture
 * Kafka-Centric Design
-* Stateless Services
 * Clean Architecture
+* Stateless Services
 * Observability First
 * Feature-Based Frontend Architecture
-* Local-First Development
-* Docker Compose Infrastructure
+* Docker Compose Development Environment
 
 Preferred:
 
-* Simplicity over abstraction
-* Reproducibility over convenience
+* Simplicity over complexity
 * Explicit contracts over implicit behavior
+* Low operational overhead
+* Modular design
 
 ---
 
 # Technology Stack
 
-## Backend
+Backend:
 
 * NestJS
 * Kafka
@@ -73,47 +63,38 @@ Preferred:
 * Prometheus
 * Loki
 
-## Frontend
+Frontend:
 
 * Angular 20+
 * Angular Signals
 * ECharts
 * WebSockets
 
-## Infrastructure
+Infrastructure:
 
 * Docker Compose
 
 ---
 
-# Monorepo Structure
-
-/eventstream-engine
+# Repository Structure
 
 /services
-/ingestion-service
-/processing-service
-/realtime-gateway
-/webhook-service
+ingestion-service
+processing-service
+realtime-gateway
+webhook-service
 
 /frontend
-/angular-dashboard
+angular-dashboard
 
 /shared
-/contracts
-/schemas
-/utils
-
-/infra
-docker-compose.yml
+contracts
+schemas
+utils
 
 /docs
-architecture.md
-event-model.md
 
-README.md
-HARDNESS.md
-Makefile
+/infra
 
 ---
 
@@ -123,6 +104,7 @@ Every event must contain:
 
 * eventId
 * eventType
+* channel
 * timestamp
 * source
 * correlationId
@@ -132,32 +114,48 @@ Optional:
 * metadata
 * payload
 
-Events are immutable.
+Example:
 
-Events are versioned.
+{
+"eventId": "uuid",
+"eventType": "DELIVERY_EVENT",
+"channel": "sms",
+"timestamp": "2026-01-01T12:00:00Z",
+"source": "twilio",
+"correlationId": "abc-123"
+}
 
-Events must be validated before entering Kafka.
+Supported channels:
+
+* sms
+* email
+* whatsapp
+* push
+* internal
+
+Initial development focuses on SMS integrations.
+
+Events must be immutable and versioned.
 
 ---
 
-# Integration Endpoints
+# Integration Boundary
 
-The platform supports Edge Integrations.
+External systems communicate through Integration Endpoints.
 
 Examples:
 
 * /integrations/twilio/webhook
 * /integrations/infobip/webhook
-* /integrations/sendgrid/webhook
 * /integrations/custom/webhook
 
 Responsibilities:
 
-* receive provider payloads
-* validate signatures
-* transform payloads
+* receive external payloads
+* validate requests
+* normalize data
 * create Canonical Events
-* publish to Kafka
+* publish events to Kafka
 
 The core platform must never consume provider-specific payloads directly.
 
@@ -181,16 +179,16 @@ Use Clean Architecture.
 
 Layers:
 
-* Controllers
+* Controller
 * Application
 * Domain
 * Infrastructure
 
 Rules:
 
-* No business logic inside controllers
-* No framework dependency inside domain
-* No direct database access outside infrastructure
+* Controllers must not contain business logic
+* Domain must not depend on frameworks
+* Infrastructure concerns must remain isolated
 * Kafka is the system backbone
 
 ---
@@ -199,16 +197,15 @@ Rules:
 
 Angular Signals is mandatory.
 
-RxJS may be used only for streams.
+Feature-based architecture is mandatory.
 
-Feature-based structure required:
+Structure:
 
 /features
-
 /dashboard
 /events
 /metrics
-/providers
+/integrations
 
 Each feature must contain:
 
@@ -216,30 +213,37 @@ Each feature must contain:
 * services
 * models
 * state
-* ui
 
 No global state libraries.
 
-No god modules.
+No shared mutable state.
 
 ---
 
-# Observability Requirements
+# Observability
 
-Every service must implement:
+Every service must expose:
 
-* OpenTelemetry tracing
-* Prometheus metrics
-* Structured logging
-* Correlation ID propagation
+* traces
+* metrics
+* structured logs
 
-Observability is not optional.
+Required:
+
+* OpenTelemetry
+* Prometheus
+
+Optional:
+
+* Loki
+
+Correlation IDs must propagate through the entire event flow.
 
 ---
 
-# Infrastructure Requirements
+# Infrastructure
 
-Everything must run through Docker Compose.
+Everything must run locally through Docker Compose.
 
 Required services:
 
@@ -254,22 +258,7 @@ Optional:
 * Loki
 * OpenTelemetry Collector
 
-Startup:
-
-docker-compose up -d
-
----
-
-# Scalability Requirements
-
-Support:
-
-* horizontal scaling
-* retry-safe consumers
-* consumer lag handling
-* backpressure management
-
-No shared in-memory state.
+The project must remain self-hosted friendly.
 
 ---
 
@@ -277,10 +266,9 @@ No shared in-memory state.
 
 Generated code must:
 
+* follow architecture rules
 * be production-oriented
-* be modular
-* be observable
+* be maintainable
 * be testable
-* follow architecture constraints
-* prioritize maintainability
-* prioritize low operational complexity
+* prioritize clarity over abstraction
+* prioritize operational simplicity
