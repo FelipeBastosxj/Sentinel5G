@@ -18,6 +18,29 @@ This project adheres to [Semantic Versioning](https://semver.org/) and follows t
 
 ---
 
+## [0.3.0] — 2026-06-06
+
+### Fixed
+- **`shared/@eventstream/schemas` — Zod v4 compatibility**
+  - `canonical-event.schema.ts`: `z.record(z.unknown())` → `z.record(z.string(), z.unknown())` — Zod v4 requires explicit key schema
+  - `validate.helper.ts`: `result.error.errors` → `result.error.issues` — property renamed in Zod v4
+- **`shared/*/package.json` — runtime module resolution**
+  - `"main"` and `"types"` now point to `"dist/index.js"` / `"dist/index.d.ts"` instead of `"src/index.ts"`, preventing Node 22 from attempting to load TypeScript sources directly via ESM stripping (which fails on extensionless imports)
+- **Docker multi-stage builds — all four services**
+  - Shared packages (`contracts` → `utils` → `schemas`) are now compiled independently in dependency order inside each build stage before the service is compiled
+  - `shared/schemas` was missing from the runtime stage in all Dockerfiles; added `COPY --from=build` for all four
+  - `CMD` entries corrected to the actual path emitted by `tsc` (services without an explicit `rootDir` in `tsconfig.json` emit to `dist/services/<name>/src/main.js`; services with `rootDir: "./src"` emit to `dist/main.js`)
+  - Build-time assertion added: `find dist -name 'main.js'` fails the image build immediately if the output path shifts again, making regressions visible at build time rather than container startup
+
+### Added
+- **`shared/utils/tsconfig.build.json`** — dedicated build config with `rootDir: "./src"` and `paths` resolving `@eventstream/contracts` to `../contracts/dist`, preventing `tsc` from including contracts sources and expanding the implicit `rootDir` to the monorepo root
+- **`shared/schemas/tsconfig.build.json`** — same pattern as `utils`, resolving both `@eventstream/contracts` and `@eventstream/utils` to their respective `dist/` outputs
+
+### Changed
+- `shared/schemas/package.json`: Zod peer dependency range updated from `"^3.23.0"` to `"^4.0.0"` to reflect the API used (`z.record` two-argument form, `ZodError.issues`)
+
+---
+
 ## [0.2.0] — 2026-06-06
 
 ### Added
@@ -114,6 +137,7 @@ This project adheres to [Semantic Versioning](https://semver.org/) and follows t
 
 ---
 
-[Unreleased]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/FelipeBastosxj/eventstream-observability-engine/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/FelipeBastosxj/eventstream-observability-engine/releases/tag/v0.1.0
