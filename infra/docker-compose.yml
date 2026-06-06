@@ -1,5 +1,3 @@
-version: '3.8'
-
 # =============================================================================
 # EventStream Observability Engine — Infrastructure
 # =============================================================================
@@ -63,9 +61,10 @@ services:
       - eventstream-network
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-      interval: 15s
+      interval: 10s
       timeout: 10s
-      retries: 10
+      retries: 15
+      start_period: 60s
 
   # ---------------------------------------------------------------------------
   # Kafka UI — Web interface for Kafka topic management and event inspection
@@ -236,6 +235,120 @@ services:
       - "3000:3000"
     networks:
       - eventstream-network
+
+  # ─── Backend Services (profile: services) ───────────────────────────────────
+
+  ingestion-service:
+    profiles: [services]
+    build:
+      context: ..
+      dockerfile: services/ingestion-service/Dockerfile
+    container_name: eventstream-ingestion
+    restart: unless-stopped
+    ports:
+      - "${INGESTION_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: ingestion-service
+      INGESTION_PORT: "3001"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks: [eventstream-network]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  webhook-service:
+    profiles: [services]
+    build:
+      context: ..
+      dockerfile: services/webhook-service/Dockerfile
+    container_name: eventstream-webhook
+    restart: unless-stopped
+    ports:
+      - "${WEBHOOK_PORT:-3002}:3002"
+    environment:
+      NODE_ENV: production
+      WEBHOOK_PORT: "3002"
+      INGESTION_BASE_URL: http://ingestion-service:3001
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    depends_on:
+      ingestion-service:
+        condition: service_healthy
+    networks: [eventstream-network]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  processing-service:
+    profiles: [services]
+    build:
+      context: ..
+      dockerfile: services/processing-service/Dockerfile
+    container_name: eventstream-processing
+    restart: unless-stopped
+    ports:
+      - "${PROCESSING_PORT:-3003}:3003"
+    environment:
+      NODE_ENV: production
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: processing-service
+      KAFKA_CONSUMER_GROUP_ID: processing-service-group
+      PROCESSING_PORT: "3003"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks: [eventstream-network]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3003/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  realtime-gateway:
+    profiles: [services]
+    build:
+      context: ..
+      dockerfile: services/realtime-gateway/Dockerfile
+    container_name: eventstream-gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-3004}:3004"
+    environment:
+      NODE_ENV: production
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: realtime-gateway
+      KAFKA_CONSUMER_GROUP_ID: realtime-gateway-group
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      GATEWAY_PORT: "3004"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [eventstream-network]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3004/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 # =============================================================================
 # Volumes

@@ -1,9 +1,14 @@
 import { Channel, EventType } from '@eventstream/contracts';
 import { TwilioNormalizer } from './twilio.normalizer';
+import { NormalizationContext } from '../ports/provider-normalizer.port';
 
 describe('TwilioNormalizer', () => {
   const normalizer = new TwilioNormalizer();
-  const ctx = { correlationId: 'corr-1' };
+  const ctx: NormalizationContext = {
+    correlationId: 'test-correlation-id',
+    provider: 'twilio',
+    receivedAt: new Date().toISOString(),
+  };
 
   it('maps a delivered event to DELIVERY_EVENT on SMS channel', () => {
     const [event] = normalizer.normalize(
@@ -19,7 +24,7 @@ describe('TwilioNormalizer', () => {
     expect(event.eventType).toBe(EventType.DELIVERY_EVENT);
     expect(event.channel).toBe(Channel.SMS);
     expect(event.source).toBe('twilio');
-    expect(event.correlationId).toBe('corr-1');
+    expect(event.correlationId).toBe('test-correlation-id');
     expect(event.payload).toMatchObject({ messageSid: 'SM1', status: 'delivered' });
   });
 

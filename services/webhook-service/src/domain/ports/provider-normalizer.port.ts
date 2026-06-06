@@ -6,6 +6,8 @@ import { CanonicalEvent } from '@eventstream/contracts';
  */
 export interface NormalizationContext {
   readonly correlationId: string;
+  readonly provider: string;
+  readonly receivedAt: string;
 }
 
 /**
@@ -14,10 +16,6 @@ export interface NormalizationContext {
  *
  * Concrete normalizers live in `domain/normalizers/<provider>.normalizer.ts`.
  */
-export interface ProviderNormalizerPort<RawPayload = unknown> {
-  readonly providerName: string;
-  normalize(
-    payload: RawPayload,
-    context: NormalizationContext,
-  ): CanonicalEvent[];
+export interface ProviderNormalizerPort {
+  normalize(payload: unknown, context: NormalizationContext): CanonicalEvent[];
 }

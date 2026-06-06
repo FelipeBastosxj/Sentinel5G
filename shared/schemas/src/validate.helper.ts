@@ -21,11 +21,9 @@ export class SchemaValidationError extends Error {
 export function validateOrThrow<T>(schema: ZodSchema<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) {
-    const issues = result.error.errors.map((e) => ({
-      path: e.path.join('.'),
-      message: e.message,
-    }));
-    throw new SchemaValidationError(issues);
+    throw new Error(
+      `Validation failed: ${JSON.stringify(result.error.issues)}`,
+    );
   }
   return result.data;
 }
