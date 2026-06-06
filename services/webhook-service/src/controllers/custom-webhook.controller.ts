@@ -6,13 +6,15 @@ import {
   HttpStatus,
   Injectable,
   Post,
+  UseGuards,
 } from '@nestjs/common';
-import { ProcessWebhookUseCase } from '../application/use-cases/process-webhook.use-case';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import {
-  CustomNormalizer,
-  CustomWebhookPayload,
-} from '../domain/normalizers/custom.normalizer';
-import { SignatureValidatorPort } from '../domain/ports/signature-validator.port';
+  ProcessWebhookUseCase,
+  ProcessWebhookCommand,
+} from '../application/use-cases/process-webhook.use-case';
+import { CustomNormalizer } from '../domain/normalizers/custom.normalizer';
+import { extractOrCreateCorrelationId } from '@eventstream/utils';
 
 /**
  * NoopSignatureValidator — always passes. Used by the custom integration
@@ -20,7 +22,7 @@ import { SignatureValidatorPort } from '../domain/ports/signature-validator.port
  * layer (private VPC, mTLS, API gateway). Documented in integrations.md.
  */
 @Injectable()
-export class NoopSignatureValidator implements SignatureValidatorPort {
+export class NoopSignatureValidator {
   readonly providerName = 'custom';
   validate(): boolean {
     return true;
@@ -28,28 +30,27 @@ export class NoopSignatureValidator implements SignatureValidatorPort {
 }
 
 @Controller('integrations/custom')
+@UseGuards(ThrottlerGuard)
 export class CustomWebhookController {
   constructor(
-    private readonly processWebhook: ProcessWebhookUseCase,
+    private readonly useCase: ProcessWebhookUseCase,
     private readonly normalizer: CustomNormalizer,
-    private readonly validator: NoopSignatureValidator,
   ) {}
 
   @Post('webhook')
   @HttpCode(HttpStatus.ACCEPTED)
-  async receive(
-    @Headers() headers: Record<string, string | string[] | undefined>,
-    @Body() body: CustomWebhookPayload,
-  ): Promise<{ accepted: number }> {
-    const result = await this.processWebhook.execute({
-      providerName: 'custom',
-      channelLabel: String(body?.channel ?? 'unknown'),
-      rawBody: JSON.stringify(body),
-      parsedPayload: body,
-      headers,
-      validator: this.validator,
-      normalizer: this.normalizer,
-    });
-    return { accepted: result.accepted };
+  async handle(
+    @Body() body: unknown,
+    @Headers() headers: Record<string, string>,
+  ): Promise<{ accepted: boolean }> {
+    const correlationId = extractOrCreateCorrelationId(headers);
+    const command = new ProcessWebhookCommand(
+      body,
+      this.normalizer,
+      correlationId,
+      'custom',
+    );
+    await this.useCase.execute(command);
+    return { accepted: true };
   }
 }

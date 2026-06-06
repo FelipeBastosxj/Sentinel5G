@@ -8,24 +8,24 @@ import { Logger } from '@nestjs/common';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { EnvService } from './config/env.service';
+import * as bodyParser from 'body-parser';
+import { IncomingMessage } from 'http';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.enableShutdownHooks();
 
-  // Twilio sends `application/x-www-form-urlencoded`; SendGrid sends JSON.
-  // We accept both and capture the raw body for HMAC verification.
   app.use(
-    urlencoded({
+    bodyParser.urlencoded({
       extended: true,
-      verify: (req: { rawBody?: string }, _res, buf) => {
+      verify: (req: IncomingMessage & { rawBody?: string }, _res, buf) => {
         req.rawBody = buf.toString('utf8');
       },
     }),
   );
   app.use(
-    json({
-      verify: (req: { rawBody?: string }, _res, buf) => {
+    bodyParser.json({
+      verify: (req: IncomingMessage & { rawBody?: string }, _res, buf) => {
         req.rawBody = buf.toString('utf8');
       },
     }),

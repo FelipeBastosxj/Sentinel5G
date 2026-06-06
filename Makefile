@@ -40,7 +40,23 @@ obs-logs:
 # Services
 # -----------------------------------------------------------------------------
 
-## Start all backend services
+## Start all backend services (Docker)
+services-up:
+	docker compose -f infra/docker-compose.yml --profile services up -d
+
+## Stop all backend services (Docker)
+services-down:
+	docker compose -f infra/docker-compose.yml --profile services down
+
+## Build Docker images for all backend services
+services-build:
+	docker compose -f infra/docker-compose.yml --profile services build
+
+## Tail backend service logs
+services-logs:
+	docker compose -f infra/docker-compose.yml --profile services logs -f
+
+## Start all backend services (local dev — requires Node.js)
 up:
 	@echo "Starting all services..."
 	@cd services/ingestion-service && npm run start:dev &

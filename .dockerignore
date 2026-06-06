@@ -1,0 +1,10 @@
+node_modules
+*/node_modules
+**/node_modules
+**/.git
+**/.env
+**/dist
+**/*.log
+**/coverage
+frontend/angular-dashboard/node_modules
+frontend/angular-dashboard/dist

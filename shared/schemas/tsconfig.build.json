@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "paths": {
+      "@eventstream/contracts": ["../contracts/dist"],
+      "@eventstream/contracts/*": ["../contracts/dist/*"]
+    }
+  }
+}

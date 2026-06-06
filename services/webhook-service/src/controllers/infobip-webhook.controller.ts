@@ -5,39 +5,38 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  UseGuards,
 } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import {
-  infobipWebhookSchema,
-  validateOrThrow,
-} from '@eventstream/schemas';
-import { ProcessWebhookUseCase } from '../application/use-cases/process-webhook.use-case';
+  ProcessWebhookUseCase,
+  ProcessWebhookCommand,
+} from '../application/use-cases/process-webhook.use-case';
 import { InfobipNormalizer } from '../domain/normalizers/infobip.normalizer';
-import { InfobipSignatureValidator } from '../infrastructure/signatures/infobip-signature.validator';
+import { extractOrCreateCorrelationId } from '@eventstream/utils';
 
 @Controller('integrations/infobip')
+@UseGuards(ThrottlerGuard)
 export class InfobipWebhookController {
   constructor(
-    private readonly processWebhook: ProcessWebhookUseCase,
+    private readonly useCase: ProcessWebhookUseCase,
     private readonly normalizer: InfobipNormalizer,
-    private readonly validator: InfobipSignatureValidator,
   ) {}
 
   @Post('webhook')
   @HttpCode(HttpStatus.ACCEPTED)
-  async receive(
-    @Headers() headers: Record<string, string | string[] | undefined>,
+  async handle(
     @Body() body: unknown,
-  ): Promise<{ accepted: number }> {
-    const parsed = validateOrThrow(infobipWebhookSchema, body);
-    const result = await this.processWebhook.execute({
-      providerName: 'infobip',
-      channelLabel: 'sms',
-      rawBody: JSON.stringify(body),
-      parsedPayload: parsed,
-      headers,
-      validator: this.validator,
-      normalizer: this.normalizer,
-    });
-    return { accepted: result.accepted };
+    @Headers() headers: Record<string, string>,
+  ): Promise<{ accepted: boolean }> {
+    const correlationId = extractOrCreateCorrelationId(headers);
+    const command = new ProcessWebhookCommand(
+      body,
+      this.normalizer,
+      correlationId,
+      'infobip',
+    );
+    await this.useCase.execute(command);
+    return { accepted: true };
   }
 }

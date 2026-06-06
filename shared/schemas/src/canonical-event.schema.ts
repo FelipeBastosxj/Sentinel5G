@@ -18,7 +18,7 @@ export const canonicalEventSchema = z
     source: z.string().min(1),
     correlationId: z.string().min(1),
     version: z.string().min(1).optional(),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()),
     payload: z.unknown().optional(),
   })
   .strict();

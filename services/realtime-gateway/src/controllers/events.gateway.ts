@@ -1,11 +1,10 @@
+import { Injectable, Logger } from '@nestjs/common';
 import {
-  Injectable,
-  Logger,
+  WebSocketGateway,
+  WebSocketServer,
   OnGatewayConnection,
   OnGatewayDisconnect,
   OnGatewayInit,
-  WebSocketGateway,
-  WebSocketServer,
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 import { CanonicalEvent } from '@eventstream/contracts';

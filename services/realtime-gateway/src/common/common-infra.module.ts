@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Global, Inject, Injectable, Module } from '@nestjs/common';
 import { createLogger, StructuredLogger } from '@eventstream/utils';
-import { EnvService } from '../../config/config.module';
+import { EnvService } from '../config/config.module';
 
 @Injectable()
 export class CorrelationService {

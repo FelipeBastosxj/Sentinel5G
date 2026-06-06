@@ -18,16 +18,16 @@ import {
  * Maps an Infobip delivery-report batch to one CanonicalEvent per result.
  */
 @Injectable()
-export class InfobipNormalizer
-  implements ProviderNormalizerPort<InfobipWebhookPayload>
+export class InfobipNormalizer implements ProviderNormalizerPort
 {
   readonly providerName = EventSource.INFOBIP;
 
   normalize(
-    payload: InfobipWebhookPayload,
+    payload: unknown,
     context: NormalizationContext,
   ): CanonicalEvent[] {
-    return payload.results.map((report) => this.toEvent(report, context));
+    const p = payload as InfobipWebhookPayload;
+    return p.results.map((report) => this.toEvent(report, context));
   }
 
   private toEvent(

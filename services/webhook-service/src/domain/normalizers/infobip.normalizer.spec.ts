@@ -1,9 +1,14 @@
 import { Channel, EventType } from '@eventstream/contracts';
 import { InfobipNormalizer } from './infobip.normalizer';
+import { NormalizationContext } from '../ports/provider-normalizer.port';
 
 describe('InfobipNormalizer', () => {
   const normalizer = new InfobipNormalizer();
-  const ctx = { correlationId: 'corr-1' };
+  const ctx: NormalizationContext = {
+    correlationId: 'test-correlation-id',
+    provider: 'infobip',
+    receivedAt: new Date().toISOString(),
+  };
 
   it('emits one CanonicalEvent per delivery report', () => {
     const events = normalizer.normalize(
