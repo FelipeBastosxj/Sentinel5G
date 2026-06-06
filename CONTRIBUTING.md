@@ -1,8 +1,8 @@
-# Contributing to EventStream Observability Engine
+# Contributing to Open Telecom Webhook Observability
 
-Thank you for your interest in contributing to this project.
+Thank you for your interest in contributing!
 
-This document defines the contribution workflow, standards, and expectations.
+This project is **fully open source** (MIT) and designed to welcome community contributions from the start.
 
 Please read this document **and** [HARDNESS.md](./HARDNESS.md) before opening any Pull Request.
 
@@ -18,12 +18,11 @@ Please read this document **and** [HARDNESS.md](./HARDNESS.md) before opening an
 - [Pull Request Process](#pull-request-process)
 - [Engineering Standards](#engineering-standards)
 - [Definition of Done](#definition-of-done)
+- [Good First Issues](#good-first-issues)
 
 ---
 
 ## Code of Conduct
-
-This project follows a standard code of conduct.
 
 Be respectful, constructive, and professional in all interactions.
 
@@ -35,23 +34,23 @@ Be respectful, constructive, and professional in all interactions.
 
 - Docker and Docker Compose
 - Node.js 22+
-- npm
+- npm 10+
 
 ### Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/FelipeBastosxj/eventstream-observability-engine.git
-cd eventstream-observability-engine
+git clone https://github.com/FelipeBastosxj/open-telecom-webhook-observability.git
+cd open-telecom-webhook-observability
 
 # Copy environment variables
 cp .env.example .env
 
-# Start infrastructure
-docker compose -f infra/docker-compose.yml up -d
+# Start infrastructure (PostgreSQL + Redis)
+npm run infra:up
 
-# Start services
-docker compose -f infra/docker-compose.yml --profile services up -d
+# Start all services
+npm run services:up
 ```
 
 ---
@@ -63,10 +62,10 @@ docker compose -f infra/docker-compose.yml --profile services up -d
 npm run test
 
 # View service logs
-npm run logs
+npm run services:logs
 
 # Stop all services
-docker compose -f infra/docker-compose.yml --profile services down
+npm run services:down
 
 # Reset environment (removes volumes)
 npm run reset
@@ -117,11 +116,12 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/).
 ### Examples
 
 ```bash
-feat(ingestion-service): add Twilio webhook endpoint
-fix(processing-service): handle null correlationId on retry
-docs(readme): update architecture diagram
-chore(infra): update Kafka version to 3.7
-test(ingestion-service): add unit tests for canonical event mapper
+feat(ingestion-service): add Twilio signature validation
+fix(processing-service): handle null MessageSid on status callback
+docs(readme): update quick start for PostgreSQL setup
+chore(infra): upgrade postgres image to 16-alpine
+test(ingestion-service): add unit tests for Twilio normaliser
+feat(provider): add Vonage SMS webhook support
 ```
 
 ---
@@ -145,13 +145,14 @@ All contributions must comply with the rules defined in [HARDNESS.md](./HARDNESS
 
 Key non-negotiable rules:
 
-- **Event-Driven First** — all business flows occur through Kafka events
+- **Webhook-First** — all business flows start from an inbound HTTP webhook
+- **PostgreSQL as source of truth** — no in-memory state, no external event buses in MVP
+- **WebhookEvent Model** — all payloads normalised to `WebhookEvent` before persistence
 - **Stateless Services** — no local persistent state in services
-- **Canonical Event Model** — all payloads normalized before entering the platform
-- **Observability** — every service must expose traces, metrics, and structured logs
 - **Clean Architecture** — strict layer separation (Controller → Application → Domain → Infrastructure)
 - **No business logic in controllers**
 - **No framework dependencies in domain layer**
+- **Input validation** — every inbound payload must be validated
 
 ---
 
@@ -161,9 +162,20 @@ A contribution is considered complete when:
 
 - [ ] Architecture rules from `HARDNESS.md` are respected
 - [ ] Unit tests are present and passing
-- [ ] Kafka flow is preserved end-to-end
-- [ ] OpenTelemetry instrumentation exists
+- [ ] PostgreSQL schema changes include a migration or updated `init.sql`
+- [ ] New provider integrations include a normaliser and test payload
 - [ ] Docker Compose environment starts and works correctly
 - [ ] Documentation is updated (README, inline comments, or dedicated doc)
 - [ ] CHANGELOG.md is updated under `[Unreleased]`
 - [ ] No linting errors
+
+---
+
+## Good First Issues
+
+Look for issues labelled:
+
+- `good first issue` — well-scoped tasks for new contributors
+- `help wanted` — tasks where community input is especially welcome
+- `provider:vonage`, `provider:messagebird` etc. — new provider integrations
+

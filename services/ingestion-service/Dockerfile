@@ -5,14 +5,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY shared/contracts/package.json ./shared/contracts/
 COPY shared/utils/package.json      ./shared/utils/
-COPY shared/schemas/package.json    ./shared/schemas/
 COPY services/ingestion-service/package.json ./services/ingestion-service/
 
-# npm workspaces hoists all deps to root node_modules
 RUN npm install \
       --workspace=shared/contracts \
       --workspace=shared/utils \
-      --workspace=shared/schemas \
       --workspace=services/ingestion-service \
       --include=dev \
       --ignore-scripts && \
@@ -22,29 +19,23 @@ RUN npm install \
 FROM node:22-alpine AS build
 WORKDIR /app
 
-# Only root node_modules needed (hoisted by workspaces)
 COPY --from=deps /app/node_modules ./node_modules
 
 COPY tsconfig.base.json ./
 COPY shared/contracts/ ./shared/contracts/
 COPY shared/utils/      ./shared/utils/
-COPY shared/schemas/    ./shared/schemas/
 COPY services/ingestion-service/ ./services/ingestion-service/
 
-# ─── Build shared packages in dependency order ────────────────────────────────
 WORKDIR /app/shared/contracts
 RUN npx tsc -p tsconfig.json
 
 WORKDIR /app/shared/utils
 RUN npx tsc -p tsconfig.build.json
 
-WORKDIR /app/shared/schemas
-RUN npx tsc -p tsconfig.build.json
-
 WORKDIR /app/services/ingestion-service
 RUN npx tsc -p tsconfig.json && \
     MAIN=$(find dist -name 'main.js' -type f | head -1) && \
-    test -n "$MAIN" || (echo "❌ main.js not found anywhere in dist/" && exit 1) && \
+    test -n "$MAIN" || (echo "❌ main.js not found in dist/" && exit 1) && \
     echo "✅ main.js → $MAIN"
 
 # ─── Runtime ──────────────────────────────────────────────────────────────────
@@ -54,7 +45,6 @@ WORKDIR /app
 COPY --from=build /app/node_modules               ./node_modules
 COPY --from=build /app/shared/contracts            ./shared/contracts
 COPY --from=build /app/shared/utils                ./shared/utils
-COPY --from=build /app/shared/schemas              ./shared/schemas
 COPY --from=build /app/services/ingestion-service  ./services/ingestion-service
 
 WORKDIR /app/services/ingestion-service

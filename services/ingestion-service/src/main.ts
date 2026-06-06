@@ -1,8 +1,4 @@
 import 'reflect-metadata';
-import { startTracing } from './observability/tracing';
-
-startTracing(process.env.OTEL_SERVICE_NAME_INGESTION ?? 'ingestion-service');
-
 import { NestFactory } from '@nestjs/core';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';

@@ -1,8 +1,8 @@
 {
-  "name": "@eventstream/contracts",
+  "name": "@telecom-webhook/contracts",
   "version": "0.1.0",
   "private": true,
-  "description": "Canonical Event Model contracts and interfaces for the EventStream platform.",
+  "description": "WebhookEvent contracts and interfaces for the Open Telecom Webhook Observability platform.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

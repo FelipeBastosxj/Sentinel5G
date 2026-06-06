@@ -33,43 +33,13 @@ export class EnvService {
       .filter(Boolean);
   }
 
-  // -------- Kafka -------------------------------------------------------
-  get kafkaBrokers(): string[] {
-    return this.config
-      .get<string>('KAFKA_BROKERS', 'localhost:9092')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-
-  get kafkaClientId(): string {
-    return this.config.get<string>('KAFKA_CLIENT_ID', 'realtime-gateway');
-  }
-
-  get kafkaGroupId(): string {
-    // Each gateway instance should join the same group for load-balanced
-    // partition assignment, but we allow override via env for fan-out modes.
+  get databaseUrl(): string {
     return this.config.get<string>(
-      'KAFKA_GROUP_ID_GATEWAY',
-      'eventstream.realtime-gateway',
+      'DATABASE_URL',
+      'postgresql://postgres:postgres@localhost:5432/telecom_webhook',
     );
   }
 
-  get topicEventsProcessed(): string {
-    return this.config.get<string>(
-      'KAFKA_TOPIC_EVENTS_PROCESSED',
-      'events.processed',
-    );
-  }
-
-  get topicEventsMetrics(): string {
-    return this.config.get<string>(
-      'KAFKA_TOPIC_EVENTS_METRICS',
-      'events.metrics',
-    );
-  }
-
-  // -------- Redis -------------------------------------------------------
   get redisHost(): string {
     return this.config.get<string>('REDIS_HOST', 'localhost');
   }
@@ -79,26 +49,14 @@ export class EnvService {
   }
 
   get redisPassword(): string | undefined {
-    const v = this.config.get<string>('REDIS_PASSWORD');
-    return v && v.length > 0 ? v : undefined;
-  }
-
-  get otelServiceName(): string {
-    return this.config.get<string>(
-      'OTEL_SERVICE_NAME_GATEWAY',
-      'realtime-gateway',
-    );
+    return this.config.get<string>('REDIS_PASSWORD') || undefined;
   }
 }
 
 @Global()
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      cache: true,
-      envFilePath: ['.env', '../../.env'],
-    }),
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env', '../../.env'] }),
   ],
   providers: [EnvService],
   exports: [EnvService],

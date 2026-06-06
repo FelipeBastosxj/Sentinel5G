@@ -1,41 +1,56 @@
+import { WebhookEventSummary } from '@telecom-webhook/contracts';
 import { Injectable, OnDestroy, signal } from '@angular/core';
 import { io, Socket } from 'socket.io-client';
-import { CanonicalEvent } from '@eventstream/contracts';
 import { environment } from '../../../environments/environment';
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'disconnected';
 
 /**
- * RealtimeClient — single Socket.IO client shared by every feature.
+ * RealtimeClient — single Socket.IO connection shared across features.
  *
- * Exposes plain Signals so feature stores can subscribe via `effect()` or
- * `computed()`. No global state library (HARDNESS §7).
+ * After connecting it joins the workspace-specific room so events are
+ * filtered server-side (only this workspace's webhooks arrive).
  */
 @Injectable({ providedIn: 'root' })
 export class RealtimeClient implements OnDestroy {
   private socket: Socket | null = null;
+  private workspaceId: string | null = null;
 
-  readonly status = signal<ConnectionStatus>('idle');
-  readonly lastEvent = signal<CanonicalEvent | null>(null);
-  readonly lastMetric = signal<CanonicalEvent | null>(null);
+  readonly status    = signal<ConnectionStatus>('idle');
+  readonly lastEvent = signal<WebhookEventSummary | null>(null);
 
-  connect(): void {
-    if (this.socket) return;
+  connect(workspaceId: string): void {
+    if (this.socket && this.workspaceId === workspaceId) return;
+
+    // Reconnect if workspace changed
+    if (this.socket) this.disconnect();
+
+    this.workspaceId = workspaceId;
     this.status.set('connecting');
+
     this.socket = io(environment.realtimeUrl, {
       path: environment.realtimePath,
       transports: ['websocket'],
     });
 
-    this.socket.on('connect', () => this.status.set('connected'));
+    this.socket.on('connect', () => {
+      this.status.set('connected');
+      // Join workspace room — server will only push events for this workspace
+      this.socket!.emit('subscribe', { workspaceId });
+    });
+
     this.socket.on('disconnect', () => this.status.set('disconnected'));
-    this.socket.on('events', (payload: CanonicalEvent) => this.lastEvent.set(payload));
-    this.socket.on('metrics', (payload: CanonicalEvent) => this.lastMetric.set(payload));
+
+    // Primary stream: new webhook event arrived
+    this.socket.on('webhook_event',     (e: WebhookEventSummary) => this.lastEvent.set(e));
+    // Fallback: global stream (all workspaces) — same model
+    this.socket.on('webhook_event_all', (e: WebhookEventSummary) => this.lastEvent.set(e));
   }
 
   disconnect(): void {
     this.socket?.disconnect();
     this.socket = null;
+    this.workspaceId = null;
     this.status.set('idle');
   }
 

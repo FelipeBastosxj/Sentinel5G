@@ -19,8 +19,8 @@
     "useDefineForClassFields": false,
     "lib": ["ES2022", "dom"],
     "paths": {
-      "@eventstream/contracts": ["../../shared/contracts/src"],
-      "@eventstream/contracts/*": ["../../shared/contracts/src/*"]
+      "@telecom-webhook/contracts": ["../../shared/contracts/src"],
+      "@telecom-webhook/contracts/*": ["../../shared/contracts/src/*"]
     }
   },
   "angularCompilerOptions": {

@@ -5,7 +5,6 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import Redis from 'ioredis';
-import { CanonicalEvent } from '@eventstream/contracts';
 import { EnvService } from '../../config/config.module';
 import { AppLoggerService } from '../../common/common-infra.module';
 import { MetricsService } from '../../common/observability.module';
@@ -13,13 +12,13 @@ import {
   RemoteFanoutHandler,
   RemoteFanoutPort,
 } from '../../domain/ports/remote-fanout.port';
-import { EventStream } from '../../domain/ports/event-broadcaster.port';
+import { WebhookEventSummary } from '../../domain/ports/event-broadcaster.port';
 
-const REDIS_CHANNEL = 'eventstream.gateway';
+const REDIS_CHANNEL = 'telecom-webhook.gateway';
 
 interface FanoutMessage {
-  readonly stream: EventStream;
-  readonly event: CanonicalEvent;
+  readonly workspaceId: string;
+  readonly event: WebhookEventSummary;
   /** Origin instance identifier — prevents echo loops. */
   readonly origin: string;
 }
@@ -61,9 +60,9 @@ export class RedisFanoutAdapter
     this.subscriber.on('message', (_channel, raw) => {
       try {
         const msg = JSON.parse(raw) as FanoutMessage;
-        if (msg.origin === this.originId) return; // echo guard
-        this.metrics.redisFanoutTotal.inc({ direction: 'in' });
-        this.handler?.(msg.stream, msg.event);
+        if (msg.origin === this.originId) return;
+        this.metrics.incRedisFanout('in');
+        this.handler?.(msg.workspaceId, msg.event);
       } catch (err) {
         this.logger.warn('Failed to parse redis fanout message', {
           error: (err as Error).message,
@@ -81,14 +80,14 @@ export class RedisFanoutAdapter
     ]);
   }
 
-  async publish(stream: EventStream, event: CanonicalEvent): Promise<void> {
-    if (!this.publisher) return;
-    const msg: FanoutMessage = { stream, event, origin: this.originId };
+  async publish(workspaceId: string, event: WebhookEventSummary): Promise<void> {
+    const msg: FanoutMessage = { workspaceId, event, origin: this.originId };
     await this.publisher.publish(REDIS_CHANNEL, JSON.stringify(msg));
-    this.metrics.redisFanoutTotal.inc({ direction: 'out' });
+    this.metrics.incRedisFanout('out');
   }
 
-  async subscribe(handler: RemoteFanoutHandler): Promise<void> {
+  subscribe(handler: RemoteFanoutHandler): Promise<void> {
     this.handler = handler;
+    return Promise.resolve();
   }
 }

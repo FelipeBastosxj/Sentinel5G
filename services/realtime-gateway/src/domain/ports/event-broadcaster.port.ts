@@ -1,18 +1,22 @@
-import { CanonicalEvent } from '@eventstream/contracts';
-
 /**
- * EventStream — logical channel name advertised over the WebSocket.
- * Maps onto Kafka topics but uses domain-friendly identifiers.
- */
-export type EventStream = 'events' | 'metrics';
-
-/**
- * EventBroadcasterPort — domain port for delivering events to the connected
- * dashboard clients. Today, it is fulfilled by a Socket.IO gateway.
+ * EventBroadcasterPort — domain port for delivering webhook events to
+ * connected dashboard clients. Fulfilled by the Socket.IO gateway.
  */
 export interface EventBroadcasterPort {
-  broadcast(stream: EventStream, event: CanonicalEvent): void;
+  broadcast(workspaceId: string, event: WebhookEventSummary): void;
   connectedClientsCount(): number;
+}
+
+/** Minimal event payload pushed over WebSocket. */
+export interface WebhookEventSummary {
+  id: string;
+  workspaceId: string;
+  provider: string;
+  eventType: string;
+  receivedAt: Date | string;
+  from?: string;
+  to?: string;
+  status?: string;
 }
 
 export const EVENT_BROADCASTER_PORT = Symbol('EVENT_BROADCASTER_PORT');

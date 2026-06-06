@@ -3,7 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import {
   CORRELATION_ID_HEADER,
   extractOrCreateCorrelationId,
-} from '@eventstream/utils';
+} from '@telecom-webhook/utils';
 import { CorrelationService } from './correlation.service';
 
 /**

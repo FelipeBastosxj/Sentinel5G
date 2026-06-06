@@ -21,12 +21,10 @@
     "noEmit": false,
     "types": ["node", "jest"],
     "paths": {
-      "@eventstream/contracts": ["../../shared/contracts/src"],
-      "@eventstream/contracts/*": ["../../shared/contracts/src/*"],
-      "@eventstream/schemas": ["../../shared/schemas/src"],
-      "@eventstream/schemas/*": ["../../shared/schemas/src/*"],
-      "@eventstream/utils": ["../../shared/utils/src"],
-      "@eventstream/utils/*": ["../../shared/utils/src/*"]
+      "@telecom-webhook/contracts": ["../../shared/contracts/src"],
+      "@telecom-webhook/contracts/*": ["../../shared/contracts/src/*"],
+      "@telecom-webhook/utils": ["../../shared/utils/src"],
+      "@telecom-webhook/utils/*": ["../../shared/utils/src/*"]
     }
   },
   "include": ["src/**/*"],

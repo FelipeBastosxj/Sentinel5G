@@ -1,12 +1,12 @@
 import { Global, Inject, Injectable, Module } from '@nestjs/common';
-import { createLogger, StructuredLogger } from '@eventstream/utils';
+import { createLogger, StructuredLogger } from '@telecom-webhook/utils';
 import { EnvService } from '../../config/env.service';
 import { CorrelationService } from '../correlation/correlation.service';
 
 export const APP_LOGGER = Symbol('APP_LOGGER');
 
 /**
- * NestJS-aware wrapper around the {@link StructuredLogger} from `@eventstream/utils`.
+ * NestJS-aware wrapper around the {@link StructuredLogger} from `@telecom-webhook/utils`.
  *
  * Automatically merges the active correlation ID into every log record so the
  * caller never has to remember to pass it.

@@ -1,33 +1,37 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
-import { CanonicalEvent } from '@eventstream/contracts';
+import { WebhookEventSummary } from '@telecom-webhook/contracts';
 import { RealtimeClient } from '../../../core/services/realtime-client.service';
+import { WorkspaceSessionService } from '../../../core/services/workspace-session.service';
 
 export interface ProviderHealth {
   readonly source: string;
   readonly successCount: number;
   readonly errorCount: number;
-  readonly successRate: number; // 0..1
+  readonly successRate: number;
   readonly lastSeen: string;
 }
 
 @Injectable()
 export class IntegrationsStore {
   private readonly client = inject(RealtimeClient);
+  private readonly ws     = inject(WorkspaceSessionService);
 
-  private readonly events = signal<CanonicalEvent[]>([]);
+  private readonly events = signal<WebhookEventSummary[]>([]);
 
   readonly providers = computed<ProviderHealth[]>(() => {
-    const map = new Map<
-      string,
-      { success: number; error: number; lastSeen: string }
-    >();
+    const map = new Map<string, { success: number; error: number; lastSeen: string }>();
     for (const evt of this.events()) {
-      const key = String(evt.source);
+      const key    = evt.provider;
       const bucket = map.get(key) ?? { success: 0, error: 0, lastSeen: '' };
-      const isError = String(evt.eventType).toUpperCase().includes('ERROR');
+      const isError = evt.eventType.toLowerCase().includes('fail') ||
+                      evt.eventType.toLowerCase().includes('error') ||
+                      evt.status?.toLowerCase().includes('fail') || false;
       if (isError) bucket.error += 1;
       else bucket.success += 1;
-      if (evt.timestamp > bucket.lastSeen) bucket.lastSeen = evt.timestamp;
+      const ts = evt.receivedAt instanceof Date
+        ? evt.receivedAt.toISOString()
+        : String(evt.receivedAt);
+      if (ts > bucket.lastSeen) bucket.lastSeen = ts;
       map.set(key, bucket);
     }
     return Array.from(map.entries())
@@ -41,11 +45,15 @@ export class IntegrationsStore {
           lastSeen: b.lastSeen,
         };
       })
-      .sort((a, b) => b.successCount + b.errorCount - (a.successCount + a.errorCount));
+      .sort((a, b) => (b.successCount + b.errorCount) - (a.successCount + a.errorCount));
   });
 
   constructor() {
-    this.client.connect();
+    effect(() => {
+      const session = this.ws.session();
+      if (!session) return;
+      this.client.connect(session.workspaceId);
+    });
     effect(() => {
       const evt = this.client.lastEvent();
       if (!evt) return;

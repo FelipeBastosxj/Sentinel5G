@@ -1,133 +1,105 @@
-import { Inject, Injectable } from '@nestjs/common';
-import {
-  CanonicalEvent,
-  EventType,
-  KafkaTopic,
-} from '@eventstream/contracts';
-import { buildCanonicalEvent } from '@eventstream/utils';
-import {
-  EVENT_ENRICHER_PORT,
-  EventEnricherPort,
-} from '../../domain/ports/event-enricher.port';
-import {
-  EVENT_PUBLISHER_PORT,
-  EventPublisherPort,
-} from '../../domain/ports/event-publisher.port';
-import {
-  EVENT_STORE_PORT,
-  EventStorePort,
-} from '../../domain/ports/event-store.port';
-import { RetryPolicy } from '../../domain/retry/retry.policy';
-import { EnvService } from '../../config/config.module';
-import { MetricsService } from '../../common/metrics/metrics.module';
-import { AppLoggerService } from '../../common/logger/logger.module';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Client } from 'pg';
+import { WebhookEvent } from '@telecom-webhook/contracts';
+import { generateUuid } from '@telecom-webhook/utils';
+import { DATABASE_CLIENT } from '../../infrastructure/database/database.module';
+import { TwilioNormalizer } from '../../infrastructure/normalizers/twilio.normalizer';
+
+export interface ProcessCommand {
+  workspaceId: string;
+  provider: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+  receivedAt: Date;
+}
 
 /**
- * Use case: process a single CanonicalEvent.
+ * ProcessEventUseCase - normalises a raw webhook capture and persists it.
  *
- * Pipeline (HARDNESS §6, §10):
- *   1. enrich the event.
- *   2. publish to `events.processed` with retry.
- *   3. emit a metric event to `events.metrics`.
- *   4. on exhausted retries, publish to `events.alerts` (DLQ).
+ * Pipeline:
+ *   1. Normalise raw payload to WebhookEvent via the appropriate normaliser.
+ *   2. INSERT into webhook_events (PostgreSQL).
+ *   3. Emit pg_notify for real-time fanout to the realtime-gateway.
  */
 @Injectable()
 export class ProcessEventUseCase {
+  private readonly logger = new Logger(ProcessEventUseCase.name);
+
   constructor(
-    @Inject(EVENT_ENRICHER_PORT) private readonly enricher: EventEnricherPort,
-    @Inject(EVENT_PUBLISHER_PORT) private readonly publisher: EventPublisherPort,
-    @Inject(EVENT_STORE_PORT)    private readonly store: EventStorePort,
-    private readonly retry: RetryPolicy,
-    private readonly env: EnvService,
-    private readonly metrics: MetricsService,
-    private readonly logger: AppLoggerService,
+    @Inject(DATABASE_CLIENT) private readonly db: Client,
+    private readonly twilio: TwilioNormalizer,
   ) {}
 
-  async execute(raw: CanonicalEvent): Promise<void> {
-    const stop = this.metrics.processingDurationSeconds.startTimer();
-    this.metrics.eventsConsumedTotal.inc({
-      source: String(raw.source),
-      channel: String(raw.channel),
-    });
-
-    const enriched = this.enricher.enrich(raw);
+  async execute(cmd: ProcessCommand): Promise<void> {
+    const startMs = Date.now();
+    const id = generateUuid();
+    const event: WebhookEvent = this.normalise(id, cmd);
 
     try {
-      await this.retry.run(
-        () => this.publisher.publish(KafkaTopic.EVENTS_PROCESSED, enriched),
-        { attempts: this.env.retryAttempts, baseDelayMs: this.env.retryBaseDelayMs },
-        (attempt, err) => {
-          this.metrics.eventsRetriedTotal.inc({ attempt: String(attempt) });
-          this.logger.warn('Retrying publish to events.processed', {
-            attempt,
-            error: err.message,
-            eventId: enriched.eventId,
-          });
-        },
+      await this.db.query(
+        `INSERT INTO webhook_events (
+           id, workspace_id, provider, event_type,
+           message_sid, call_sid, from_number, to_number, status,
+           request_headers, request_payload, received_at, processed_at, processing_ms
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),$13)`,
+        [
+          event.id,
+          event.workspaceId,
+          event.provider,
+          event.eventType,
+          event.messageSid ?? null,
+          event.callSid ?? null,
+          event.from ?? null,
+          event.to ?? null,
+          event.status ?? null,
+          JSON.stringify(event.headers),
+          JSON.stringify(event.payload),
+          event.receivedAt,
+          Date.now() - startMs,
+        ],
       );
-      this.metrics.eventsProcessedTotal.inc({
-        source: String(enriched.source),
-        channel: String(enriched.channel),
-      });
-      stop({ outcome: 'success' });
 
-      // Persist to ClickHouse for historical queries (non-blocking, non-fatal)
-      this.store.save(enriched).catch((err) => {
-        this.logger.warn('ClickHouse save failed (non-fatal)', {
-          error: (err as Error).message,
-          eventId: enriched.eventId,
-        });
+      const notify = JSON.stringify({
+        id: event.id,
+        workspaceId: event.workspaceId,
+        provider: event.provider,
+        eventType: event.eventType,
+        receivedAt: event.receivedAt,
+        from: event.from,
+        to: event.to,
+        status: event.status,
       });
+      await this.db.query(`SELECT pg_notify('webhook_events', $1)`, [notify]);
 
-      // Emit a derived metric event for downstream observability.
-      const metricEvent = buildCanonicalEvent({
-        eventType: EventType.METRIC_EVENT,
-        channel: enriched.channel,
-        source: 'processing-service',
-        correlationId: enriched.correlationId,
-        metadata: { sourceEventId: enriched.eventId },
-        payload: { eventType: enriched.eventType, processedAt: new Date().toISOString() },
-      });
-      await this.publisher
-        .publish(KafkaTopic.EVENTS_METRICS, metricEvent)
-        .catch((err) => {
-          this.logger.warn('Failed to emit metric event (non-fatal)', {
-            error: (err as Error).message,
-          });
-        });
+      this.logger.log(
+        `Processed ${event.id} (${event.provider}/${event.eventType}) in ${Date.now() - startMs}ms`,
+      );
     } catch (err) {
-      stop({ outcome: 'failure' });
-      this.metrics.eventsDeadLetteredTotal.inc({ source: String(raw.source) });
-      this.logger.error('Event dead-lettered after retries', {
-        eventId: enriched.eventId,
-        error: (err as Error).message,
-      });
-      await this.sendToDLQ(enriched, err as Error);
+      this.logger.error('Failed to persist webhook event', (err as Error).message);
+      throw err;
     }
   }
 
-  private async sendToDLQ(event: CanonicalEvent, error: Error): Promise<void> {
-    const alert = buildCanonicalEvent({
-      eventType: EventType.ALERT_EVENT,
-      channel: event.channel,
-      source: 'processing-service',
-      correlationId: event.correlationId,
-      metadata: {
-        ...(event.metadata ?? {}),
-        deadLetter: true,
-        originalEventId: event.eventId,
-        errorName: error.name,
-        errorMessage: error.message,
-      },
-      payload: event.payload as Record<string, unknown> | undefined,
-    });
-    try {
-      await this.publisher.publish(KafkaTopic.EVENTS_ALERTS, alert);
-    } catch (dlqErr) {
-      this.logger.error('CRITICAL: failed to publish DLQ event', {
-        eventId: event.eventId,
-        error: (dlqErr as Error).message,
-      });
+  private normalise(id: string, cmd: ProcessCommand): WebhookEvent {
+    const capture = {
+      workspaceId: cmd.workspaceId,
+      headers: cmd.headers,
+      body: cmd.body,
+      receivedAt: cmd.receivedAt,
+    };
+    switch (cmd.provider) {
+      case 'twilio':
+        return this.twilio.normalize(id, capture);
+      default:
+        return {
+          id,
+          workspaceId: cmd.workspaceId,
+          provider: cmd.provider as WebhookEvent['provider'],
+          eventType: 'unknown',
+          receivedAt: cmd.receivedAt,
+          headers: cmd.headers,
+          payload: cmd.body,
+        };
     }
   }
 }

@@ -1,22 +1,15 @@
 import { Module } from '@nestjs/common';
-import { KafkaModule } from '../infrastructure/kafka/kafka.module';
-import { ClickHouseModule } from '../infrastructure/clickhouse/clickhouse.module';
-import { BaseEnricher } from '../domain/enrichment/base.enricher';
-import { RetryPolicy } from '../domain/retry/retry.policy';
+import { DatabaseModule } from '../infrastructure/database/database.module';
+import { TwilioNormalizer } from '../infrastructure/normalizers/twilio.normalizer';
 import { ProcessEventUseCase } from '../application/use-cases/process-event.use-case';
-import { EventConsumerController } from '../controllers/event-consumer.controller';
+import { WebhookReceiveController } from '../controllers/webhook-receive.controller';
 import { EventsQueryController } from '../controllers/events-query.controller';
-import { EVENT_ENRICHER_PORT } from '../domain/ports/event-enricher.port';
+import { WorkspaceController } from '../controllers/workspace.controller';
+import { HealthController } from '../controllers/health.controller';
 
 @Module({
-  imports: [KafkaModule, ClickHouseModule],
-  providers: [
-    BaseEnricher,
-    { provide: EVENT_ENRICHER_PORT, useExisting: BaseEnricher },
-    RetryPolicy,
-    ProcessEventUseCase,
-    EventConsumerController,
-  ],
-  controllers: [EventsQueryController],
+  imports: [DatabaseModule],
+  providers: [TwilioNormalizer, ProcessEventUseCase],
+  controllers: [WebhookReceiveController, EventsQueryController, WorkspaceController, HealthController],
 })
 export class ProcessingModule {}

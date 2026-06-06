@@ -1,11 +1,15 @@
 import { Module } from '@nestjs/common';
-import { KafkaModule } from '../infrastructure/kafka/kafka.module';
 import { IngestEventUseCase } from '../application/use-cases/ingest-event.use-case';
 import { IngestController } from '../controllers/ingest.controller';
+import { ProcessingForwarderAdapter } from '../infrastructure/forwarder/processing-forwarder.adapter';
+import { WEBHOOK_FORWARDER_PORT } from '../domain/ports/event-publisher.port';
 
 @Module({
-  imports: [KafkaModule],
   controllers: [IngestController],
-  providers: [IngestEventUseCase],
+  providers: [
+    IngestEventUseCase,
+    ProcessingForwarderAdapter,
+    { provide: WEBHOOK_FORWARDER_PORT, useExisting: ProcessingForwarderAdapter },
+  ],
 })
 export class IngestionModule {}

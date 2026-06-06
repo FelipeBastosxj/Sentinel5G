@@ -14,7 +14,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     if (host.getType() !== 'http') {
-      // Kafka path: nothing to send, just log.
+      // Non-HTTP context (e.g. async jobs) — just log.
       this.logger.error('Unhandled exception (non-http)', {
         error: (exception as Error)?.message,
       });

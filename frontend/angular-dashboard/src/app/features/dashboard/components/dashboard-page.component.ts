@@ -23,7 +23,7 @@ import { DashboardStore } from '../state/dashboard.store';
         </div>
         <div class="es-panel es-stat">
           <div class="es-stat__label">Distinct sources</div>
-          <div class="es-stat__value es-mono">{{ store.distinctSources() }}</div>
+          <div class="es-stat__value es-mono">{{ store.distinctProviders() }}</div>
         </div>
         <div class="es-panel es-stat">
           <div class="es-stat__label">Realtime status</div>
@@ -36,25 +36,25 @@ import { DashboardStore } from '../state/dashboard.store';
         <table class="es-table">
           <thead>
             <tr>
+              <th>Provider</th>
               <th>Event Type</th>
-              <th>Channel</th>
-              <th>Source</th>
-              <th>Timestamp</th>
-              <th>Correlation</th>
+              <th>From</th>
+              <th>To</th>
+              <th>Status</th>
+              <th>Received</th>
             </tr>
           </thead>
           <tbody>
-            <tr *ngFor="let evt of store.recentEvents(); trackBy: trackById">
-              <td>
-                <span class="es-tag">{{ evt.eventType }}</span>
-              </td>
-              <td>{{ evt.channel }}</td>
-              <td>{{ evt.source }}</td>
-              <td class="es-mono">{{ evt.timestamp }}</td>
-              <td class="es-mono es-tag">{{ evt.correlationId }}</td>
+            <tr *ngFor="let evt of store.events(); trackBy: trackById">
+              <td><span class="es-tag">{{ evt.provider }}</span></td>
+              <td>{{ evt.eventType }}</td>
+              <td class="es-mono">{{ evt.from ?? '—' }}</td>
+              <td class="es-mono">{{ evt.to ?? '—' }}</td>
+              <td>{{ evt.status ?? '—' }}</td>
+              <td class="es-mono">{{ evt.receivedAt | date:'HH:mm:ss' }}</td>
             </tr>
-            <tr *ngIf="store.recentEvents().length === 0">
-              <td colspan="5" class="es-empty">Waiting for events…</td>
+            <tr *ngIf="store.events().length === 0">
+              <td colspan="6" class="es-empty">Waiting for events…</td>
             </tr>
           </tbody>
         </table>
@@ -79,7 +79,7 @@ import { DashboardStore } from '../state/dashboard.store';
 })
 export class DashboardPageComponent {
   protected readonly store = inject(DashboardStore);
-  protected trackById(_index: number, item: { eventId: string }): string {
-    return item.eventId;
+  protected trackById(_i: number, item: { id: string }): string {
+    return item.id;
   }
 }
