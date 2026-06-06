@@ -11,7 +11,6 @@ This guide covers everything needed to run the EventStream Observability Engine 
 | Docker Desktop | ✅ **Required** | https://www.docker.com/products/docker-desktop |
 | Docker Compose v2 | ✅ **Required** | Bundled with Docker Desktop |
 | Node.js >= 22 | ⚙️ Dev only | Only needed to run services locally without Docker |
-| GNU Make | ⚙️ Linux/macOS | Optional — all commands also available via `npm run` |
 
 > **Node.js is NOT required to run the project.** Everything runs inside Docker containers.
 
@@ -275,17 +274,6 @@ npm run services:logs     # tail service logs
 npm run obs:up            # start observability stack
 npm run obs:down          # stop observability stack
 npm run obs:logs          # tail observability logs
-```
-
-### Makefile (Linux/macOS only)
-
-```bash
-make infra-up       # start infrastructure
-make infra-down     # stop infrastructure
-make services-up    # build + start services (Docker)
-make services-down  # stop services
-make obs-up         # start observability
-make obs-down       # stop observability
 ```
 
 ---

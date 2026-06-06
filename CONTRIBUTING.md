@@ -48,10 +48,10 @@ cd eventstream-observability-engine
 cp .env.example .env
 
 # Start infrastructure
-docker-compose up -d
+docker compose -f infra/docker-compose.yml up -d
 
 # Start services
-make up
+docker compose -f infra/docker-compose.yml --profile services up -d
 ```
 
 ---
@@ -60,16 +60,16 @@ make up
 
 ```bash
 # Run all tests
-make test
+npm run test
 
 # View service logs
-make logs
+npm run logs
 
 # Stop all services
-make down
+docker compose -f infra/docker-compose.yml --profile services down
 
 # Reset environment (removes volumes)
-make reset
+npm run reset
 ```
 
 ---
@@ -130,7 +130,7 @@ test(ingestion-service): add unit tests for canonical event mapper
 
 1. Fork the repository or create a feature branch from `dev`
 2. Implement your changes following the [Engineering Standards](#engineering-standards)
-3. Ensure all tests pass: `make test`
+3. Ensure all tests pass: `npm run test`
 4. Update documentation if required
 5. Fill in the Pull Request template completely
 6. Request a review
