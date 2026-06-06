@@ -1,19 +1,32 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { CanonicalEvent } from '@eventstream/contracts';
 import { RealtimeClient } from '../../../core/services/realtime-client.service';
+import { EventsApiService } from '../../../core/services/events-api.service';
 
 interface MinuteBucket {
   readonly minute: string;
   readonly count: number;
 }
 
+const STORAGE_KEY = 'es:metrics:events';
+const MAX_EVENTS  = 5000;
+
+function loadFromStorage(): CanonicalEvent[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as CanonicalEvent[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 @Injectable()
 export class MetricsStore {
   private readonly client = inject(RealtimeClient);
+  private readonly api    = inject(EventsApiService);
 
-  private readonly events = signal<CanonicalEvent[]>([]);
+  private readonly events = signal<CanonicalEvent[]>(loadFromStorage());
 
-  /** Count of events by channel for the current session window. */
   readonly perChannel = computed(() => {
     const map = new Map<string, number>();
     for (const evt of this.events()) {
@@ -25,24 +38,19 @@ export class MetricsStore {
       .sort((a, b) => b.count - a.count);
   });
 
-  /** Count of events by event type. */
   readonly perEventType = computed(() => {
     const map = new Map<string, number>();
     for (const evt of this.events()) {
       const key = String(evt.eventType);
       map.set(key, (map.get(key) ?? 0) + 1);
     }
-    return Array.from(map.entries()).map(([eventType, count]) => ({
-      eventType,
-      count,
-    }));
+    return Array.from(map.entries()).map(([eventType, count]) => ({ eventType, count }));
   });
 
-  /** Events per minute over the last 30 minutes. */
   readonly perMinute = computed<MinuteBucket[]>(() => {
     const buckets = new Map<string, number>();
     for (const evt of this.events()) {
-      const d = new Date(evt.timestamp);
+      const d      = new Date(evt.timestamp);
       const minute = `${d.toISOString().slice(0, 16)}Z`;
       buckets.set(minute, (buckets.get(minute) ?? 0) + 1);
     }
@@ -56,13 +64,37 @@ export class MetricsStore {
 
   constructor() {
     this.client.connect();
+
+    // Hydrate from ClickHouse — events that arrived while browser was closed
+    this.api.fetchRecent({ limit: 500 }).then((historical) => {
+      if (historical.length === 0) return;
+      this.events.update((current) => {
+        const existingIds = new Set(current.map((e) => e.eventId));
+        const merged = [
+          ...historical.filter((e) => !existingIds.has(e.eventId)),
+          ...current,
+        ];
+        return merged.length > MAX_EVENTS ? merged.slice(-MAX_EVENTS) : merged;
+      });
+    });
+
+    // Accumulate new events from WebSocket
     effect(() => {
       const evt = this.client.lastEvent();
       if (!evt) return;
       this.events.update((prev) => {
         const next = [...prev, evt];
-        return next.length > 5000 ? next.slice(-5000) : next;
+        return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
       });
+    });
+
+    // Persist to localStorage (survives F5 and browser close)
+    effect(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.events()));
+      } catch {
+        localStorage.removeItem(STORAGE_KEY);
+      }
     });
   }
 }

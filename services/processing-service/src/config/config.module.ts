@@ -81,6 +81,27 @@ export class EnvService {
       'processing-service',
     );
   }
+
+  // -------- ClickHouse --------------------------------------------------
+  get clickhouseHost(): string {
+    return this.config.get<string>('CLICKHOUSE_HOST', 'localhost');
+  }
+
+  get clickhousePort(): number {
+    return Number(this.config.get<string>('CLICKHOUSE_PORT', '8123'));
+  }
+
+  get clickhouseDatabase(): string {
+    return this.config.get<string>('CLICKHOUSE_DATABASE', 'eventstream');
+  }
+
+  get clickhouseUser(): string {
+    return this.config.get<string>('CLICKHOUSE_USER', 'default');
+  }
+
+  get clickhousePassword(): string {
+    return this.config.get<string>('CLICKHOUSE_PASSWORD', '');
+  }
 }
 
 @Global()

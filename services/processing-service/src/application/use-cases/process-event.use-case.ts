@@ -13,6 +13,10 @@ import {
   EVENT_PUBLISHER_PORT,
   EventPublisherPort,
 } from '../../domain/ports/event-publisher.port';
+import {
+  EVENT_STORE_PORT,
+  EventStorePort,
+} from '../../domain/ports/event-store.port';
 import { RetryPolicy } from '../../domain/retry/retry.policy';
 import { EnvService } from '../../config/config.module';
 import { MetricsService } from '../../common/metrics/metrics.module';
@@ -32,6 +36,7 @@ export class ProcessEventUseCase {
   constructor(
     @Inject(EVENT_ENRICHER_PORT) private readonly enricher: EventEnricherPort,
     @Inject(EVENT_PUBLISHER_PORT) private readonly publisher: EventPublisherPort,
+    @Inject(EVENT_STORE_PORT)    private readonly store: EventStorePort,
     private readonly retry: RetryPolicy,
     private readonly env: EnvService,
     private readonly metrics: MetricsService,
@@ -65,6 +70,14 @@ export class ProcessEventUseCase {
         channel: String(enriched.channel),
       });
       stop({ outcome: 'success' });
+
+      // Persist to ClickHouse for historical queries (non-blocking, non-fatal)
+      this.store.save(enriched).catch((err) => {
+        this.logger.warn('ClickHouse save failed (non-fatal)', {
+          error: (err as Error).message,
+          eventId: enriched.eventId,
+        });
+      });
 
       // Emit a derived metric event for downstream observability.
       const metricEvent = buildCanonicalEvent({

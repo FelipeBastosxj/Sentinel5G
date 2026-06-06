@@ -1,6 +1,7 @@
 export const environment = {
-  production: true,
-  realtimeUrl: '',
-  realtimePath: '/ws',
-  ingestionUrl: '',
+  production:    true,
+  realtimeUrl:   '',
+  realtimePath:  '/ws',
+  ingestionUrl:  '',
+  processingUrl: '',
 };

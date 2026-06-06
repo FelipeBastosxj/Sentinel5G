@@ -120,6 +120,7 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - eventstream-network
     healthcheck:
@@ -307,8 +308,15 @@ services:
       PROCESSING_PORT: "3003"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       KAFKAJS_NO_PARTITIONER_WARNING: "1"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DATABASE: eventstream
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
     depends_on:
       kafka:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
     networks: [eventstream-network]
     healthcheck:
