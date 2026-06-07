@@ -13,7 +13,10 @@ export interface WebhookEventSummary {
   workspaceId: string;
   provider: string;
   eventType: string;
+  channel?: 'sms' | 'whatsapp' | 'voice' | 'other';
   receivedAt: Date | string;
+  messageSid?: string;
+  callSid?: string;
   from?: string;
   to?: string;
   status?: string;

@@ -1,238 +1,173 @@
-# Open Telecom Webhook Observability
+# Telecom Webhook Inspector
 
-> Open source webhook inspector and observability platform for telecom providers.  
-> Debug Twilio webhooks — and more — in real time.
+A self-hosted, open-source platform for receiving, inspecting, and debugging webhooks from Twilio and other telecom providers in real time.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+Think **webhook.site**, but purpose-built for SMS and voice workflows — with a live event dashboard, per-workspace URLs, and full payload history stored in PostgreSQL.
 
 ---
 
-## What is this?
+## What it does
 
-A free, self-hostable alternative to Webhook.site — purpose-built for **telecom webhooks** (SMS, WhatsApp, Voice).
-
-**Receive → Inspect → Analyse → Debug.**
-
-| Capability | Details |
-|---|---|
-| 🔌 Webhook Receiver | Unique URL per workspace — no configuration needed |
-| 🔍 Real-time Inspector | Live event stream via WebSocket |
-| 📋 Full Payload View | Raw headers + body, formatted and searchable |
-| 📈 Event Timeline | Group SMS/call events by MessageSid / CallSid |
-| 📊 Metrics Dashboard | Delivery rates, failure rates, volume per provider |
-| 🔎 Search & Filter | By type, status, number, SID, time range, payload text |
-
----
-
-## Quick Start
-
-> **Only Docker is required.**
-
-```bash
-# 1. Clone
-git clone https://github.com/FelipeBastosxj/open-telecom-webhook-observability.git
-cd open-telecom-webhook-observability
-
-# 2. Environment
-cp .env.example .env
-
-# 3. Start PostgreSQL + Redis
-npm run infra:up
-
-# 4. Build and start all services
-npm run services:up
-
-# 5. Open the dashboard
-open http://localhost:4200
-```
-
----
-
-## Service URLs
-
-| Service | URL | Description |
-|---|---|---|
-| Angular Dashboard | http://localhost:4200 | Webhook Inspector UI |
-| Ingestion Service | http://localhost:3001 | `POST /:workspaceId/:token` |
-| Processing Service | http://localhost:3003 | Internal event processor |
-| Realtime Gateway | http://localhost:3004 | WebSocket `/ws` |
-
----
-
-## Send a Twilio Webhook
-
-Point your Twilio Status Callback URL to:
-```
-http://your-host:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001
-```
-
-Or simulate one locally:
-
-```bash
-# Incoming SMS
-curl -X POST "http://localhost:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "MessageSid=SM123456&From=%2B15017122661&To=%2B14155552671&Body=Hello+World&NumMedia=0"
-
-# Message Status Callback
-curl -X POST "http://localhost:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "MessageSid=SM123456&MessageStatus=delivered&To=%2B14155552671&From=%2B15017122661"
-
-# Voice Status Update
-curl -X POST "http://localhost:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "CallSid=CA123456&CallStatus=completed&To=%2B14155552671&From=%2B15017122661&Duration=42"
-```
-
----
-
-## Stop Everything
-
-```bash
-npm run infra:down
-```
-
-Full reset (wipes database volumes):
-
-```bash
-npm run reset
-```
-
----
-
-## Prerequisites
-
-| Tool | Version | Required |
-|---|---|---|
-| Docker | >= 27.x | ✅ |
-| Docker Compose | >= 2.x | ✅ |
-| Node.js | >= 22.x | ⚙️ Dev only |
-| npm | >= 10.x | ⚙️ Dev only |
+- Generates a **unique webhook URL** per browser session (`/{workspaceId}/{token}`)
+- Accepts `POST` from Twilio (SMS inbound, delivery status callbacks, voice events)
+- **Normalises** raw payloads into a structured `WebhookEvent` model
+- **Persists** every event to PostgreSQL with full HTTP headers + raw body
+- **Pushes live updates** to the Angular dashboard via WebSocket (Socket.IO)
+- Real-time fanout across multiple gateway instances via Redis pub/sub
 
 ---
 
 ## Architecture
 
 ```
-Telecom Providers (Twilio, Vonage, ...)
-        │
-        ▼  POST /:workspaceId/:token
-  ingestion-service     ← validates token, captures headers + payload
-        │
-        ▼  HTTP (direct)
-  processing-service    ← normalises to WebhookEvent, writes to PostgreSQL
-        │                  emits NOTIFY via pg_notify
-        ▼
-    PostgreSQL           ← source of truth for all events
-        │
-        ▼  LISTEN (pg_notify)
-  realtime-gateway      ← broadcasts WebSocket events to connected clients
-        │
-        ▼  WebSocket
-  Angular Dashboard     ← live event stream, timeline, metrics
+Browser (Angular :4200)
+    |  WebSocket (Socket.IO)
+    +-----------------------------------------+
+                                              |
+Twilio -POST-> ingestion-service:3001 -HTTP-> processing-service:3003
+               rate-limit · capture            |
+                                         normalise + INSERT
+                                              |
+                                       PostgreSQL:5432
+                                              |
+                                         pg_notify
+                                              |
+                                  realtime-gateway:3004
+                                  Socket.IO · Redis fanout
 ```
 
-**No Kafka. No ClickHouse. No Prometheus stack.** Just PostgreSQL, Redis, and Node.js services.
+| Container | Port | Role |
+|---|---|---|
+| `frontend` | 4200 | Angular dashboard (nginx) |
+| `ingestion-service` | 3001 | Webhook receiver — all traffic enters here |
+| `processing-service` | 3003 | Normalisation, persistence, workspace API |
+| `realtime-gateway` | 3004 | WebSocket server + Redis pub/sub |
+| `postgres` | 5432 | Primary event store |
+| `redis` | 6379 | Rate limiting + multi-instance broadcast |
 
 ---
 
-## Available Commands
+## Quick start
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) or Docker Engine + Compose plugin (Linux)
+- Ports **3001, 3003, 3004, 4200, 5432, 6379** available locally
+
+### 1. Clone and start
 
 ```bash
-# Infrastructure
-npm run infra:up          # Start PostgreSQL + Redis
-npm run infra:down        # Stop infrastructure
-npm run infra:reset       # Stop and remove all volumes
-npm run infra:logs        # Tail infrastructure logs
+git clone https://github.com/FelipeBastosxj/eventstream-observability-engine.git
+cd eventstream-observability-engine
 
-# Services (Docker)
-npm run services:up       # Build + start all services
-npm run services:down     # Stop all services
-npm run services:build    # Rebuild service images
-npm run services:logs     # Tail service logs
+cp .env.example .env        # defaults work out of the box
 
-# Services (local dev)
-npm run services:ingestion   # Start ingestion-service  (:3001)
-npm run services:processing  # Start processing-service (:3003)
-npm run services:gateway     # Start realtime-gateway   (:3004)
+npm run up                  # builds Docker images and starts all services
+```
 
-# Frontend
-npm run frontend          # Start Angular dashboard (:4200)
-npm run frontend:build    # Build Angular for production
+> First run builds Docker images — allow **2–3 minutes**.
 
-# Build / Lint / Test
-npm run build             # Build all packages
-npm run lint              # Lint all packages
-npm run test              # Run all tests
+### 2. Open the dashboard
 
-# Utilities
-npm run env               # Copy .env.example → .env
-npm run reset             # Full reset (stop + remove volumes)
-npm run help              # List all available commands
+Navigate to **http://localhost:4200**.
+
+The app provisions a workspace on first visit and shows your webhook URL in the header banner.
+
+### 3. Expose to the internet (Twilio testing)
+
+Run from a **WSL** or Linux terminal:
+
+```bash
+bash expose.sh
+```
+
+Downloads [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) and creates a free HTTPS tunnel to port 3001. Copy the printed URL.
+
+> The tunnel URL changes every restart. Update Twilio accordingly.
+
+### 4. Configure Twilio
+
+In [console.twilio.com](https://console.twilio.com) → **Phone Numbers → Active Numbers → your number → Messaging**:
+
+| Field | Value |
+|---|---|
+| A message comes in | `https://<tunnel-url>/<workspaceId>/<token>` |
+| HTTP method | `HTTP POST` |
+| Message Status Callback | same URL |
+
+Send an SMS to your Twilio number — event appears in the dashboard in ~1 second.
+
+---
+
+## npm scripts
+
+| Script | Description |
+|---|---|
+| `npm run up` | Build images and start all services in background |
+| `npm run down` | Stop and remove containers |
+| `npm run logs` | Tail logs for all services |
+| `npm run restart` | Full rebuild and restart |
+
+---
+
+## Health checks
+
+```bash
+curl http://localhost:3001/health   # { "status": "ok", "uptimeSeconds": N }
+curl http://localhost:3003/health
+curl http://localhost:3004/health
 ```
 
 ---
 
-## WebhookEvent Model
+## Supported Twilio events
 
-```typescript
-interface WebhookEvent {
-  id:           string;              // UUID v4 — server-assigned
-  workspaceId:  string;              // Which workspace received it
-  provider:     'twilio' | string;   // Telecom provider
-  eventType:    string;              // e.g. 'message.inbound', 'call.status.completed'
-  receivedAt:   Date;                // UTC timestamp at HTTP layer
+| Event | `eventType` |
+|---|---|
+| Inbound SMS / WhatsApp | `message.inbound` |
+| Delivery status (sent, delivered, failed, …) | `message.status.<status>` |
+| Inbound call | `call.inbound` |
+| Outbound call | `call.outbound` |
+| Call status | `call.status.<status>` |
 
-  headers: Record<string, string>;   // All HTTP request headers
-  payload: Record<string, unknown>;  // Full parsed request body
+---
 
-  // Extracted telecom fields (indexed for filtering)
-  messageSid?:  string;
-  callSid?:     string;
-  from?:        string;              // E.164 origin number
-  to?:          string;              // E.164 destination number
-  status?:      string;              // Delivery / call status
-}
+## Project layout
+
+```
+services/
+  ingestion-service/   # HTTP receiver
+  processing-service/  # Normalisation, persistence, workspace API
+  realtime-gateway/    # Socket.IO + Redis fanout
+
+shared/
+  contracts/           # TypeScript interfaces
+  utils/               # Logger, UUID, correlation ID, backoff
+
+frontend/
+  angular-dashboard/   # Angular 17 standalone SPA
+
+infra/
+  docker-compose.yml
+  postgres/init.sql
+  nginx/angular.conf
 ```
 
 ---
 
-## Provider Support
-
-| Provider | SMS | Voice | Status Callbacks |
-|---|---|---|---|
-| Twilio | ✅ | ✅ | ✅ |
-| Vonage | 🔜 Phase 2 | 🔜 Phase 2 | 🔜 Phase 2 |
-| MessageBird | 🔜 Phase 2 | - | 🔜 Phase 2 |
-| Infobip | 🔜 Phase 2 | - | 🔜 Phase 2 |
-| Plivo | 🔜 Phase 2 | 🔜 Phase 2 | 🔜 Phase 2 |
-
----
-
-## Documentation
+## Docs
 
 | Document | Description |
 |---|---|
-| [docs/getting-started.md](./docs/getting-started.md) | Detailed setup guide |
-| [docs/architecture.md](./docs/architecture.md) | Architecture decisions |
-| [docs/event-model.md](./docs/event-model.md) | WebhookEvent model reference |
-| [docs/integrations.md](./docs/integrations.md) | Provider integration guides |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) | How to contribute |
-| [ROADMAP.md](./ROADMAP.md) | Phased delivery plan |
-
----
-
-## Contributing
-
-Contributions are very welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for workflow, standards, and the definition of done.
-
-Good first issues are labelled [`good first issue`](https://github.com/FelipeBastosxj/open-telecom-webhook-observability/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
+| [Architecture](docs/architecture.md) | Service design, data flow, module breakdown |
+| [Event model](docs/event-model.md) | `WebhookEvent` interface + Twilio field mapping |
+| [Getting started](docs/getting-started.md) | Detailed setup + Twilio configuration |
+| [Integrations](docs/integrations.md) | Adding a new provider normaliser |
+| [Contributing](CONTRIBUTING.md) | Development workflow and standards |
+| [Roadmap](ROADMAP.md) | Planned features by phase |
 
 ---
 
 ## License
 
-[MIT](LICENSE)
-
+MIT — see [LICENSE](LICENSE).

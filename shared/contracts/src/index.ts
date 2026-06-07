@@ -8,10 +8,16 @@ export {
   WebhookEventSummary,
   TelecomProvider,
   TelecomEventType,
+  TelecomChannel,
 } from './webhook-event.interface';
 
-// Twilio-specific provider payloads (used by normalisation layer)
+// Workspace entity
+export { Workspace } from './workspace.interface';
+
+// Twilio-specific provider payloads (used by the normalisation layer)
 export {
   TwilioWebhookPayload,
   TwilioMessageStatus,
+  TwilioCallStatus,
+  TwilioCallDirection,
 } from './provider-payloads';

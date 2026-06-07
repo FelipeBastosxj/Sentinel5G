@@ -1,155 +1,174 @@
-# Getting Started
-
-This guide walks you through running **Open Telecom Webhook Observability** locally
-from scratch, including receiving your first Twilio webhook.
-
----
+# Getting started
 
 ## Prerequisites
 
-| Tool | Version | Notes |
-|---|---|---|
-| Docker | >= 27.x | Required |
-| Docker Compose | >= 2.x | Required |
-| Node.js | >= 22.x | Dev only |
-| npm | >= 10.x | Dev only |
+| Requirement | Notes |
+|---|---|
+| Docker Desktop (Windows/macOS) or Docker Engine + Compose plugin (Linux) | Docker 24+ recommended |
+| Git | Any recent version |
+
+> Node.js is **not** required on your host machine — everything runs inside Docker.
 
 ---
 
-## Step 1 — Clone and configure
+## 1. Clone the repository
 
 ```bash
-git clone https://github.com/FelipeBastosxj/open-telecom-webhook-observability.git
-cd open-telecom-webhook-observability
+git clone https://github.com/FelipeBastosxj/eventstream-observability-engine.git
+cd eventstream-observability-engine
+```
 
+---
+
+## 2. Configure environment
+
+```bash
 cp .env.example .env
 ```
 
-The default `.env.example` values work out-of-the-box for local development.
-Only set `TWILIO_AUTH_TOKEN` if you want signature validation enabled.
+Defaults work out of the box. You only need to change values if you want different ports or credentials.
+
+Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `POSTGRES_PASSWORD` | `webhook_pass` | PostgreSQL password |
+| `INGESTION_PORT` | `3001` | Public webhook receiver port |
+| `PROCESSING_PORT` | `3003` | Processing API port |
+| `GATEWAY_PORT` | `3004` | WebSocket gateway port |
+| `FRONTEND_PORT` | `4200` | Angular dashboard port |
 
 ---
 
-## Step 2 — Start the infrastructure
+## 3. Start all services
 
 ```bash
-npm run infra:up
+npm run up
 ```
 
-This starts **PostgreSQL** (port 5432) and **Redis** (port 6379).
+This runs `docker compose --profile services up -d --build`.
 
-Verify:
+First run: Docker builds images — allow **2–3 minutes**.
+
+### Verify containers are healthy
 
 ```bash
 docker ps
-# telecom-webhook-postgres   Up
-# telecom-webhook-redis      Up
 ```
 
-The PostgreSQL schema is applied automatically via `infra/postgres/init.sql`
-on first start. A default local-dev workspace is seeded with:
+All six containers must show `(healthy)`:
 
-- **Workspace ID:** `a0000000-0000-0000-0000-000000000001`
-- **Endpoint Token:** `dev-token-local-001`
+```
+telecom-webhook-frontend    Up (healthy)
+telecom-webhook-ingestion   Up (healthy)
+telecom-webhook-processing  Up (healthy)
+telecom-webhook-gateway     Up (healthy)
+telecom-webhook-postgres    Up (healthy)
+telecom-webhook-redis       Up (healthy)
+```
 
 ---
 
-## Step 3 — Start the services
+## 4. Open the dashboard
 
-```bash
-npm run services:up
-```
+Navigate to **http://localhost:4200**.
 
-This builds Docker images and starts all three backend services.
-
-Wait for the health checks to pass (~30 s), then verify:
-
-```bash
-curl http://localhost:3001/health   # ingestion-service
-curl http://localhost:3003/health   # processing-service
-curl http://localhost:3004/health   # realtime-gateway
-```
-
-All should return `{"status":"ok"}`.
+On first visit the app:
+1. Generates a random UUID as your `endpointToken`, stored in `localStorage`
+2. Calls `POST /workspace/auto` on the processing-service to provision a workspace
+3. Shows your webhook URL: `http://localhost:3001/{workspaceId}/{token}`
 
 ---
 
-## Step 4 — Start the frontend
+## 5. Expose your webhook to the internet
+
+Twilio requires a public HTTPS URL. Use `cloudflared` (free, no account required):
+
+**Windows — run from WSL:**
 
 ```bash
-npm run frontend
+bash expose.sh
 ```
 
-Open [http://localhost:4200](http://localhost:4200).
+**macOS / Linux:**
+
+```bash
+bash expose.sh
+```
+
+The script downloads the cloudflared binary if not present, then runs:
+
+```
+cloudflared tunnel --url http://localhost:3001
+```
+
+It prints a URL like `https://example.trycloudflare.com`. Keep the terminal open.
+
+> The tunnel URL changes on every restart. Update Twilio when you restart.
 
 ---
 
-## Step 5 — Send your first webhook
+## 6. Configure Twilio
 
-### Option A — Simulate a Twilio webhook locally
+1. Go to [console.twilio.com](https://console.twilio.com)
+2. **Phone Numbers → Manage → Active Numbers → your number**
+3. **Messaging → A message comes in:**
+   - URL: `https://<tunnel-url>/<workspaceId>/<token>`
+   - Method: `HTTP POST`
+4. Optionally set the same URL as **Status Callback URL** for delivery events
+
+> Copy `<workspaceId>` and `<token>` from the webhook URL shown in the dashboard header.
+
+---
+
+## 7. Test it
+
+Send an SMS to your Twilio phone number. The event appears in the dashboard at **http://localhost:4200** within ~1 second.
+
+Or test with curl:
 
 ```bash
-# Incoming SMS
-curl -X POST "http://localhost:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001" \
+curl -X POST "http://localhost:3001/<workspaceId>/<token>" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "MessageSid=SM123&From=%2B15017122661&To=%2B14155552671&Body=Hello+World&NumMedia=0"
-```
-
-```bash
-# Message delivered callback
-curl -X POST "http://localhost:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "MessageSid=SM123&MessageStatus=delivered&To=%2B14155552671&From=%2B15017122661"
-```
-
-Check the dashboard — events should appear in the live list within seconds.
-
-### Option B — Connect your real Twilio account
-
-1. In your Twilio Console, set the **Status Callback URL** (or *A Message Comes In*) to:
-   ```
-   https://<your-public-host>:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001
-   ```
-2. Use [ngrok](https://ngrok.com) or similar to expose your local port 3001 publicly:
-   ```bash
-   ngrok http 3001
-   ```
-3. Set `TWILIO_AUTH_TOKEN` in `.env` and restart the services to enable signature validation.
-
----
-
-## Running in Development Mode (no Docker for services)
-
-If you prefer to run the services directly with Node.js (hot reload):
-
-```bash
-# Terminal 1 — infrastructure only
-npm run infra:up
-
-# Terminal 2
-npm run services:ingestion   # :3001
-
-# Terminal 3
-npm run services:processing  # :3003
-
-# Terminal 4
-npm run services:gateway     # :3004
-
-# Terminal 5
-npm run frontend             # :4200
+  -H "x-twilio-signature: test" \
+  -d "MessageSid=SM123&From=%2B15551234567&To=%2B15559876543&Body=Hello&AccountSid=AC000"
 ```
 
 ---
 
-## Stopping Everything
+## Useful commands
 
 ```bash
-npm run services:down   # Stop app services
-npm run infra:down      # Stop PostgreSQL + Redis
+npm run logs                              # tail all service logs
+docker logs -f telecom-webhook-ingestion  # single service
+npm run down                              # stop containers
+npm run down -- -v                        # full reset (clears DB)
+npm run restart                           # rebuild + restart
 ```
 
-Full reset (removes all data):
+---
+
+## Troubleshooting
+
+### Container stuck in `(starting)` or `(unhealthy)`
 
 ```bash
-npm run reset
+docker logs telecom-webhook-processing
 ```
+
+Common causes: `DATABASE_URL` misconfigured, or PostgreSQL not ready yet — wait 10 s.
+
+### `POST /workspace/auto` returns 500
+
+```bash
+docker logs telecom-webhook-processing
+docker logs telecom-webhook-postgres
+```
+
+### Dashboard shows `localhost:3001` in the webhook URL
+
+Expected — the Angular build hardcodes `localhost:3001`. Replace it manually with your cloudflare tunnel URL when configuring Twilio.
+
+### cloudflared shows 502 Bad Gateway (Windows)
+
+Run `expose.sh` from **WSL**, not from PowerShell or CMD. Docker containers are reachable from WSL but not from the Windows network stack directly.

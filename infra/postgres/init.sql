@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
     -- Provider metadata
     provider       TEXT        NOT NULL DEFAULT 'twilio',  -- 'twilio' | 'vonage' | …
     event_type     TEXT        NOT NULL,                   -- 'message.received' | 'message.status' | …
+    channel        TEXT,                                   -- 'sms' | 'whatsapp' | 'voice' | 'other'
 
     -- Telecom-specific identifiers (nullable — depends on event type)
     message_sid    TEXT,
@@ -51,6 +52,11 @@ CREATE TABLE IF NOT EXISTS webhook_events (
     processed_at   TIMESTAMPTZ,
     processing_ms  INTEGER                          -- wall-clock processing time
 );
+
+-- Backfill / forward compatibility: ensure the channel column exists on
+-- pre-existing databases that were created before the column was added.
+ALTER TABLE webhook_events
+    ADD COLUMN IF NOT EXISTS channel TEXT;
 
 -- ---------------------------------------------------------------------------
 -- Indexes — common query patterns
@@ -83,6 +89,10 @@ CREATE INDEX IF NOT EXISTS idx_webhook_events_to_number
 CREATE INDEX IF NOT EXISTS idx_webhook_events_status
     ON webhook_events (status)
     WHERE status IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_webhook_events_channel
+    ON webhook_events (channel)
+    WHERE channel IS NOT NULL;
 
 -- GIN index for full-text search inside payload
 CREATE INDEX IF NOT EXISTS idx_webhook_events_payload_gin

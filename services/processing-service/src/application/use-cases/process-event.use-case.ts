@@ -38,15 +38,16 @@ export class ProcessEventUseCase {
     try {
       await this.db.query(
         `INSERT INTO webhook_events (
-           id, workspace_id, provider, event_type,
+           id, workspace_id, provider, event_type, channel,
            message_sid, call_sid, from_number, to_number, status,
            request_headers, request_payload, received_at, processed_at, processing_ms
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),$13)`,
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),$14)`,
         [
           event.id,
           event.workspaceId,
           event.provider,
           event.eventType,
+          event.channel ?? null,
           event.messageSid ?? null,
           event.callSid ?? null,
           event.from ?? null,
@@ -64,7 +65,10 @@ export class ProcessEventUseCase {
         workspaceId: event.workspaceId,
         provider: event.provider,
         eventType: event.eventType,
+        channel: event.channel,
         receivedAt: event.receivedAt,
+        messageSid: event.messageSid,
+        callSid: event.callSid,
         from: event.from,
         to: event.to,
         status: event.status,
@@ -87,19 +91,50 @@ export class ProcessEventUseCase {
       body: cmd.body,
       receivedAt: cmd.receivedAt,
     };
-    switch (cmd.provider) {
+
+    // Defence in depth: even if upstream marked the provider as 'unknown'
+    // (e.g. signature header stripped by a proxy), inspect the body shape
+    // and route to a known normaliser when possible.
+    const resolvedProvider = this.resolveProvider(cmd.provider, cmd.body);
+
+    switch (resolvedProvider) {
       case 'twilio':
         return this.twilio.normalize(id, capture);
       default:
         return {
           id,
           workspaceId: cmd.workspaceId,
-          provider: cmd.provider as WebhookEvent['provider'],
+          provider: 'unknown',
           eventType: 'unknown',
+          channel: 'other',
           receivedAt: cmd.receivedAt,
           headers: cmd.headers,
           payload: cmd.body,
         };
     }
+  }
+
+  private resolveProvider(
+    declared: string,
+    body: Record<string, unknown>,
+  ): string {
+    if (declared && declared !== 'unknown') return declared;
+    if (!body || typeof body !== 'object') return declared;
+
+    // Twilio body shape
+    if (
+      typeof body['MessageSid'] === 'string' ||
+      typeof body['CallSid'] === 'string' ||
+      typeof body['SmsSid'] === 'string' ||
+      typeof body['SmsMessageSid'] === 'string'
+    ) {
+      return 'twilio';
+    }
+    const accountSid = body['AccountSid'];
+    if (typeof accountSid === 'string' && accountSid.startsWith('AC')) {
+      return 'twilio';
+    }
+
+    return declared;
   }
 }

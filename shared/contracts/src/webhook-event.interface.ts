@@ -1,8 +1,27 @@
 /**
  * Supported telecom webhook providers.
- * Extend this union as new providers are added.
+ *
+ * `'unknown'` is used when a webhook arrives without any recognisable
+ * provider signature (neither header nor body fields). The event is still
+ * persisted with the raw payload for debugging.
  */
-export type TelecomProvider = 'twilio' | 'vonage' | 'messagebird' | 'infobip' | 'plivo';
+export type TelecomProvider =
+  | 'twilio'
+  | 'vonage'
+  | 'messagebird'
+  | 'infobip'
+  | 'plivo'
+  | 'unknown';
+
+/**
+ * Logical messaging channel inferred from the provider payload.
+ *
+ *  - 'sms'      — short message service (default for any message-shaped payload)
+ *  - 'whatsapp' — Twilio WhatsApp business API (From/To prefixed with 'whatsapp:')
+ *  - 'voice'    — call control (presence of CallSid)
+ *  - 'other'    — none of the above (e.g. provider verification ping, generic webhook)
+ */
+export type TelecomChannel = 'sms' | 'whatsapp' | 'voice' | 'other';
 
 /**
  * High-level event categories for telecom webhooks.
@@ -55,6 +74,9 @@ export interface WebhookEvent {
   /** Normalised event type. */
   readonly eventType: TelecomEventType;
 
+  /** Logical messaging channel (sms, whatsapp, voice, other). */
+  readonly channel?: TelecomChannel;
+
   /** UTC timestamp when the HTTP request was received. */
   readonly receivedAt: Date;
 
@@ -100,6 +122,7 @@ export type WebhookEventSummary = Pick<
   | 'workspaceId'
   | 'provider'
   | 'eventType'
+  | 'channel'
   | 'receivedAt'
   | 'messageSid'
   | 'callSid'

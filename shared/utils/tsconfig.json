@@ -4,11 +4,7 @@
     "module": "commonjs",
     "outDir": "./dist",
     "baseUrl": "./",
-    "types": ["node", "jest"],
-    "paths": {
-      "@eventstream/contracts": ["../contracts/src"],
-      "@eventstream/contracts/*": ["../contracts/src/*"]
-    }
+    "types": ["node", "jest"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
