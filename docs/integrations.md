@@ -1,132 +1,122 @@
-# Provider Integrations Guide
+# Integrations
 
-This document describes how each supported telecom provider sends webhooks to the platform,
-how signatures are validated, and how to add a new provider.
+## Currently supported
 
----
+### Twilio
 
-## How it Works
+All Twilio SMS, WhatsApp, and Voice webhooks are supported.
 
-Every provider delivers webhooks to the **ingestion endpoint**:
+**Provider detection:** Request contains `x-twilio-signature` header.
 
-```
-POST /:workspaceId/:endpointToken
-```
+#### SMS inbound
 
-The `ingestion-service` accepts and captures the request; the `processing-service` detects
-the provider, validates the signature, and normalises the body into a `WebhookEvent`.
+Twilio sends `application/x-www-form-urlencoded` to your webhook URL when a message arrives.
 
-```
-Provider  ──POST──►  ingestion-service  ──HTTP──►  processing-service  ──INSERT──►  PostgreSQL
-                     (capture)                      (normalise + validate)
-```
+Configure: **Twilio Console → Phone Numbers → your number → Messaging → A message comes in**
 
----
+Captured fields: `MessageSid`, `From`, `To`, `Body`, `NumMedia`, `NumSegments`, `AccountSid`
 
-## Provider Reference
+#### SMS delivery status callback
 
-### Twilio ✅ (Supported — Phase 1)
+Configure: **Messaging → Message Status Callback URL**
 
-**Events:** Incoming SMS/WhatsApp, message status callbacks, voice calls, voice status updates.
+Statuses: `queued`, `sending`, `sent`, `delivered`, `undelivered`, `failed`, `read`
 
-**Signature scheme:** HMAC-SHA1 over `fullUrl + sortedFormParams`, Base64-encoded.
+Legacy field aliases supported: `SmsStatus`, `SmsSid`, `SmsMessageSid`
 
-```
-X-Twilio-Signature: <base64(HMAC_SHA1(authToken, url + sortedParams))>
-```
+#### Voice call events
 
-**Configuration:**
+Configure: **Voice → A call comes in**
 
-```dotenv
-TWILIO_AUTH_TOKEN=your_twilio_auth_token
-```
-
-In development (`NODE_ENV !== production`), signature validation is skipped
-with a warning if `TWILIO_AUTH_TOKEN` is not set.
-
-**Twilio Dashboard Setup:**
-
-Point any of these to your ingestion endpoint:
-- SMS/WhatsApp → *A Message Comes In* callback
-- Voice → *A Call Comes In* callback
-- Messaging → *Status Callback URL*
-
-```
-http://<your-host>:3001/<workspaceId>/<endpointToken>
-```
+Statuses: `initiated`, `ringing`, `in-progress`, `completed`, `busy`, `no-answer`, `failed`
 
 ---
 
-### Vonage 🔜 (Phase 2)
+## Adding a new provider
 
-Not yet implemented.
-
-Normaliser target: `services/processing-service/src/normalizers/vonage.normalizer.ts`
-
-Signature scheme: HMAC-SHA256, header `X-Vonage-Signature`.
-
----
-
-### MessageBird 🔜 (Phase 2)
-
-Not yet implemented.
-
-Signature scheme: HMAC-SHA256, header `MessageBird-Signature-JWT`.
-
----
-
-### Infobip 🔜 (Phase 2)
-
-Not yet implemented.
-
-Signature scheme: Bearer token, header `Authorization`.
-
----
-
-### Plivo 🔜 (Phase 2)
-
-Not yet implemented.
-
-Signature scheme: HMAC-SHA256, header `X-Plivo-Signature-V2`.
-
----
-
-## Adding a New Provider
-
-1. **Add a normaliser** in `services/processing-service/src/normalizers/<provider>.normalizer.ts`:
+### 1. Add the payload interface to `shared/contracts`
 
 ```typescript
-import { WebhookEvent } from '@telecom-webhook/contracts';
-
-export function normalizeTwilio(
-  workspaceId: string,
-  headers: Record<string, string>,
-  body: Record<string, unknown>,
-): WebhookEvent {
-  return {
-    id: generateUUID(),
-    workspaceId,
-    provider: 'twilio',
-    eventType: detectEventType(body),
-    receivedAt: new Date(),
-    headers,
-    payload: body,
-    messageSid: body.MessageSid as string | undefined,
-    from: body.From as string | undefined,
-    to: body.To as string | undefined,
-    status: (body.MessageStatus ?? body.CallStatus) as string | undefined,
-  };
+// shared/contracts/src/provider-payloads/vonage.payload.ts
+export interface VonageInboundSmsPayload {
+  msisdn: string;
+  to: string;
+  messageId: string;
+  text: string;
+  'message-timestamp': string;
 }
 ```
 
-2. **Register the normaliser** in the provider registry:
-   `services/processing-service/src/normalizers/provider-registry.ts`
+Export it from `shared/contracts/src/provider-payloads/index.ts` and `shared/contracts/src/index.ts`.
 
-3. **Add signature validation** in:
-   `services/processing-service/src/validators/<provider>-signature.validator.ts`
+### 2. Create the normaliser in `processing-service`
 
-4. **Add to `TelecomProvider` union** in `shared/contracts/src/webhook-event.interface.ts`
+```typescript
+// services/processing-service/src/infrastructure/normalizers/vonage.normalizer.ts
+import { Injectable } from '@nestjs/common';
+import { WebhookEvent } from '@telecom-webhook/contracts';
 
-5. **Write unit tests** with a sample real payload from the provider's documentation.
+@Injectable()
+export class VonageNormalizer {
+  normalize(id: string, capture: {
+    workspaceId: string;
+    headers: Record<string, string>;
+    body: Record<string, unknown>;
+    receivedAt: Date;
+  }): WebhookEvent {
+    const body = capture.body as Record<string, string>;
+    return {
+      id,
+      workspaceId: capture.workspaceId,
+      provider: 'vonage',
+      eventType: 'message.inbound',
+      receivedAt: capture.receivedAt,
+      messageSid: body['messageId'],
+      from: body['msisdn'],
+      to: body['to'],
+      headers: capture.headers,
+      payload: capture.body,
+    };
+  }
+}
+```
 
-6. **Update this document** and the provider table in `README.md`.
+### 3. Register the normaliser in `processing.module.ts`
+
+```typescript
+providers: [TwilioNormalizer, VonageNormalizer, ProcessEventUseCase],
+```
+
+### 4. Add detection in `ingest-event.use-case.ts`
+
+```typescript
+private detectProvider(headers: Record<string, string>): string {
+  if (headers['x-twilio-signature'])      return 'twilio';
+  if (headers['x-vonage-signature'])      return 'vonage';   // add
+  if (headers['messagebird-signature-jwt']) return 'messagebird';
+  return 'unknown';
+}
+```
+
+### 5. Route to the new normaliser in `process-event.use-case.ts`
+
+```typescript
+switch (cmd.provider) {
+  case 'twilio': return this.twilio.normalize(id, capture);
+  case 'vonage': return this.vonage.normalize(id, capture);  // add
+  default:       return passthroughNormalize(id, cmd);
+}
+```
+
+---
+
+## Provider roadmap
+
+| Provider | Status |
+|---|---|
+| Twilio SMS + Voice | ✅ Supported |
+| Vonage SMS | 🔜 Phase 2 |
+| Vonage Voice | 🔜 Phase 2 |
+| MessageBird SMS | 🔜 Phase 2 |
+| Infobip | 🔜 Phase 2 |
+| Plivo | 🔜 Phase 2 |

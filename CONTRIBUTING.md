@@ -1,181 +1,121 @@
-# Contributing to Open Telecom Webhook Observability
+# Contributing
 
 Thank you for your interest in contributing!
 
-This project is **fully open source** (MIT) and designed to welcome community contributions from the start.
-
-Please read this document **and** [HARDNESS.md](./HARDNESS.md) before opening any Pull Request.
+This project is open source (MIT) and welcomes contributions at all levels — bug fixes, documentation, new provider normalisers, and frontend features.
 
 ---
 
-## Table of Contents
-
-- [Code of Conduct](#code-of-conduct)
-- [Getting Started](#getting-started)
-- [Development Workflow](#development-workflow)
-- [Branch Strategy](#branch-strategy)
-- [Commit Convention](#commit-convention)
-- [Pull Request Process](#pull-request-process)
-- [Engineering Standards](#engineering-standards)
-- [Definition of Done](#definition-of-done)
-- [Good First Issues](#good-first-issues)
-
----
-
-## Code of Conduct
-
-Be respectful, constructive, and professional in all interactions.
-
----
-
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- Node.js 22+
-- npm 10+
+- Docker Desktop (or Docker Engine + Compose plugin)
+- Node.js 22+ and npm 10+ (for running tests locally)
+- Git
 
 ### Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/FelipeBastosxj/open-telecom-webhook-observability.git
-cd open-telecom-webhook-observability
-
-# Copy environment variables
+git clone https://github.com/FelipeBastosxj/eventstream-observability-engine.git
+cd eventstream-observability-engine
+npm install
 cp .env.example .env
-
-# Start infrastructure (PostgreSQL + Redis)
-npm run infra:up
-
-# Start all services
-npm run services:up
+npm run up
 ```
 
 ---
 
-## Development Workflow
+## Development workflow
+
+### Run tests
 
 ```bash
-# Run all tests
-npm run test
+npm test --workspaces           # all workspaces
+npm test --workspace=services/ingestion-service  # single service
+```
 
-# View service logs
-npm run services:logs
+### Run services locally (without Docker)
 
-# Stop all services
-npm run services:down
+Start only infrastructure via Docker, then run services directly:
 
-# Reset environment (removes volumes)
-npm run reset
+```bash
+docker compose -f infra/docker-compose.yml up -d postgres redis
+
+DATABASE_URL=postgresql://webhook_user:webhook_pass@localhost:5432/telecom_webhooks \
+PROCESSING_BASE_URL=http://localhost:3003 \
+npm run start:dev --workspace=services/ingestion-service
 ```
 
 ---
 
-## Branch Strategy
+## Branch strategy
 
 | Branch | Purpose |
-|--------|---------|
-| `main` | Stable production-ready code |
-| `dev` | Active development integration branch |
-| `feat/*` | New features |
-| `fix/*` | Bug fixes |
-| `chore/*` | Maintenance, tooling, dependencies |
-| `docs/*` | Documentation only changes |
-
-All Pull Requests must target the `dev` branch.
-
-`main` is updated only via release merges from `dev`.
+|---|---|
+| `main` | Stable released code |
+| `dev` | Active development |
+| `feature/<name>` | Feature branches off `dev` |
+| `fix/<name>` | Bug fixes off `dev` |
 
 ---
 
-## Commit Convention
+## Commit convention
 
-This project uses [Conventional Commits](https://www.conventionalcommits.org/).
-
-### Format
+[Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-<type>(<scope>): <description>
-```
-
-### Types
-
-| Type | When to Use |
-|------|------------|
-| `feat` | A new feature |
-| `fix` | A bug fix |
-| `docs` | Documentation only changes |
-| `chore` | Build process, tooling, dependencies |
-| `test` | Adding or updating tests |
-| `refactor` | Code change that neither fixes a bug nor adds a feature |
-| `perf` | Performance improvement |
-| `ci` | CI/CD configuration changes |
-
-### Examples
-
-```bash
-feat(ingestion-service): add Twilio signature validation
-fix(processing-service): handle null MessageSid on status callback
-docs(readme): update quick start for PostgreSQL setup
-chore(infra): upgrade postgres image to 16-alpine
-test(ingestion-service): add unit tests for Twilio normaliser
-feat(provider): add Vonage SMS webhook support
+feat: add Vonage SMS normaliser
+fix: handle SmsStatus alias in Twilio normaliser
+docs: update getting-started guide
+chore: remove unused files
+test: fix IngestEventUseCase spec
 ```
 
 ---
 
-## Pull Request Process
+## Pull request process
 
-1. Fork the repository or create a feature branch from `dev`
-2. Implement your changes following the [Engineering Standards](#engineering-standards)
-3. Ensure all tests pass: `npm run test`
-4. Update documentation if required
-5. Fill in the Pull Request template completely
-6. Request a review
-
-Pull Requests that do not comply with `HARDNESS.md` will be closed without merge.
+1. Fork the repository and branch off `dev`
+2. Make changes with tests
+3. Run `npm test --workspaces` — all tests must pass
+4. Open a PR against `dev` with a clear description
+5. Address review comments
+6. Squash and merge
 
 ---
 
-## Engineering Standards
+## Engineering standards
 
-All contributions must comply with the rules defined in [HARDNESS.md](./HARDNESS.md).
+### Architecture rules
 
-Key non-negotiable rules:
+- **No message broker in the MVP** — services communicate via direct HTTP. `pg_notify` handles real-time fanout.
+- **Clean Architecture** — use cases depend only on port interfaces, never on infrastructure.
+- **No ORM** — raw `pg.Client` for all database access.
+- **Thin controllers** — controllers only extract HTTP primitives and delegate to use cases.
 
-- **Webhook-First** — all business flows start from an inbound HTTP webhook
-- **PostgreSQL as source of truth** — no in-memory state, no external event buses in MVP
-- **WebhookEvent Model** — all payloads normalised to `WebhookEvent` before persistence
-- **Stateless Services** — no local persistent state in services
-- **Clean Architecture** — strict layer separation (Controller → Application → Domain → Infrastructure)
-- **No business logic in controllers**
-- **No framework dependencies in domain layer**
-- **Input validation** — every inbound payload must be validated
+### Code standards
 
----
+- Structured JSON logs only — use `AppLoggerService`, never `console.log`
+- Every service exposes `GET /health`
+- New providers require: payload interface in `@telecom-webhook/contracts`, a normaliser class, and unit tests
 
-## Definition of Done
+### Where things belong
 
-A contribution is considered complete when:
-
-- [ ] Architecture rules from `HARDNESS.md` are respected
-- [ ] Unit tests are present and passing
-- [ ] PostgreSQL schema changes include a migration or updated `init.sql`
-- [ ] New provider integrations include a normaliser and test payload
-- [ ] Docker Compose environment starts and works correctly
-- [ ] Documentation is updated (README, inline comments, or dedicated doc)
-- [ ] CHANGELOG.md is updated under `[Unreleased]`
-- [ ] No linting errors
+| Concern | Location |
+|---|---|
+| HTTP handling | Controller |
+| Business logic | Use case |
+| External I/O (DB, HTTP, Redis) | Adapter (infrastructure layer) |
+| Shared types | `@telecom-webhook/contracts` |
+| Shared helpers | `@telecom-webhook/utils` |
 
 ---
 
-## Good First Issues
+## Good first issues
 
-Look for issues labelled:
-
-- `good first issue` — well-scoped tasks for new contributors
-- `help wanted` — tasks where community input is especially welcome
-- `provider:vonage`, `provider:messagebird` etc. — new provider integrations
-
+- Add a new provider normaliser (Vonage, MessageBird, Infobip)
+- Add `GET /timelines/:messageSid` for conversation view
+- Add event search/filter to the Angular events page
+- Write E2E tests for the webhook ingestion flow
+- Add JWT authentication for the workspace API

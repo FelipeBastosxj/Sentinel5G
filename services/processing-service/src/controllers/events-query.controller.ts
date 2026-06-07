@@ -12,6 +12,7 @@ import { DATABASE_CLIENT } from '../infrastructure/database/database.module';
  *
  * GET /events/recent?limit=100
  * GET /events/workspace/:workspaceId?limit=50
+ * GET /events/:id
  */
 @Controller('events')
 export class EventsQueryController {
@@ -24,6 +25,7 @@ export class EventsQueryController {
     const n = Math.min(Number(limit ?? 100), 500);
     const { rows } = await this.db.query<WebhookEvent>(
       `SELECT id, workspace_id AS "workspaceId", provider, event_type AS "eventType",
+              channel,
               received_at AS "receivedAt", request_headers AS headers,
               request_payload AS payload, message_sid AS "messageSid",
               call_sid AS "callSid", from_number AS "from", to_number AS "to",
@@ -44,6 +46,7 @@ export class EventsQueryController {
     const n = Math.min(Number(limit ?? 100), 500);
     const { rows } = await this.db.query<WebhookEvent>(
       `SELECT id, workspace_id AS "workspaceId", provider, event_type AS "eventType",
+              channel,
               received_at AS "receivedAt", request_headers AS headers,
               request_payload AS payload, message_sid AS "messageSid",
               call_sid AS "callSid", from_number AS "from", to_number AS "to",
@@ -55,6 +58,24 @@ export class EventsQueryController {
       [workspaceId, n],
     );
     return rows;
+  }
+
+  /** Must be declared last — dynamic segment would match 'recent' / 'workspace' otherwise. */
+  @Get(':id')
+  async findById(@Param('id') id: string): Promise<WebhookEvent | null> {
+    const { rows } = await this.db.query<WebhookEvent>(
+      `SELECT id, workspace_id AS "workspaceId", provider, event_type AS "eventType",
+              channel,
+              received_at AS "receivedAt", request_headers AS headers,
+              request_payload AS payload, message_sid AS "messageSid",
+              call_sid AS "callSid", from_number AS "from", to_number AS "to",
+              status, processed_at AS "processedAt", processing_ms AS "processingMs"
+       FROM webhook_events
+       WHERE id = $1
+       LIMIT 1`,
+      [id],
+    );
+    return rows[0] ?? null;
   }
 }
 

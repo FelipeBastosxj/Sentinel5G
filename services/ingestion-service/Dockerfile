@@ -13,7 +13,7 @@ RUN npm install \
       --workspace=services/ingestion-service \
       --include=dev \
       --ignore-scripts && \
-    npm install --ignore-scripts zod @nestjs/throttler @nestjs/config
+    npm install --ignore-scripts zod @nestjs/throttler @nestjs/config express
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 FROM node:22-alpine AS build

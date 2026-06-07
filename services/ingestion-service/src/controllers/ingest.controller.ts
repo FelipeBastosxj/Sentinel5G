@@ -13,10 +13,11 @@ import { IngestEventUseCase } from '../application/use-cases/ingest-event.use-ca
 /**
  * HTTP entry point for all inbound webhook providers.
  *
- * Endpoint: POST /:workspaceId/:endpointToken
+ * Endpoint: ANY /:workspaceId/:endpointToken
  *
- * Stays thin (HARDNESS §6): token validation, header capture, and body
- * capture are delegated to the use case.
+ * Captures the HTTP method and original URL as synthetic `x-original-*`
+ * headers so that downstream debugging shows the exact request shape,
+ * even when the body is empty or the content-type is unexpected.
  */
 @Controller(':workspaceId/:endpointToken')
 export class IngestController {
@@ -29,12 +30,18 @@ export class IngestController {
     @Param('workspaceId') workspaceId: string,
     @Req() req: Request,
   ): Promise<{ accepted: true }> {
-    const headers = Object.fromEntries(
+    const headers: Record<string, string> = Object.fromEntries(
       Object.entries(req.headers).map(([k, v]) => [
         k.toLowerCase(),
         Array.isArray(v) ? v.join(', ') : (v ?? ''),
       ]),
     );
+
+    // Synthetic headers — make HTTP method + URL visible to normalisers
+    // and to the dashboard, since req.body alone can be ambiguous.
+    headers['x-original-method'] = req.method;
+    headers['x-original-url'] = req.originalUrl;
+    headers['x-client-ip'] = req.ip ?? '';
 
     await this.ingestEvent.execute({
       workspaceId,

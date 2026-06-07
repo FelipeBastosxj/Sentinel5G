@@ -3,6 +3,9 @@ import { Routes } from '@angular/router';
 /**
  * Top-level routes — every feature is lazy-loaded as a standalone route file.
  * Feature-based architecture (HARDNESS §7).
+ *
+ * Note: the historical `/metrics` route was absorbed into `/events`, which is
+ * now a multi-chart metrics dashboard.
  */
 export const APP_ROUTES: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
@@ -15,11 +18,6 @@ export const APP_ROUTES: Routes = [
     path: 'events',
     loadChildren: () =>
       import('./features/events/events.routes').then((m) => m.EVENTS_ROUTES),
-  },
-  {
-    path: 'metrics',
-    loadChildren: () =>
-      import('./features/metrics/metrics.routes').then((m) => m.METRICS_ROUTES),
   },
   {
     path: 'integrations',

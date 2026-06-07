@@ -1,168 +1,221 @@
 # Architecture
 
-This document describes the architecture of **Open Telecom Webhook Observability**.
+## Overview
 
----
-
-## Design Philosophy
-
-**Simple by default. Scalable by choice.**
-
-The MVP uses the simplest stack that can deliver the full feature set:
-
-- **PostgreSQL** as the single source of truth
-- **Redis** for rate limiting and real-time pub/sub fanout
-- **WebSockets** for live event delivery to the browser
-- No Kafka, no ClickHouse, no distributed tracing stack in the base setup
-
-Complexity (Kafka, multi-region ingestion, etc.) is deferred to Phase 5 when actual scale demands it.
-
----
-
-## System Overview
+Three NestJS microservices communicate via direct HTTP and PostgreSQL notify. No message broker — events flow synchronously through ingestion → processing, then fan out to WebSocket clients via `pg_notify` + Redis pub/sub.
 
 ```
-Telecom Providers (Twilio, Vonage, ...)
-        │
-        ▼  POST /:workspaceId/:endpointToken
-┌──────────────────────┐
-│  ingestion-service   │  Token validation · header + body capture · rate limiting
-└──────────────────────┘
-        │  HTTP POST (sync, internal)
-        ▼
-┌──────────────────────┐
-│ processing-service   │  Provider normalisation → WebhookEvent · PostgreSQL write
-└──────────────────────┘  pg_notify('webhook_events', event_id)
-        │
-        ▼
-┌──────────────────────┐
-│     PostgreSQL       │  Source of truth: workspaces, webhook_events, event_timelines
-└──────────────────────┘
-        │  LISTEN 'webhook_events'
-        ▼
-┌──────────────────────┐
-│  realtime-gateway    │  WebSocket server · broadcasts new events to subscribed clients
-└──────────────────────┘
-        │  WebSocket
-        ▼
-┌──────────────────────┐
-│  Angular Dashboard   │  Live inspector · timeline · metrics · search
-└──────────────────────┘
+Browser (Angular :4200)
+    |  WebSocket (Socket.IO)                |  REST
+    +---------------------------------------+---------------------------+
+                                                                        |
+Twilio -POST-> ingestion-service:3001 -POST /internal/process-> processing-service:3003
+               (rate-limit, capture)                                    |
+                                                                  normalise
+                                                                  INSERT
+                                                                  pg_notify
+                                                                        |
+                                                               PostgreSQL:5432
+                                                                        |
+                                                          LISTEN webhook_events
+                                                                        |
+                                                        realtime-gateway:3004
+                                                        Socket.IO rooms · Redis fanout
 ```
 
 ---
 
-## Services
+## ingestion-service (port 3001)
 
-### `ingestion-service` (port 3001)
+**Single responsibility:** Accept all inbound webhook HTTP requests and forward them raw to the processing-service. Has no database access.
 
-Entry point for all inbound webhooks.
+### Endpoint
 
-**Responsibilities:**
-- Accept `POST /:workspaceId/:endpointToken`
-- Validate the workspace token against PostgreSQL
-- Capture all HTTP headers and the raw body verbatim
-- Apply rate limiting (Redis token bucket)
-- Forward the raw request to `processing-service`
+```
+@All() /:workspaceId/:endpointToken
+```
 
-**Does NOT:**
-- Parse provider-specific fields
-- Write to the database directly
+Accepts any HTTP method. Returns `202 Accepted` immediately.
 
----
+### Provider detection
 
-### `processing-service` (port 3003)
-
-Normalisation and persistence layer.
-
-**Responsibilities:**
-- Receive raw captures from `ingestion-service`
-- Detect the provider from request headers / body shape
-- Normalise to `WebhookEvent` (see `shared/contracts`)
-- Write to `webhook_events` table
-- Emit `pg_notify('webhook_events', json)` for real-time fanout
-- Expose `GET /events`, `GET /events/:id`, `GET /timelines/:threadId`, `GET /metrics`
-
----
-
-### `realtime-gateway` (port 3004)
-
-Real-time event delivery to browser clients.
-
-**Responsibilities:**
-- Maintain `LISTEN webhook_events` connection to PostgreSQL
-- On `NOTIFY`, broadcast the `WebhookEventSummary` to all WebSocket clients subscribed to that workspace
-- Redis pub/sub for horizontal gateway scaling (multiple instances)
-
----
-
-### Angular Dashboard (port 4200)
-
-Frontend inspection UI.
-
-**Features:**
-- Live event list (WebSocket subscription)
-- Event detail panel: raw headers, formatted payload, processing time
-- Timeline view: all events grouped by `MessageSid` or `CallSid`
-- Metrics dashboard: counts, delivery rate, failure rate, volume per provider
-- Search & filter: by type, status, from/to numbers, SID, time range, payload text
-
----
-
-## Database Schema
-
-See `infra/postgres/init.sql` for the full schema.
-
-Key tables:
-
-| Table | Purpose |
+| Header | Detected provider |
 |---|---|
-| `workspaces` | Tenant configuration, endpoint tokens |
-| `webhook_events` | All received events, raw headers + payload (JSONB) |
+| `x-twilio-signature` | `twilio` |
+| `x-vonage-signature` | `vonage` |
+| `messagebird-signature-jwt` | `messagebird` |
+| _(none)_ | `unknown` |
 
-Key view:
+### Modules
 
-| View | Purpose |
+| Module | What it does |
 |---|---|
-| `event_timelines` | Groups events by `MessageSid` / `CallSid` thread |
+| `IngestionModule` | `IngestController` → `IngestEventUseCase` → `ProcessingForwarderAdapter` |
+| `CorrelationModule` | Attaches `X-Correlation-ID` to every request via `AsyncLocalStorage` |
+| `LoggerModule` | Structured JSON logger with correlation ID injection |
+| `MetricsModule` | In-process counters at `GET /metrics` |
+| `HealthModule` | `GET /health` |
 
 ---
 
-## Webhook URL Structure
+## processing-service (port 3003)
 
-```
-https://<host>/<workspaceId>/<endpointToken>
-```
+**Single responsibility:** Normalise raw captures, persist to PostgreSQL, notify the realtime-gateway, and serve the REST API.
 
-Example (local dev):
-```
-http://localhost:3001/a0000000-0000-0000-0000-000000000001/dev-token-local-001
-```
+### HTTP endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/internal/process` | Internal — raw capture from ingestion |
+| `POST` | `/workspace/auto` | Idempotent workspace provisioning |
+| `GET` | `/events/recent` | Last N events (all workspaces) |
+| `GET` | `/events/workspace/:id` | Events for a workspace |
+| `GET` | `/health` | Health check |
+
+### Normalisation pipeline
+
+1. Receive `ProcessCommand` (`provider`, `headers`, `body`, `receivedAt`)
+2. Route to `TwilioNormalizer` (or identity passthrough for unknown providers)
+3. Extract `messageSid`, `callSid`, `from`, `to`, `status`, `eventType`
+4. `INSERT INTO webhook_events`
+5. `SELECT pg_notify('webhook_events', json)` — triggers realtime-gateway
+
+### Database
+
+A single `pg.Client` provided as `DATABASE_CLIENT` token via `DatabaseModule`. Connects once on module init, disconnects on shutdown.
 
 ---
 
-## Sequence: Twilio Status Callback
+## realtime-gateway (port 3004)
+
+**Single responsibility:** Fan out events from PostgreSQL to connected WebSocket clients.
+
+### Flow
 
 ```
-Twilio
-  │  POST /:workspaceId/:token  (MessageStatus=delivered)
-  ▼
-ingestion-service
-  │  validates token
-  │  captures headers + body
-  │  POST /internal/process  →  processing-service
-  ▼
-processing-service
-  │  detects provider: twilio
-  │  normalises: eventType=message.status.delivered, messageSid=SM…, status=delivered
-  │  INSERT INTO webhook_events
-  │  pg_notify('webhook_events', { id, workspaceId, eventType, … })
-  ▼
-realtime-gateway (LISTEN)
-  │  receives notify
-  │  broadcasts to WebSocket clients subscribed to workspaceId
-  ▼
-Angular Dashboard
-  │  appends event to live list
-  │  updates metrics counters
+PgListenerAdapter
+  LISTEN webhook_events (dedicated pg.Client)
+      |
+      v BroadcastEventUseCase.broadcastFromLocal()
+          |
+          +---> EventsGateway (Socket.IO)
+          |      broadcast to room named by workspaceId
+          |
+          +---> RedisFanoutAdapter.publish()
+                 channel: telecom-webhook.gateway
+
+RedisFanoutAdapter (subscriber)
+  Receives events from peer gateway instances
+      |
+      v BroadcastEventUseCase.broadcastFromRemote()
+          +---> EventsGateway (broadcast to local Socket.IO clients)
 ```
+
+### Socket.IO protocol
+
+```
+Client → server:   subscribe  { workspaceId: string }
+Server → client:   webhook_event  WebhookEventSummary
+```
+
+### Modules
+
+| Module | What it does |
+|---|---|
+| `RealtimeModule` | `PgListenerAdapter` + `RedisFanoutAdapter` + `EventsGateway` |
+| `CommonInfraModule` | Correlation service + structured logger |
+| `ObservabilityModule` | `GET /metrics` + `GET /health` |
+
+---
+
+## Shared packages
+
+### `@telecom-webhook/contracts`
+
+| Export | Description |
+|---|---|
+| `WebhookEvent` | Full normalised event (persisted to DB) |
+| `WebhookEventSummary` | Lightweight projection broadcast over WebSocket |
+| `TelecomProvider` | `'twilio' \| 'vonage' \| 'messagebird' \| 'infobip' \| 'plivo'` |
+| `TelecomEventType` | All `message.*` and `call.*` type strings |
+| `TwilioWebhookPayload` | Raw Twilio form body shape |
+| `Workspace` | Workspace entity |
+
+### `@telecom-webhook/utils`
+
+| Export | Description |
+|---|---|
+| `generateUuid()` / `isUuid()` | UUID v4 |
+| `extractOrCreateCorrelationId()` | Reads header or generates new ID |
+| `createLogger()` / `StructuredLogger` | JSON line logger (stdout) |
+| `nowIsoUtc()` / `isIsoTimestamp()` | UTC timestamp helpers |
+| `exponentialBackoffMs()` / `sleep()` | Retry backoff |
+
+---
+
+## PostgreSQL schema
+
+```sql
+workspaces (
+  id             UUID PK,
+  name           TEXT,
+  endpoint_token TEXT UNIQUE,
+  created_at     TIMESTAMPTZ,
+  updated_at     TIMESTAMPTZ
+)
+
+webhook_events (
+  id              UUID PK,
+  workspace_id    UUID FK -> workspaces,
+  provider        TEXT,
+  event_type      TEXT,
+  message_sid     TEXT,
+  call_sid        TEXT,
+  from_number     TEXT,
+  to_number       TEXT,
+  status          TEXT,
+  request_headers JSONB,
+  request_payload JSONB,
+  received_at     TIMESTAMPTZ,
+  processed_at    TIMESTAMPTZ,
+  processing_ms   INTEGER
+)
+```
+
+Indexes: `workspace_id`, `(workspace_id, received_at)`, `message_sid`, `call_sid`, GIN on `request_payload`.
+
+---
+
+## Environment variables
+
+### ingestion-service
+
+| Variable | Default | Description |
+|---|---|---|
+| `INGESTION_PORT` | `3001` | HTTP port |
+| `DATABASE_URL` | _(required)_ | PostgreSQL connection string |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `PROCESSING_BASE_URL` | `http://localhost:3003` | processing-service URL |
+| `RATE_LIMIT_TTL_SECONDS` | `60` | Throttler window |
+| `RATE_LIMIT_MAX` | `500` | Max requests per window |
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+
+### processing-service
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROCESSING_PORT` | `3003` | HTTP port |
+| `DATABASE_URL` | _(required)_ | PostgreSQL connection string |
+| `LOG_LEVEL` | `info` | Log level |
+
+### realtime-gateway
+
+| Variable | Default | Description |
+|---|---|---|
+| `GATEWAY_PORT` | `3004` | HTTP/WebSocket port |
+| `DATABASE_URL` | _(required)_ | PostgreSQL connection string |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REALTIME_GATEWAY_CORS_ORIGIN` | `http://localhost:4200` | Allowed CORS origin |
+| `LOG_LEVEL` | `info` | Log level |

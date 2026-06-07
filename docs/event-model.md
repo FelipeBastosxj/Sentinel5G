@@ -1,134 +1,141 @@
-# WebhookEvent Model
+# Event model
 
-This document defines the core data contract of **Open Telecom Webhook Observability**.
+## WebhookEvent
 
-All inbound webhooks are normalised into `WebhookEvent` before persistence.
-
-Defined in: `shared/contracts/src/webhook-event.interface.ts`
-
----
-
-## TypeScript Interface
-
-```typescript
-import { WebhookEvent, TelecomProvider, TelecomEventType } from '@telecom-webhook/contracts';
-```
-
----
-
-## Full Structure
+Every inbound webhook is normalised into this interface before being persisted.
 
 ```typescript
 interface WebhookEvent {
-  // Identity
-  id:           string;              // UUID v4 — server-assigned at ingestion time
-  workspaceId:  string;              // Resolved from the URL token
+  id: string;               // UUID v4, server-assigned
+  workspaceId: string;      // UUID of the receiving workspace
+  provider: TelecomProvider;
+  eventType: TelecomEventType;
 
-  // Provider
-  provider:     TelecomProvider;     // 'twilio' | 'vonage' | 'messagebird' | 'infobip' | 'plivo'
-  eventType:    TelecomEventType;    // e.g. 'message.inbound', 'call.status.completed'
+  receivedAt: Date;         // UTC timestamp at HTTP layer
+  processedAt?: Date;
+  processingMs?: number;    // wall-clock processing time
 
-  // Timing
-  receivedAt:   Date;                // UTC — stamped at the HTTP layer before any processing
+  messageSid?: string;      // Twilio MessageSid
+  callSid?: string;         // Twilio CallSid
+  from?: string;            // originating number (E.164)
+  to?: string;              // destination number
+  status?: string;          // delivery/call status string
 
-  // Raw HTTP capture
-  headers: Record<string, string>;   // All request headers, lower-cased
-  payload: Record<string, unknown>;  // Full parsed request body (JSON or form-encoded)
+  headers: Record<string, string>;    // full HTTP request headers
+  payload: Record<string, unknown>;   // full HTTP request body
+}
+```
 
-  // Extracted telecom fields — indexed for fast filtering
-  messageSid?:  string;              // Twilio MessageSid (or provider equivalent)
-  callSid?:     string;              // Twilio CallSid (or provider equivalent)
-  from?:        string;              // Originating phone number, E.164
-  to?:          string;              // Destination phone number, E.164
-  status?:      string;              // Delivery / call status reported by provider
+### WebhookEventSummary
 
-  // Processing metadata
-  processedAt?: Date;                // When normalisation completed (null = pending)
-  processingMs?: number;             // Wall-clock normalisation time in milliseconds
+Lightweight projection broadcast over WebSocket (omits large headers/payload blobs):
+
+```typescript
+interface WebhookEventSummary {
+  id: string;
+  workspaceId: string;
+  provider: TelecomProvider;
+  eventType: TelecomEventType;
+  receivedAt: Date;
+  from?: string;
+  to?: string;
+  status?: string;
 }
 ```
 
 ---
 
-## JSON Example — Twilio Delivered SMS
+## TelecomEventType values
 
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "workspaceId": "a0000000-0000-0000-0000-000000000001",
-  "provider": "twilio",
-  "eventType": "message.status.delivered",
-  "receivedAt": "2026-06-06T14:30:00.000Z",
-  "headers": {
-    "content-type": "application/x-www-form-urlencoded",
-    "x-twilio-signature": "abc123=="
-  },
-  "payload": {
-    "MessageSid": "SM1234567890abcdef",
-    "MessageStatus": "delivered",
-    "To": "+14155552671",
-    "From": "+15017122661",
-    "AccountSid": "ACxxxxxxxxxxxxxxxx"
-  },
-  "messageSid": "SM1234567890abcdef",
-  "from": "+15017122661",
-  "to": "+14155552671",
-  "status": "delivered",
-  "processedAt": "2026-06-06T14:30:00.045Z",
-  "processingMs": 45
-}
-```
+### Messaging
 
----
-
-## Event Type Reference
-
-### SMS / WhatsApp
-
-| `eventType` | Trigger |
+| Value | Trigger |
 |---|---|
-| `message.inbound` | A message was received by your Twilio number |
+| `message.inbound` | Incoming SMS / WhatsApp to your Twilio number |
 | `message.status.queued` | Message accepted by Twilio |
-| `message.status.sent` | Message handed to carrier |
-| `message.status.delivered` | Carrier confirmed delivery |
-| `message.status.undelivered` | Carrier could not deliver |
-| `message.status.failed` | Twilio could not send |
+| `message.status.sending` | Being sent |
+| `message.status.sent` | Sent to carrier |
+| `message.status.delivered` | Delivered to recipient |
+| `message.status.undelivered` | Carrier confirmed non-delivery |
+| `message.status.failed` | Failed before reaching carrier |
 | `message.status.read` | WhatsApp read receipt |
 
 ### Voice
 
-| `eventType` | Trigger |
+| Value | Trigger |
 |---|---|
-| `call.inbound` | Inbound call to your Twilio number |
+| `call.inbound` | Incoming call to your Twilio number |
 | `call.outbound` | Outbound call initiated |
-| `call.status.initiated` | Call created |
-| `call.status.ringing` | Remote phone is ringing |
-| `call.status.in-progress` | Call connected |
+| `call.status.initiated` | Outbound call created |
+| `call.status.ringing` | Call is ringing |
+| `call.status.in-progress` | Call answered |
 | `call.status.completed` | Call ended normally |
-| `call.status.busy` | Remote was busy |
-| `call.status.no-answer` | No answer |
-| `call.status.failed` | Call failed |
+| `call.status.busy` | Busy signal |
+| `call.status.no-answer` | Not answered |
+| `call.status.failed` | Failed to connect |
 
 ---
 
-## `WebhookEventSummary`
+## Twilio field mapping
 
-A lighter projection used in list responses and WebSocket broadcast payloads.
-Omits `headers` and `payload` to reduce bandwidth.
+### Inbound SMS (`message.inbound`)
 
-```typescript
-type WebhookEventSummary = Pick<WebhookEvent,
-  | 'id' | 'workspaceId' | 'provider' | 'eventType' | 'receivedAt'
-  | 'messageSid' | 'callSid' | 'from' | 'to' | 'status' | 'processingMs'
->;
+Twilio sends `application/x-www-form-urlencoded`:
+
+| Twilio field | WebhookEvent field | Notes |
+|---|---|---|
+| `MessageSid` / `SmsSid` / `SmsMessageSid` | `messageSid` | legacy aliases supported |
+| `From` | `from` | E.164 format |
+| `To` | `to` | Your Twilio number |
+| `Body` | _(in `payload`)_ | SMS text |
+| `AccountSid` | _(in `payload`)_ | |
+| `NumMedia` | _(in `payload`)_ | Number of attachments |
+
+**Detection:** body contains `Body` field or `MessageSid`/`SmsSid` without `MessageStatus`.
+
+### Outbound status callback (`message.status.*`)
+
+| Twilio field | WebhookEvent field |
+|---|---|
+| `MessageSid` / `SmsSid` | `messageSid` |
+| `MessageStatus` / `SmsStatus` | `status` + determines `eventType` |
+| `From` | `from` |
+| `To` | `to` |
+| `ErrorCode` | _(in `payload`)_ |
+
+### Voice call (`call.*`)
+
+| Twilio field | WebhookEvent field |
+|---|---|
+| `CallSid` | `callSid` |
+| `CallStatus` | `status` + determines `eventType` |
+| `Direction` | determines `call.inbound` vs `call.outbound` |
+| `From` | `from` |
+| `To` | `to` |
+
+---
+
+## eventType detection logic (Twilio)
+
+```
+if CallSid present:
+  direction = Direction field -> 'inbound' | 'outbound'
+  status    = CallStatus
+  eventType = call.{direction} | call.status.{status}
+
+else if MessageStatus or SmsStatus present:
+  eventType = message.status.{status}
+
+else (inbound SMS):
+  eventType = message.inbound
 ```
 
 ---
 
-## Database Representation
+## TelecomProvider values
 
-Stored in `webhook_events` table. `headers` and `payload` are `JSONB` columns.
-Extracted fields (`message_sid`, `call_sid`, `from_number`, `to_number`, `status`)
-have dedicated indexed columns for efficient filtering.
+```typescript
+type TelecomProvider = 'twilio' | 'vonage' | 'messagebird' | 'infobip' | 'plivo';
+```
 
-See `infra/postgres/init.sql` for the full schema.
+Unknown providers use a passthrough normaliser that stores the raw body verbatim with `eventType: 'unknown'`.
