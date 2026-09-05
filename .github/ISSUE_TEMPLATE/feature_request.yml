@@ -1,91 +1,33 @@
-name: Feature Request
-description: Propose a new feature or improvement for EventStream Observability Engine
-title: "[Feature]: "
-labels: ["enhancement", "needs-triage"]
+name: Feature request
+description: Propose a new capability for Sentinel5G
+labels: ["enhancement"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thank you for proposing a feature.
-        Please fill in the fields below to help us understand your proposal.
-        All features must comply with the architecture rules defined in **HARDNESS.md**.
-
-  - type: dropdown
-    id: service
-    attributes:
-      label: Target Service / Component
-      description: Which service or component does this feature belong to?
-      options:
-        - ingestion-service
-        - processing-service
-        - realtime-gateway
-        - webhook-service
-        - angular-dashboard
-        - infra / docker-compose
-        - shared / contracts
-        - new service / component
-        - other
-    validations:
-      required: true
-
-  - type: dropdown
-    id: phase
-    attributes:
-      label: Roadmap Phase
-      description: Which phase of the roadmap does this align with?
-      options:
-        - "Phase 1 — Foundation"
-        - "Phase 2 — Event Processing"
-        - "Phase 3 — Analytics & Storage"
-        - "Phase 4 — Realtime Gateway"
-        - "Phase 5 — Angular Dashboard"
-        - "Phase 6 — Observability Stack"
-        - "Phase 7 — Provider Integrations"
-        - "Phase 8 — Production Hardening"
-        - "Not in current roadmap"
-
   - type: textarea
     id: problem
     attributes:
-      label: Problem Statement
-      description: What problem does this feature solve? What is the current limitation?
-      placeholder: Describe the problem or gap in the current platform.
+      label: What problem does this solve?
+      description: What are you trying to do that Sentinel5G doesn't support today?
     validations:
       required: true
-
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed Solution
-      description: Describe the feature you'd like to see implemented.
-      placeholder: Describe the feature and how it should work.
+      label: Proposed solution
     validations:
       required: true
-
-  - type: textarea
-    id: architecture
-    attributes:
-      label: Architecture Considerations
-      description: How does this feature fit within the existing architecture? Does it comply with HARDNESS.md?
-      placeholder: |
-        - Does it involve Kafka? Which topics?
-        - Does it affect the Canonical Event Model?
-        - Does it introduce new services or new dependencies?
-
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives Considered
-      description: What other approaches did you consider and why were they rejected?
-
-  - type: checkboxes
-    id: checklist
+      label: Alternatives considered
+  - type: dropdown
+    id: layer
     attributes:
-      label: Checklist
+      label: Which layer does this affect?
+      multiple: true
       options:
-        - label: I have searched existing issues and this is not a duplicate.
-          required: true
-        - label: I have read HARDNESS.md and this feature complies with the architecture rules.
-          required: true
-        - label: I have read CONTRIBUTING.md.
-          required: true
+        - Layer 1 — Capture & kernel (bpf/)
+        - Layer 2 — Ingestion & pipeline (pkg/events)
+        - Layer 3 — AI engine (cmd/ai-engine)
+        - Layer 4 — Controller & automation (pkg/controller, pkg/ebpf, pkg/mesh)
+        - Packaging (charts/, config/)
+        - Other / cross-cutting
