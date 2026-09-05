@@ -1,0 +1,18 @@
+Sentinel5G operator installed into namespace "{{ .Release.Namespace }}".
+
+Apply a TelecomSecurityPolicy to start protecting a workload, e.g.:
+
+  kubectl apply -f config/samples/security_v1alpha1_telecomsecuritypolicy.yaml
+
+Check status:
+
+  kubectl get telecomsecuritypolicies -A
+
+{{- if not .Values.ebpf.enabled }}
+
+NOTE: eBPF blocklist enforcement (EbpfBlock actions) is disabled
+(ebpf.enabled=false). The operator still reconciles policies and can drive
+mesh-layer isolation, but source-IP drops at the XDP layer are no-ops until
+you set ebpf.enabled=true and grant the manager container CAP_BPF/CAP_NET_ADMIN.
+See docs/integrations.md.
+{{- end }}

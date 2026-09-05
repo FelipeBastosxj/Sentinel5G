@@ -1,0 +1,14 @@
+apiVersion: security.sentinel5g.io/v1alpha1
+kind: TelecomSecurityPolicy
+metadata:
+  name: protect-amf-core
+  namespace: telecom-core
+spec:
+  targetWorkloads:
+    - app: amf-service
+  threatDetection:
+    sensitivity: "high"
+    autoMitigate: true
+  actions:
+    ebpfBlock: true
+    isolatePod: true

@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel5g-operator
+  namespace: system
+  labels:
+    app.kubernetes.io/name: sentinel5g-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentinel5g-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel5g-operator
+    spec:
+      serviceAccountName: sentinel5g-operator
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: manager
+          image: ghcr.io/sentinel5g/sentinel5g-operator:latest
+          args:
+            - --bpf-object=/var/run/sentinel5g/packet_filter.o
+            - --bpf-interface=eth0
+          envFrom:
+            - configMapRef:
+                name: sentinel5g-operator-config
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Secure-by-default: no elevated capabilities. Attaching the XDP
+          # program in bpf/packet_filter.c needs CAP_BPF + CAP_NET_ADMIN (or
+          # CAP_SYS_ADMIN on older kernels); add them here deliberately if
+          # you need EbpfBlock enforcement rather than mesh-only isolation.
+          # See docs/integrations.md.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

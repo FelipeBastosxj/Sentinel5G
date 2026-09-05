@@ -1,0 +1,21 @@
+apiVersion: v2
+name: sentinel5g-operator
+description: >-
+  Sentinel5G Kubernetes operator: AI-driven threat detection and automated
+  closed-loop remediation for cloud-native 5G/LTE telecom workloads.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.26.0-0"
+home: https://github.com/sentinel5g/sentinel5g
+sources:
+  - https://github.com/sentinel5g/sentinel5g
+keywords:
+  - security
+  - ebpf
+  - 5g
+  - telecom
+  - kubernetes-operator
+  - anomaly-detection
+maintainers:
+  - name: The Sentinel5G Authors
