@@ -1,80 +1,55 @@
 # Roadmap
 
----
+Sentinel5G is at an early, foundational stage: the four-layer architecture
+described in [`docs/architecture.md`](docs/architecture.md) is implemented
+end to end as a working reference, but several pieces are intentionally
+scoped down for a first release. This page tracks what's next, and is meant
+to be read alongside the gaps called out in `docs/getting-started.md`,
+`docs/integrations.md`, and `CONTRIBUTING.md`.
 
-## Phase 1 — MVP (current)
+## Phase 0 — Foundations (current)
 
-> Working end-to-end webhook inspector for Twilio.
+- [x] `TelecomSecurityPolicy` CRD, reconciler, and in-memory policy index.
+- [x] `bpf/packet_filter.c`: XDP capture with a blocklist map and a
+      per-source signaling-rate counter (UAPI headers, not CO-RE/`vmlinux.h`).
+- [x] Autoencoder-based AI engine: synthetic dataset generation, training,
+      ONNX export, and an HTTP + NATS-worker inference server.
+- [x] Closed-loop mitigation: eBPF blocklist push + Istio
+      `AuthorizationPolicy` quarantine, gated by per-policy `autoMitigate`.
+- [x] Helm chart, kustomize manifests, CI (lint/test/SBOM/scan/sign).
 
-### Infrastructure
-- [x] PostgreSQL schema (`workspaces`, `webhook_events`, indexes)
-- [x] Redis (rate limiting, multi-instance WebSocket fanout)
-- [x] Docker Compose — one-command startup (`npm run up`)
+## Phase 1 — Real-world signal
 
-### Backend
-- [x] `ingestion-service` — `POST /:workspaceId/:token` accepts all HTTP methods
-- [x] Rate limiting (500 req/min per IP)
-- [x] Provider detection from request headers
-- [x] Raw header + body capture
-- [x] `processing-service` — Twilio normalisation to `WebhookEvent`
-- [x] PostgreSQL persistence with full headers + payload
-- [x] `pg_notify` for real-time fanout
-- [x] `GET /events/recent` + `GET /events/workspace/:id`
-- [x] `POST /workspace/auto` — idempotent workspace provisioning
-- [x] `realtime-gateway` — Socket.IO with workspace rooms
-- [x] Redis pub/sub for multi-instance broadcast
-- [x] Health endpoints on all services
-- [x] Structured JSON logging with correlation IDs
+- [ ] Replace the synthetic dataset with real (or realistically replayed)
+      GTP-U/SIP/SMPP traffic; validate sensitivity thresholds against it.
+- [ ] `controller-gen` wired into `make manifests`, replacing the
+      hand-maintained `zz_generated.deepcopy.go` and CRD YAML.
+- [ ] CO-RE (`vmlinux.h`-based) BPF program for portability across kernel
+      struct layouts, replacing the current UAPI-header approach.
+- [ ] Finalizer-based cleanup: automatically unblock/un-quarantine a
+      workload when its `TelecomSecurityPolicy` is deleted, rather than
+      requiring a manual `Release`/`Unblock`.
 
-### Frontend (Angular 17)
-- [x] Workspace auto-provisioning on first visit
-- [x] Unique webhook URL display
-- [x] Live event list (WebSocket-driven)
-- [x] Metrics page (per-channel, per-type, throughput charts)
-- [x] Integrations page (provider success rates)
+## Phase 2 — Deeper integrations
 
-### Twilio events
-- [x] `message.inbound` (incoming SMS / WhatsApp)
-- [x] `message.status.*` (all delivery statuses + legacy `SmsStatus` alias)
-- [x] `call.inbound` / `call.outbound` / `call.status.*`
+- [ ] Cilium-native capture path (Hubble flow API or a Cilium custom BPF
+      program) as an alternative to the standalone XDP attachment.
+- [ ] Falco output bridging into `NormalizedEvent`, so syscall-level signals
+      feed the same AI engine as network-level ones.
+- [ ] Additional `pkg/mesh.Adapter` implementations beyond Istio (Linkerd,
+      Cilium mesh mode).
+- [ ] Prometheus instrumentation for the AI engine (request latency,
+      inference count), not just the operator's `controller-runtime` metrics.
 
----
+## Phase 3 — Scale & multi-cluster
 
-## Phase 2 — Provider expansion
+- [ ] Multi-cluster policy propagation.
+- [ ] Load-testing harness validating the <0.2ms/packet and single-digit-ms
+      mitigation-latency targets in `docs/observability.md` under sustained
+      throughput, not just unit tests.
+- [ ] Poetry-based lockfile support for `cmd/ai-engine` alongside the
+      current `pyproject.toml`/`requirements.txt` pair, if the community
+      wants a stricter reproducible-build story.
 
-- [ ] Vonage SMS inbound + delivery status
-- [ ] Vonage Voice webhooks
-- [ ] MessageBird SMS status callbacks
-- [ ] Infobip delivery reports
-- [ ] Plivo SMS + voice webhooks
-- [ ] Signature validation per provider
-- [ ] Provider health badge in dashboard
-
----
-
-## Phase 3 — Developer experience
-
-- [ ] `GET /timelines/:messageSid` — conversation thread view
-- [ ] Webhook replay — resend any stored event to a target URL
-- [ ] Event export (JSON / CSV)
-- [ ] Advanced search + filter (by status, number, date range, event type)
-- [ ] Dark mode
-
----
-
-## Phase 4 — Security
-
-- [ ] JWT authentication for workspace API
-- [ ] Workspace invitation tokens
-- [ ] Twilio signature HMAC verification
-- [ ] Event retention policy (configurable TTL)
-
----
-
-## Phase 5 — Production readiness
-
-- [ ] PostgreSQL connection pool (`pg-pool`)
-- [ ] Kubernetes manifests (Helm chart)
-- [ ] Horizontal scaling guide
-- [ ] OpenTelemetry traces (optional Docker Compose profile)
-- [ ] Prometheus metrics (optional Docker Compose profile)
+Have an idea that isn't here? Open an issue — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
