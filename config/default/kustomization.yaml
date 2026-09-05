@@ -1,0 +1,24 @@
+namespace: sentinel5g-system
+namePrefix: ""
+
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager
+
+configMapGenerator:
+  - name: sentinel5g-operator-config
+    literals:
+      - LOG_LEVEL=info
+      - METRICS_BIND_ADDRESS=:8080
+      - HEALTH_PROBE_BIND_ADDRESS=:8081
+      - LEADER_ELECT=true
+      - NATS_URL=nats://sentinel5g-nats:4222
+      - NATS_EVENTS_SUBJECT=sentinel5g.events.normalized
+      - NATS_THREATS_SUBJECT=sentinel5g.threats.scored
+      - NATS_STREAM_NAME=SENTINEL5G
+      - THREAT_SCORE_THRESHOLD=0.85
+      - MESH_ADAPTER=istio
+
+generatorOptions:
+  disableNameSuffixHash: true

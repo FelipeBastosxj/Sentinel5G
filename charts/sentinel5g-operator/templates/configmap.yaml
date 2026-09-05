@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel5g-operator.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sentinel5g-operator.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  METRICS_BIND_ADDRESS: {{ .Values.config.metricsBindAddress | quote }}
+  HEALTH_PROBE_BIND_ADDRESS: {{ .Values.config.healthProbeBindAddress | quote }}
+  LEADER_ELECT: {{ .Values.config.leaderElect | quote }}
+  THREAT_SCORE_THRESHOLD: {{ .Values.config.threatScoreThreshold | quote }}
+  MESH_ADAPTER: {{ .Values.config.meshAdapter | quote }}
+  NATS_URL: {{ .Values.nats.url | quote }}
+  NATS_EVENTS_SUBJECT: {{ .Values.nats.eventsSubject | quote }}
+  NATS_THREATS_SUBJECT: {{ .Values.nats.threatsSubject | quote }}
+  NATS_STREAM_NAME: {{ .Values.nats.streamName | quote }}

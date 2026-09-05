@@ -1,0 +1,2 @@
+resources:
+  - bases/security.sentinel5g.io_telecomsecuritypolicies.yaml

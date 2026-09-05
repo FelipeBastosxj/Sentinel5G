@@ -1,0 +1,110 @@
+{{- if .Values.crds.install }}
+# Kept in sync by hand with config/crd/bases/security.sentinel5g.io_telecomsecuritypolicies.yaml
+# (the kustomize-based install path) and api/v1alpha1/telecomsecuritypolicy_types.go.
+# Templated here (rather than under the special crds/ directory) so
+# `crds.install` can toggle it and `helm upgrade` can manage schema changes;
+# see docs/getting-started.md for the trade-offs of that choice.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: telecomsecuritypolicies.security.sentinel5g.io
+spec:
+  group: security.sentinel5g.io
+  names:
+    kind: TelecomSecurityPolicy
+    listKind: TelecomSecurityPolicyList
+    plural: telecomsecuritypolicies
+    singular: telecomsecuritypolicy
+    shortNames:
+      - tsp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Score
+          type: string
+          jsonPath: .status.observedThreatScore
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - targetWorkloads
+              properties:
+                targetWorkloads:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    properties:
+                      app:
+                        type: string
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                threatDetection:
+                  type: object
+                  properties:
+                    sensitivity:
+                      type: string
+                      enum: ["low", "medium", "high"]
+                      default: medium
+                    autoMitigate:
+                      type: boolean
+                      default: false
+                actions:
+                  type: object
+                  properties:
+                    ebpfBlock:
+                      type: boolean
+                      default: false
+                    isolatePod:
+                      type: boolean
+                      default: false
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["Pending", "Monitoring", "Mitigating", "Degraded"]
+                observedThreatScore:
+                  type: string
+                lastMitigationTime:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+{{- end }}

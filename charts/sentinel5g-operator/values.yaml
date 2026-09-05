@@ -1,0 +1,60 @@
+image:
+  repository: ghcr.io/sentinel5g/sentinel5g-operator
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: sentinel5g-operator
+
+# eBPF blocklist enforcement (EbpfBlock actions) needs the manager container
+# to attach an XDP program on the target interface, which requires elevated
+# capabilities the chart does NOT grant by default (see securityContext
+# below and docs/integrations.md). Leave false to run in mesh-isolation-only
+# / detection-only mode.
+ebpf:
+  enabled: false
+  interface: eth0
+  objectPath: /var/run/sentinel5g/packet_filter.o
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  runAsNonRoot: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+config:
+  logLevel: info
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
+  leaderElect: true
+  threatScoreThreshold: 0.85
+  meshAdapter: istio
+
+nats:
+  # Set to the URL of an existing NATS JetStream deployment. This chart does
+  # not bundle a NATS subchart; bring your own (e.g. the official `nats`
+  # Helm chart) so its persistence/HA settings stay outside this chart's
+  # concern (see deployments/docker-compose.yml for local dev instead).
+  url: nats://sentinel5g-nats:4222
+  eventsSubject: sentinel5g.events.normalized
+  threatsSubject: sentinel5g.threats.scored
+  streamName: SENTINEL5G
+
+crds:
+  install: true
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
