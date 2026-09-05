@@ -1,174 +1,120 @@
 # Getting started
 
+This walks through running every layer locally: NATS JetStream, the AI
+engine's train → export → serve pipeline, and the operator against a local
+Kubernetes cluster (e.g. [kind](https://kind.sigs.k8s.io/)).
+
 ## Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| Docker Desktop (Windows/macOS) or Docker Engine + Compose plugin (Linux) | Docker 24+ recommended |
-| Git | Any recent version |
+- Go 1.22+
+- Python 3.11+
+- Docker (or another OCI runtime) and Docker Compose
+- A local Kubernetes cluster (`kind`, `minikube`, or similar) and `kubectl`
+- `clang`/`llvm` + `libbpf-dev` + `linux-libc-dev` + `linux-headers-$(uname -r)`,
+  only if you want to compile `bpf/packet_filter.c` (Linux-only; see
+  `bpf/Makefile`). `linux-libc-dev` specifically is easy to miss — without
+  it, the build fails on a missing `asm/types.h` even with the kernel
+  headers installed, since that comes from a different package.
 
-> Node.js is **not** required on your host machine — everything runs inside Docker.
+## 1. Bootstrap the Go module
 
----
-
-## 1. Clone the repository
-
-```bash
-git clone https://github.com/FelipeBastosxj/eventstream-observability-engine.git
-cd eventstream-observability-engine
+```sh
+go mod tidy   # resolves go.sum against the dependencies pinned in go.mod
+go build ./...
+go test ./... -cover
 ```
 
----
+## 2. Bring up NATS JetStream + the AI engine
 
-## 2. Configure environment
+The AI engine needs a trained, exported model before it can serve scores:
 
-```bash
-cp .env.example .env
+```sh
+cd cmd/ai-engine
+pip install -e ".[dev]"        # or: pip install -r requirements.txt
+
+python scripts/generate_synthetic_dataset.py
+python scripts/train.py
+python scripts/export_onnx.py
+pytest
 ```
 
-Defaults work out of the box. You only need to change values if you want different ports or credentials.
+This produces `models/autoencoder.onnx` and `models/autoencoder.norm.json`.
+`generate_synthetic_dataset.py` fabricates traffic (it does not ship with,
+or claim to represent, real telecom captures) purely to exercise the
+pipeline end to end — see the module docstring and
+`docs/architecture.md`.
 
-Key variables:
+With a model in place, bring up the local stack:
 
-| Variable | Default | Description |
-|---|---|---|
-| `POSTGRES_PASSWORD` | `webhook_pass` | PostgreSQL password |
-| `INGESTION_PORT` | `3001` | Public webhook receiver port |
-| `PROCESSING_PORT` | `3003` | Processing API port |
-| `GATEWAY_PORT` | `3004` | WebSocket gateway port |
-| `FRONTEND_PORT` | `4200` | Angular dashboard port |
-
----
-
-## 3. Start all services
-
-```bash
-npm run up
+```sh
+cd deployments
+docker compose up --build
 ```
 
-This runs `docker compose --profile services up -d --build`.
+This starts NATS JetStream and the AI engine in `AI_ENGINE_MODE=nats`,
+consuming `sentinel5g.events.normalized` and publishing
+`sentinel5g.threats.scored`.
 
-First run: Docker builds images — allow **2–3 minutes**.
+Alternatively, run the AI engine's HTTP mode directly for quick manual
+testing without NATS:
 
-### Verify containers are healthy
-
-```bash
-docker ps
+```sh
+cd cmd/ai-engine
+AI_ENGINE_MODE=http python -m sentinel_ai.server
+curl -X POST localhost:8090/v1/score -H 'content-type: application/json' \
+  -d '{"protocol":"SIP","destPort":5060,"payloadSize":256,"ratePerSecond":3000,"malformed":false}'
 ```
 
-All six containers must show `(healthy)`:
+## 3. Run the operator against a local cluster
 
-```
-telecom-webhook-frontend    Up (healthy)
-telecom-webhook-ingestion   Up (healthy)
-telecom-webhook-processing  Up (healthy)
-telecom-webhook-gateway     Up (healthy)
-telecom-webhook-postgres    Up (healthy)
-telecom-webhook-redis       Up (healthy)
-```
+```sh
+kubectl apply -f config/crd/bases/security.sentinel5g.io_telecomsecuritypolicies.yaml
+kubectl apply -f config/samples/security_v1alpha1_telecomsecuritypolicy.yaml -n telecom-core
 
----
-
-## 4. Open the dashboard
-
-Navigate to **http://localhost:4200**.
-
-On first visit the app:
-1. Generates a random UUID as your `endpointToken`, stored in `localStorage`
-2. Calls `POST /workspace/auto` on the processing-service to provision a workspace
-3. Shows your webhook URL: `http://localhost:3001/{workspaceId}/{token}`
-
----
-
-## 5. Expose your webhook to the internet
-
-Twilio requires a public HTTPS URL. Use `cloudflared` (free, no account required):
-
-**Windows — run from WSL:**
-
-```bash
-bash expose.sh
+export NATS_URL=nats://localhost:4222
+go run ./cmd/operator
 ```
 
-**macOS / Linux:**
+The operator moves the sample policy from `Pending` to `Monitoring`:
 
-```bash
-bash expose.sh
+```sh
+kubectl get telecomsecuritypolicy -n telecom-core protect-amf-core -o wide
 ```
 
-The script downloads the cloudflared binary if not present, then runs:
+Publish a synthetic `ThreatScoreEvent` above the default threshold (0.85)
+to see closed-loop mitigation kick in (`autoMitigate: true` in the sample):
 
-```
-cloudflared tunnel --url http://localhost:3001
-```
-
-It prints a URL like `https://example.trycloudflare.com`. Keep the terminal open.
-
-> The tunnel URL changes on every restart. Update Twilio when you restart.
-
----
-
-## 6. Configure Twilio
-
-1. Go to [console.twilio.com](https://console.twilio.com)
-2. **Phone Numbers → Manage → Active Numbers → your number**
-3. **Messaging → A message comes in:**
-   - URL: `https://<tunnel-url>/<workspaceId>/<token>`
-   - Method: `HTTP POST`
-4. Optionally set the same URL as **Status Callback URL** for delivery events
-
-> Copy `<workspaceId>` and `<token>` from the webhook URL shown in the dashboard header.
-
----
-
-## 7. Test it
-
-Send an SMS to your Twilio phone number. The event appears in the dashboard at **http://localhost:4200** within ~1 second.
-
-Or test with curl:
-
-```bash
-curl -X POST "http://localhost:3001/<workspaceId>/<token>" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "x-twilio-signature: test" \
-  -d "MessageSid=SM123&From=%2B15551234567&To=%2B15559876543&Body=Hello&AccountSid=AC000"
+```sh
+nats pub sentinel5g.threats.scored '{
+  "sourceEventId": "demo-1",
+  "namespace": "telecom-core",
+  "podName": "amf-0",
+  "sourceIp": "203.0.113.7",
+  "score": 0.93,
+  "model": "autoencoder-v1",
+  "detectedAt": "2026-01-05T12:00:00Z"
+}'
 ```
 
----
+(`amf-0` must exist and carry `app: amf-service` for the watcher to match it
+against the sample policy — `kubectl label pod amf-0 app=amf-service -n telecom-core`.)
 
-## Useful commands
+## 4. Install via Helm (chart-only, no cluster changes made by this repo)
 
-```bash
-npm run logs                              # tail all service logs
-docker logs -f telecom-webhook-ingestion  # single service
-npm run down                              # stop containers
-npm run down -- -v                        # full reset (clears DB)
-npm run restart                           # rebuild + restart
+```sh
+helm lint charts/sentinel5g-operator
+helm install sentinel5g charts/sentinel5g-operator --namespace sentinel5g-system --create-namespace
 ```
 
----
+See `charts/sentinel5g-operator/values.yaml` for the `ebpf.enabled` toggle
+and `docs/integrations.md` for what enabling it requires.
 
-## Troubleshooting
+## Known local-environment gaps
 
-### Container stuck in `(starting)` or `(unhealthy)`
-
-```bash
-docker logs telecom-webhook-processing
-```
-
-Common causes: `DATABASE_URL` misconfigured, or PostgreSQL not ready yet — wait 10 s.
-
-### `POST /workspace/auto` returns 500
-
-```bash
-docker logs telecom-webhook-processing
-docker logs telecom-webhook-postgres
-```
-
-### Dashboard shows `localhost:3001` in the webhook URL
-
-Expected — the Angular build hardcodes `localhost:3001`. Replace it manually with your cloudflare tunnel URL when configuring Twilio.
-
-### cloudflared shows 502 Bad Gateway (Windows)
-
-Run `expose.sh` from **WSL**, not from PowerShell or CMD. Docker containers are reachable from WSL but not from the Windows network stack directly.
+- If you're starting from a fresh clone without a `go.sum` yet, `go mod
+  tidy` needs network access to a Go module proxy to populate it the first
+  time.
+- `bpf/packet_filter.c` only compiles on Linux — a `linux-libc-dev` package
+  is required in addition to `clang`/`libbpf-dev`/kernel headers (see the
+  Prerequisites note above); CI installs all of these explicitly (see
+  `.github/workflows/ci.yml`).
