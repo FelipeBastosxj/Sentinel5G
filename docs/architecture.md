@@ -1,221 +1,108 @@
 # Architecture
 
-## Overview
-
-Three NestJS microservices communicate via direct HTTP and PostgreSQL notify. No message broker — events flow synchronously through ingestion → processing, then fan out to WebSocket clients via `pg_notify` + Redis pub/sub.
-
-```
-Browser (Angular :4200)
-    |  WebSocket (Socket.IO)                |  REST
-    +---------------------------------------+---------------------------+
-                                                                        |
-Twilio -POST-> ingestion-service:3001 -POST /internal/process-> processing-service:3003
-               (rate-limit, capture)                                    |
-                                                                  normalise
-                                                                  INSERT
-                                                                  pg_notify
-                                                                        |
-                                                               PostgreSQL:5432
-                                                                        |
-                                                          LISTEN webhook_events
-                                                                        |
-                                                        realtime-gateway:3004
-                                                        Socket.IO rooms · Redis fanout
-```
-
----
-
-## ingestion-service (port 3001)
-
-**Single responsibility:** Accept all inbound webhook HTTP requests and forward them raw to the processing-service. Has no database access.
-
-### Endpoint
+Sentinel5G is a closed-loop detection-and-remediation mesh built from four
+layers. Each layer is independently replaceable behind the interfaces
+described below, which is what lets the reference implementation stay small
+while the architecture scales to real telecom deployments.
 
 ```
-@All() /:workspaceId/:endpointToken
++-----------------------------------------------------------------------------------+
+|                            LAYER 1: CAPTURE & KERNEL                              |
+|       Pod/Worker Node Telecom (3GPP/SIP/SMPP) ---> eBPF Probe (Cilium/Falco)       |
++-----------------------------------------------------------------------------------+
+                                          |
+                                          v (Event Stream)
++-----------------------------------------------------------------------------------+
+|                          LAYER 2: INGESTION & PIPELINE                            |
+|              Fluent Bit / NATS JetStream ---> Normalization & Extraction          |
++-----------------------------------------------------------------------------------+
+                                          |
+                                          v (Feature Vector)
++-----------------------------------------------------------------------------------+
+|                        LAYER 3: AI ENGINE / ANOMALY DETECTION                      |
+|              ONNX Runtime (Python) ---> Inference Engine (Autoencoder)            |
++-----------------------------------------------------------------------------------+
+                                          |
+                                          v (Threat Score)
++-----------------------------------------------------------------------------------+
+|                       LAYER 4: CONTROLLER & AUTOMATION                            |
+|           K8s Operator (Go) ---> eBPF Reconfiguration / Service Mesh / CNI         |
++-----------------------------------------------------------------------------------+
 ```
 
-Accepts any HTTP method. Returns `202 Accepted` immediately.
+## Technology stack
 
-### Provider detection
+| Layer                | Technologies                                        | Role |
+|-----------------------|------------------------------------------------------|------|
+| Kernel & Capture      | C/eBPF, Falco, Cilium                                | High-performance in-kernel capture of GTP-U/SIP/HTTP2 (5G SBA) traffic with no meaningful per-packet latency penalty. |
+| Inference & AI Engine | Python, PyTorch, ONNX Runtime                       | Lightweight, low-latency inference. The model trains in PyTorch and is exported to ONNX for production inference. |
+| Controller/Operator   | Go, controller-runtime (Kubebuilder patterns)       | Native Kubernetes reconciliation of `TelecomSecurityPolicy` CRDs, managed via `kubectl`. |
+| Pipeline & Messaging  | NATS JetStream                                      | Real-time telemetry/threat-score transport between the capture and inference layers. |
+| Security & CI/CD      | Cosign, Syft (SBOM), GitHub Actions, Trivy           | SAST, SBOM generation, and container signing for every published image. |
 
-| Header | Detected provider |
-|---|---|
-| `x-twilio-signature` | `twilio` |
-| `x-vonage-signature` | `vonage` |
-| `messagebird-signature-jwt` | `messagebird` |
-| _(none)_ | `unknown` |
+## Component responsibilities
 
-### Modules
+### Layer 1 — Non-invasive capture (`bpf/`)
 
-| Module | What it does |
-|---|---|
-| `IngestionModule` | `IngestController` → `IngestEventUseCase` → `ProcessingForwarderAdapter` |
-| `CorrelationModule` | Attaches `X-Correlation-ID` to every request via `AsyncLocalStorage` |
-| `LoggerModule` | Structured JSON logger with correlation ID injection |
-| `MetricsModule` | In-process counters at `GET /metrics` |
-| `HealthModule` | `GET /health` |
+`bpf/packet_filter.c` is an XDP program attached at a telecom-facing pod's
+host network interface. It inspects Ethernet/IPv4/UDP headers looking for
+GTP-U (port 2152) and SIP (port 5060) traffic without requiring a sidecar in
+every pod. It maintains a coarse per-source-IP signaling-rate counter
+(storm detection) and consults a `blocklist` BPF map populated exclusively
+by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
+at the kernel/NIC level.
 
----
+This reference implementation uses plain UAPI kernel headers rather than a
+generated `vmlinux.h`, so it builds against any recent kernel without first
+extracting BTF from the target host. For full CO-RE portability across
+differing kernel struct layouts, generate one and switch to
+`BPF_CORE_READ()`:
 
-## processing-service (port 3003)
-
-**Single responsibility:** Normalise raw captures, persist to PostgreSQL, notify the realtime-gateway, and serve the REST API.
-
-### HTTP endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/internal/process` | Internal — raw capture from ingestion |
-| `POST` | `/workspace/auto` | Idempotent workspace provisioning |
-| `GET` | `/events/recent` | Last N events (all workspaces) |
-| `GET` | `/events/workspace/:id` | Events for a workspace |
-| `GET` | `/health` | Health check |
-
-### Normalisation pipeline
-
-1. Receive `ProcessCommand` (`provider`, `headers`, `body`, `receivedAt`)
-2. Route to `TwilioNormalizer` (or identity passthrough for unknown providers)
-3. Extract `messageSid`, `callSid`, `from`, `to`, `status`, `eventType`
-4. `INSERT INTO webhook_events`
-5. `SELECT pg_notify('webhook_events', json)` — triggers realtime-gateway
-
-### Database
-
-A single `pg.Client` provided as `DATABASE_CLIENT` token via `DatabaseModule`. Connects once on module init, disconnects on shutdown.
-
----
-
-## realtime-gateway (port 3004)
-
-**Single responsibility:** Fan out events from PostgreSQL to connected WebSocket clients.
-
-### Flow
-
-```
-PgListenerAdapter
-  LISTEN webhook_events (dedicated pg.Client)
-      |
-      v BroadcastEventUseCase.broadcastFromLocal()
-          |
-          +---> EventsGateway (Socket.IO)
-          |      broadcast to room named by workspaceId
-          |
-          +---> RedisFanoutAdapter.publish()
-                 channel: telecom-webhook.gateway
-
-RedisFanoutAdapter (subscriber)
-  Receives events from peer gateway instances
-      |
-      v BroadcastEventUseCase.broadcastFromRemote()
-          +---> EventsGateway (broadcast to local Socket.IO clients)
+```sh
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/headers/vmlinux.h
 ```
 
-### Socket.IO protocol
+### Layer 2 — Ingestion & pipeline (`pkg/events`)
 
-```
-Client → server:   subscribe  { workspaceId: string }
-Server → client:   webhook_event  WebhookEventSummary
-```
+`pkg/events` defines the wire schema (`NormalizedEvent`, `ThreatScoreEvent`)
+shared between the capture side, the AI engine, and the operator, and wraps
+a NATS JetStream connection for both. See [event-model.md](event-model.md)
+for the full schema and subject list.
 
-### Modules
+### Layer 3 — AI engine (`cmd/ai-engine`)
 
-| Module | What it does |
-|---|---|
-| `RealtimeModule` | `PgListenerAdapter` + `RedisFanoutAdapter` + `EventsGateway` |
-| `CommonInfraModule` | Correlation service + structured logger |
-| `ObservabilityModule` | `GET /metrics` + `GET /health` |
+An unsupervised autoencoder (`cmd/ai-engine/sentinel_ai/model.py`) learns the
+normal signaling baseline for a workload; deviations above a configurable
+threshold produce a `ThreatScoreEvent`. Training happens in PyTorch; the
+exported ONNX graph is what actually serves inference
+(`sentinel_ai/server.py`, via `onnxruntime`), keeping the production
+dependency surface — and the Python GIL — out of the hot path.
 
----
+### Layer 4 — Orchestration & automation (`pkg/controller`, `pkg/ebpf`, `pkg/mesh`)
 
-## Shared packages
+The `TelecomSecurityPolicy` CRD (`api/v1alpha1`) declares which workloads a
+policy protects, how sensitive its threat detection is, and which
+mitigations are permitted. `pkg/controller.ThreatScoreWatcher` consumes
+scored threats, matches them against active policies, and — when a policy's
+`autoMitigate` is enabled — drives:
 
-### `@telecom-webhook/contracts`
+- `pkg/ebpf`: pushes the offending source IP into the XDP blocklist map.
+- `pkg/mesh`: quarantines the workload via an Istio `AuthorizationPolicy`
+  (or a no-op adapter in detection-only deployments).
 
-| Export | Description |
-|---|---|
-| `WebhookEvent` | Full normalised event (persisted to DB) |
-| `WebhookEventSummary` | Lightweight projection broadcast over WebSocket |
-| `TelecomProvider` | `'twilio' \| 'vonage' \| 'messagebird' \| 'infobip' \| 'plivo'` |
-| `TelecomEventType` | All `message.*` and `call.*` type strings |
-| `TwilioWebhookPayload` | Raw Twilio form body shape |
-| `Workspace` | Workspace entity |
+Both actions are independent: a cluster without a service mesh can still run
+with `ebpfBlock: true, isolatePod: false`, and vice versa.
 
-### `@telecom-webhook/utils`
+## Design principles
 
-| Export | Description |
-|---|---|
-| `generateUuid()` / `isUuid()` | UUID v4 |
-| `extractOrCreateCorrelationId()` | Reads header or generates new ID |
-| `createLogger()` / `StructuredLogger` | JSON line logger (stdout) |
-| `nowIsoUtc()` / `isIsoTimestamp()` | UTC timestamp helpers |
-| `exponentialBackoffMs()` / `sleep()` | Retry backoff |
-
----
-
-## PostgreSQL schema
-
-```sql
-workspaces (
-  id             UUID PK,
-  name           TEXT,
-  endpoint_token TEXT UNIQUE,
-  created_at     TIMESTAMPTZ,
-  updated_at     TIMESTAMPTZ
-)
-
-webhook_events (
-  id              UUID PK,
-  workspace_id    UUID FK -> workspaces,
-  provider        TEXT,
-  event_type      TEXT,
-  message_sid     TEXT,
-  call_sid        TEXT,
-  from_number     TEXT,
-  to_number       TEXT,
-  status          TEXT,
-  request_headers JSONB,
-  request_payload JSONB,
-  received_at     TIMESTAMPTZ,
-  processed_at    TIMESTAMPTZ,
-  processing_ms   INTEGER
-)
-```
-
-Indexes: `workspace_id`, `(workspace_id, received_at)`, `message_sid`, `call_sid`, GIN on `request_payload`.
-
----
-
-## Environment variables
-
-### ingestion-service
-
-| Variable | Default | Description |
-|---|---|---|
-| `INGESTION_PORT` | `3001` | HTTP port |
-| `DATABASE_URL` | _(required)_ | PostgreSQL connection string |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `PROCESSING_BASE_URL` | `http://localhost:3003` | processing-service URL |
-| `RATE_LIMIT_TTL_SECONDS` | `60` | Throttler window |
-| `RATE_LIMIT_MAX` | `500` | Max requests per window |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-
-### processing-service
-
-| Variable | Default | Description |
-|---|---|---|
-| `PROCESSING_PORT` | `3003` | HTTP port |
-| `DATABASE_URL` | _(required)_ | PostgreSQL connection string |
-| `LOG_LEVEL` | `info` | Log level |
-
-### realtime-gateway
-
-| Variable | Default | Description |
-|---|---|---|
-| `GATEWAY_PORT` | `3004` | HTTP/WebSocket port |
-| `DATABASE_URL` | _(required)_ | PostgreSQL connection string |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `REALTIME_GATEWAY_CORS_ORIGIN` | `http://localhost:4200` | Allowed CORS origin |
-| `LOG_LEVEL` | `info` | Log level |
+- **Zero-Trust by default.** The operator's default `securityContext` drops
+  all Linux capabilities; eBPF blocklist enforcement is an explicit opt-in
+  (`ebpf.enabled` in the Helm chart) because it needs `CAP_BPF`/`CAP_NET_ADMIN`.
+- **Closed-loop, but reversible.** Every automated action lives behind a
+  named adapter (`pkg/ebpf.BlocklistUpdater`, `pkg/mesh.Adapter`) so it can
+  be swapped for a no-op in detection-only deployments, or a different mesh
+  implementation entirely.
+- **Latency budget.** The target is <0.2ms added latency per packet at the
+  XDP layer and single-digit-millisecond closed-loop mitigation once a
+  threat score crosses threshold — see `docs/observability.md` for how this
+  is measured.
