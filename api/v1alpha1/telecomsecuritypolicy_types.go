@@ -1,0 +1,135 @@
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// Sensitivity controls how aggressively the AI engine's threat score is
+// interpreted for a given policy.
+// +kubebuilder:validation:Enum=low;medium;high
+type Sensitivity string
+
+const (
+	SensitivityLow    Sensitivity = "low"
+	SensitivityMedium Sensitivity = "medium"
+	SensitivityHigh   Sensitivity = "high"
+)
+
+// WorkloadSelector identifies the workloads a TelecomSecurityPolicy protects.
+// At least one of the fields must be set; fields are ANDed together.
+type WorkloadSelector struct {
+	// App matches the "app" label on Pods/Deployments in the policy's namespace.
+	// +optional
+	App string `json:"app,omitempty"`
+
+	// MatchLabels matches an arbitrary label set, ANDed with App if both are set.
+	// +optional
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+}
+
+// ThreatDetectionSpec configures how the AI engine's anomaly scoring is
+// consumed for the target workloads.
+type ThreatDetectionSpec struct {
+	// Sensitivity biases the effective threshold applied to the incoming
+	// ThreatScoreEvent: high lowers it, low raises it.
+	// +kubebuilder:default=medium
+	Sensitivity Sensitivity `json:"sensitivity,omitempty"`
+
+	// AutoMitigate, when true, allows the controller to trigger Actions
+	// automatically once the effective threat score threshold is crossed.
+	// When false, the controller only updates Status so a human can decide.
+	// +kubebuilder:default=false
+	AutoMitigate bool `json:"autoMitigate,omitempty"`
+}
+
+// ActionsSpec declares which mitigations the controller is allowed to take
+// when a policy's threat threshold is crossed and AutoMitigate is enabled.
+type ActionsSpec struct {
+	// EbpfBlock instructs the operator to push the offending source IP(s)
+	// into the eBPF blocklist map on the affected node(s).
+	// +kubebuilder:default=false
+	EbpfBlock bool `json:"ebpfBlock,omitempty"`
+
+	// IsolatePod instructs the operator to apply a service-mesh quarantine
+	// policy (see pkg/mesh) around the affected workload.
+	// +kubebuilder:default=false
+	IsolatePod bool `json:"isolatePod,omitempty"`
+}
+
+// TelecomSecurityPolicySpec defines the desired state of a TelecomSecurityPolicy.
+type TelecomSecurityPolicySpec struct {
+	// TargetWorkloads lists the workloads this policy protects.
+	// +kubebuilder:validation:MinItems=1
+	TargetWorkloads []WorkloadSelector `json:"targetWorkloads"`
+
+	// ThreatDetection configures scoring interpretation for this policy.
+	ThreatDetection ThreatDetectionSpec `json:"threatDetection,omitempty"`
+
+	// Actions declares which automated mitigations are permitted.
+	Actions ActionsSpec `json:"actions,omitempty"`
+}
+
+// PolicyPhase is a coarse-grained summary of a TelecomSecurityPolicy's state.
+type PolicyPhase string
+
+const (
+	PolicyPhasePending    PolicyPhase = "Pending"
+	PolicyPhaseMonitoring PolicyPhase = "Monitoring"
+	PolicyPhaseMitigating PolicyPhase = "Mitigating"
+	PolicyPhaseDegraded   PolicyPhase = "Degraded"
+)
+
+// TelecomSecurityPolicyStatus defines the observed state of a TelecomSecurityPolicy.
+type TelecomSecurityPolicyStatus struct {
+	// Phase summarizes the policy's current state.
+	// +optional
+	Phase PolicyPhase `json:"phase,omitempty"`
+
+	// ObservedThreatScore is the most recent threat score (0.0-1.0) matched
+	// against one of this policy's target workloads.
+	// +optional
+	ObservedThreatScore string `json:"observedThreatScore,omitempty"`
+
+	// LastMitigationTime records when an automated mitigation was last applied.
+	// +optional
+	LastMitigationTime *metav1.Time `json:"lastMitigationTime,omitempty"`
+
+	// Conditions represent the latest available observations of the policy's state.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Score",type=string,JSONPath=`.status.observedThreatScore`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// TelecomSecurityPolicy is the Schema for the telecomsecuritypolicies API.
+// It declares which telecom workloads Sentinel5G protects, how sensitive the
+// AI-driven threat detection should be, and which automated mitigations the
+// operator is allowed to take in a closed loop.
+type TelecomSecurityPolicy struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   TelecomSecurityPolicySpec   `json:"spec,omitempty"`
+	Status TelecomSecurityPolicyStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// TelecomSecurityPolicyList contains a list of TelecomSecurityPolicy.
+type TelecomSecurityPolicyList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []TelecomSecurityPolicy `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&TelecomSecurityPolicy{}, &TelecomSecurityPolicyList{})
+}
