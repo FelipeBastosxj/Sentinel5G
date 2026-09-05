@@ -1,121 +1,62 @@
-# Contributing
+# Contributing to Sentinel5G
 
-Thank you for your interest in contributing!
+Thanks for your interest in Sentinel5G! This project spans four fairly
+different toolchains (Go, C/eBPF, Python, Kubernetes manifests), so please
+read the section that matches what you're changing before opening a PR.
 
-This project is open source (MIT) and welcomes contributions at all levels — bug fixes, documentation, new provider normalisers, and frontend features.
+## Code of Conduct
 
----
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By
+participating, you are expected to uphold it.
 
-## Getting started
+## Development setup
 
-### Prerequisites
+See [`docs/getting-started.md`](docs/getting-started.md) for the full local
+setup (Go module, AI engine train/export pipeline, docker-compose stack,
+running the operator against a local cluster).
 
-- Docker Desktop (or Docker Engine + Compose plugin)
-- Node.js 22+ and npm 10+ (for running tests locally)
-- Git
+## Branch naming
 
-### Setup
+- `feat/<short-description>`
+- `fix/<short-description>`
+- `docs/<short-description>`
 
-```bash
-git clone https://github.com/FelipeBastosxj/eventstream-observability-engine.git
-cd eventstream-observability-engine
-npm install
-cp .env.example .env
-npm run up
-```
+## Commit messages
 
----
-
-## Development workflow
-
-### Run tests
-
-```bash
-npm test --workspaces           # all workspaces
-npm test --workspace=services/ingestion-service  # single service
-```
-
-### Run services locally (without Docker)
-
-Start only infrastructure via Docker, then run services directly:
-
-```bash
-docker compose -f infra/docker-compose.yml up -d postgres redis
-
-DATABASE_URL=postgresql://webhook_user:webhook_pass@localhost:5432/telecom_webhooks \
-PROCESSING_BASE_URL=http://localhost:3003 \
-npm run start:dev --workspace=services/ingestion-service
-```
-
----
-
-## Branch strategy
-
-| Branch | Purpose |
-|---|---|
-| `main` | Stable released code |
-| `dev` | Active development |
-| `feature/<name>` | Feature branches off `dev` |
-| `fix/<name>` | Bug fixes off `dev` |
-
----
-
-## Commit convention
-
-[Conventional Commits](https://www.conventionalcommits.org/):
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-feat: add Vonage SMS normaliser
-fix: handle SmsStatus alias in Twilio normaliser
-docs: update getting-started guide
-chore: remove unused files
-test: fix IngestEventUseCase spec
+feat(ebpf): add support for GTP-U header inspection
+fix(operator): resolve deadlock on policy update
+docs(readme): update helm installation instructions
 ```
 
----
+## Before opening a PR
 
-## Pull request process
+- **Go (`api/`, `cmd/operator`, `pkg/`):** `go build ./...`, `go vet ./...`,
+  `go test ./... -cover`, `golangci-lint run`. If you changed
+  `api/v1alpha1/*_types.go`, update `zz_generated.deepcopy.go` and
+  `config/crd/bases/*.yaml` / `charts/sentinel5g-operator/templates/crd.yaml`
+  by hand to match (see the note at the top of `zz_generated.deepcopy.go`
+  about wiring in `controller-gen`).
+- **eBPF (`bpf/`):** `make -C bpf` must compile cleanly. Keep stack usage
+  well under the 512-byte eBPF limit and stick to standard integer sizing
+  (`__u32`, `__u64`, `__u8`).
+- **Python (`cmd/ai-engine`):** `black --check .`, `flake8`, `pytest`, all
+  run from `cmd/ai-engine`. Public functions should carry type hints.
+- **Manifests (`config/`, `charts/`):** `helm lint charts/sentinel5g-operator`.
+  If you change the CRD schema, update it in both `config/crd/bases/` and
+  `charts/sentinel5g-operator/templates/crd.yaml` — see the note in that
+  chart template for why they're not shared.
 
-1. Fork the repository and branch off `dev`
-2. Make changes with tests
-3. Run `npm test --workspaces` — all tests must pass
-4. Open a PR against `dev` with a clear description
-5. Address review comments
-6. Squash and merge
+## PR requirements
 
----
+- CI must pass (lint + tests across every changed toolchain).
+- CRD manifests must be updated if the API changed.
+- eBPF changes must be reviewed for kernel-version compatibility and stack
+  usage, not just for compiling locally.
 
-## Engineering standards
+## Reporting issues
 
-### Architecture rules
-
-- **No message broker in the MVP** — services communicate via direct HTTP. `pg_notify` handles real-time fanout.
-- **Clean Architecture** — use cases depend only on port interfaces, never on infrastructure.
-- **No ORM** — raw `pg.Client` for all database access.
-- **Thin controllers** — controllers only extract HTTP primitives and delegate to use cases.
-
-### Code standards
-
-- Structured JSON logs only — use `AppLoggerService`, never `console.log`
-- Every service exposes `GET /health`
-- New providers require: payload interface in `@telecom-webhook/contracts`, a normaliser class, and unit tests
-
-### Where things belong
-
-| Concern | Location |
-|---|---|
-| HTTP handling | Controller |
-| Business logic | Use case |
-| External I/O (DB, HTTP, Redis) | Adapter (infrastructure layer) |
-| Shared types | `@telecom-webhook/contracts` |
-| Shared helpers | `@telecom-webhook/utils` |
-
----
-
-## Good first issues
-
-- Add a new provider normaliser (Vonage, MessageBird, Infobip)
-- Add `GET /timelines/:messageSid` for conversation view
-- Add event search/filter to the Angular events page
-- Write E2E tests for the webhook ingestion flow
-- Add JWT authentication for the workspace API
+Use [GitHub Issues](https://github.com/sentinel5g/sentinel5g/issues) with
+the provided bug report / feature request templates.
