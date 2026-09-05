@@ -16,6 +16,8 @@ venv/
 .mypy_cache/
 .ruff_cache/
 cmd/ai-engine/models/*.onnx
+cmd/ai-engine/models/*.onnx.data
+cmd/ai-engine/models/*.norm.json
 cmd/ai-engine/models/*.pt
 cmd/ai-engine/data/*.npz
 cmd/ai-engine/data/*.csv
