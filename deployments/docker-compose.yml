@@ -1,0 +1,35 @@
+# Local development stack: NATS JetStream (Layer 2 messaging backbone) and
+# the AI engine (Layer 3), so cmd/operator can be run locally (`go run
+# ./cmd/operator`) against a real message bus without a Kubernetes cluster.
+# See docs/getting-started.md for the full walkthrough.
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222" # client connections
+      - "8222:8222" # monitoring / HTTP
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  ai-engine:
+    build:
+      context: ../cmd/ai-engine
+      dockerfile: Dockerfile
+    environment:
+      AI_ENGINE_MODE: nats
+      NATS_URL: nats://nats:4222
+      NATS_EVENTS_SUBJECT: sentinel5g.events.normalized
+      NATS_THREATS_SUBJECT: sentinel5g.threats.scored
+      MODEL_PATH: /app/models/autoencoder.onnx
+    volumes:
+      - ../cmd/ai-engine/models:/app/models:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+    # Requires models/autoencoder.onnx + models/autoencoder.norm.json to
+    # exist locally first: run the train -> export pipeline in
+    # cmd/ai-engine (see docs/getting-started.md) before `docker compose up`.
