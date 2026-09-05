@@ -6,44 +6,71 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
+  packages: write
+  id-token: write # required for cosign keyless signing
 
 jobs:
   release:
-    name: Create GitHub Release
+    name: Build, scan, sign
     runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        component:
+          - name: sentinel5g-operator
+            context: .
+            dockerfile: Dockerfile
+          - name: sentinel5g-ai-engine
+            context: cmd/ai-engine
+            dockerfile: cmd/ai-engine/Dockerfile
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          fetch-depth: 0
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Extract changelog for this version
-        id: changelog
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.component.context }}
+          file: ${{ matrix.component.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.component.name }}:latest
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
+          format: cyclonedx-json
+          output-file: ${{ matrix.component.name }}-sbom.json
+
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless)
         run: |
-          VERSION=${{ steps.version.outputs.VERSION }}
-          VERSION_NO_V="${VERSION#v}"
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.component.name }}@${{ steps.build.outputs.digest }}
 
-          # Extract the section for this version from CHANGELOG.md
-          NOTES=$(awk "/^## \[${VERSION_NO_V}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
-
-          if [ -z "$NOTES" ]; then
-            NOTES="See [CHANGELOG.md](./CHANGELOG.md) for details."
-          fi
-
-          # Write to file to preserve multiline
-          echo "$NOTES" > release_notes.txt
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          name: "EventStream Observability Engine ${{ steps.version.outputs.VERSION }}"
-          body_path: release_notes.txt
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}
+          name: ${{ matrix.component.name }}-sbom
+          path: ${{ matrix.component.name }}-sbom.json
