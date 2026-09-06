@@ -30,10 +30,13 @@ jobs:
         # (not "latest"): golangci-lint v1 is no longer patched upstream, so
         # "latest" landing on v2 broke CI outright (v2's binary is built
         # against a specific Go version, and its config schema is a breaking
-        # change from v1 — .golangci.yml is already migrated to it). Bump
-        # this deliberately, in step with go.mod's toolchain line, not as a
-        # side effect of "latest" drifting.
-        uses: golangci/golangci-lint-action@v6
+        # change from v1 — .golangci.yml is already migrated to it).
+        # golangci-lint-action@v6 itself only understands v1 golangci-lint
+        # binaries and refuses to run a v2 version string at all — v7+ is
+        # required for v2 support; pinned to v9.3.0, the latest action
+        # release as of this fix. Bump both deliberately, in step with
+        # go.mod's toolchain line, not as a side effect of "latest" drifting.
+        uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.13.2
       - name: govulncheck (known-vulnerable dependency scan)
