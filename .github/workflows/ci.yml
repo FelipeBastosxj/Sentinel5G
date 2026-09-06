@@ -111,13 +111,22 @@ jobs:
         # `make -C bpf` generates it via bpftool from this runner's own
         # /sys/kernel/btf/vmlinux, gitignored, not committed -- see
         # bpf/Makefile and packet_filter.c's own top comment for why a
-        # build-time-generated one is fine here). linux-tools-generic is
-        # what actually provides a working `bpftool` on Ubuntu; requires
-        # this runner's kernel to have BTF (CONFIG_DEBUG_INFO_BTF=y), true
-        # for GitHub's ubuntu-latest as of this writing.
+        # build-time-generated one is fine here).
+        #
+        # bpftool comes from a static upstream release, not apt's
+        # linux-tools-generic: that package failed outright here (its
+        # bpftool binary isn't reliably on PATH across Ubuntu
+        # releases/kernel-flavor combinations -- the same unreliability
+        # already documented in this project's WSL2 dev-environment notes,
+        # which is why that environment also switched to this exact static
+        # binary). v7.7.0 matches what's already proven working there.
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev linux-tools-common linux-tools-generic
+          sudo apt-get install -y clang llvm libbpf-dev
+          curl -sL https://github.com/libbpf/bpftool/releases/download/v7.7.0/bpftool-v7.7.0-amd64.tar.gz \
+            | sudo tar -xzC /usr/local/bin bpftool
+          sudo chmod +x /usr/local/bin/bpftool
+          bpftool version
       - name: Compile bpf/packet_filter.c
         run: make -C bpf
 
