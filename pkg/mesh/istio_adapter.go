@@ -47,9 +47,11 @@ func NewIstioAdapter(deps IstioAdapterDeps) *IstioAdapter {
 }
 
 // Quarantine creates (or updates) a deny-all AuthorizationPolicy for
-// namespace/selector. An empty `spec.rules: []` on an AuthorizationPolicy
-// with no `action` defaults to DENY-all for the matched workloads, which is
-// exactly the isolation behavior we want here.
+// namespace/selector. `action: DENY` with a single empty rule (`{}`) matches
+// every request to the selected workload, which is exactly the isolation
+// behavior we want here; `spec.rules: []` (no rules at all) is rejected by
+// Istio's validating webhook as "meaningless" since a DENY with nothing to
+// match against never triggers.
 func (a *IstioAdapter) Quarantine(ctx context.Context, namespace string, selector map[string]string) error {
 	policy := newAuthorizationPolicy(namespace, selector)
 
@@ -98,7 +100,7 @@ func newAuthorizationPolicy(namespace string, selector map[string]string) *unstr
 	}
 
 	_ = unstructured.SetNestedMap(policy.Object, matchLabels, "spec", "selector", "matchLabels")
-	_ = unstructured.SetNestedSlice(policy.Object, []interface{}{}, "spec", "rules")
+	_ = unstructured.SetNestedSlice(policy.Object, []interface{}{map[string]interface{}{}}, "spec", "rules")
 	_ = unstructured.SetNestedField(policy.Object, "DENY", "spec", "action")
 
 	return policy
