@@ -59,8 +59,8 @@ func (a *IstioAdapter) Quarantine(ctx context.Context, namespace string, selecto
 	existing.SetGroupVersionKind(authorizationPolicyGVK)
 	err := a.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: policy.GetName()}, existing)
 	if apierrors.IsNotFound(err) {
-		if err := a.client.Create(ctx, policy); err != nil {
-			return fmt.Errorf("create quarantine AuthorizationPolicy %s/%s: %w", namespace, policy.GetName(), err)
+		if createErr := a.client.Create(ctx, policy); createErr != nil {
+			return fmt.Errorf("create quarantine AuthorizationPolicy %s/%s: %w", namespace, policy.GetName(), createErr)
 		}
 		return nil
 	}

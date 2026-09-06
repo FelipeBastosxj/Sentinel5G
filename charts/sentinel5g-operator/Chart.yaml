@@ -7,9 +7,9 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.26.0-0"
-home: https://github.com/sentinel5g/sentinel5g
+home: https://github.com/FelipeBastosxj/Sentinel5G
 sources:
-  - https://github.com/sentinel5g/sentinel5g
+  - https://github.com/FelipeBastosxj/Sentinel5G
 keywords:
   - security
   - ebpf

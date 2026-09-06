@@ -24,6 +24,19 @@ type Config struct {
 	EventsSubject  string
 	ThreatsSubject string
 	ConnectTimeout time.Duration
+
+	// Authentication/transport security, all optional and empty by default —
+	// which preserves the historical unauthenticated nats:// behavior for
+	// local dev. In any deployment where the NATS bus is reachable by
+	// anything other than this operator and the AI engine, set at least one
+	// of these: an unauthenticated bus lets anyone who can reach it forge a
+	// ThreatScoreEvent and trigger a real mitigation (see docs/integrations.md).
+	CredentialsFile string // NATS .creds file (NKey/JWT); takes precedence over Username/Password.
+	Username        string
+	Password        string
+	TLSCAFile       string
+	TLSCertFile     string // Requires TLSKeyFile to also be set.
+	TLSKeyFile      string
 }
 
 // DefaultConfig returns sane local-dev defaults matching .env.example.
@@ -41,11 +54,26 @@ func DefaultConfig() Config {
 // stream backing both the normalized-events and threat-scores subjects
 // exists (creating it if this is the first connection to do so).
 func Connect(cfg Config) (*Bus, error) {
-	conn, err := nats.Connect(cfg.URL,
+	opts := []nats.Option{
 		nats.Timeout(cfg.ConnectTimeout),
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
-	)
+	}
+
+	switch {
+	case cfg.CredentialsFile != "":
+		opts = append(opts, nats.UserCredentials(cfg.CredentialsFile))
+	case cfg.Username != "":
+		opts = append(opts, nats.UserInfo(cfg.Username, cfg.Password))
+	}
+	if cfg.TLSCertFile != "" {
+		opts = append(opts, nats.ClientCert(cfg.TLSCertFile, cfg.TLSKeyFile))
+	}
+	if cfg.TLSCAFile != "" {
+		opts = append(opts, nats.RootCAs(cfg.TLSCAFile))
+	}
+
+	conn, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("connect to nats at %q: %w", cfg.URL, err)
 	}
@@ -119,6 +147,12 @@ func (b *Bus) PublishThreatScore(subject string, event ThreatScoreEvent) error {
 // causes the message to be NAK'd and redelivered.
 type ThreatScoreHandler func(ThreatScoreEvent) error
 
+// maxThreatScoreDeliveries bounds JetStream redelivery of a ThreatScoreEvent
+// whose handler keeps failing (e.g. a transient API server error). Without a
+// cap, a message NAKs forever; this trades "retry a while" for "give up and
+// stop paging the log," rather than looping indefinitely.
+const maxThreatScoreDeliveries = 5
+
 // SubscribeThreatScores creates (or reuses) a durable JetStream consumer on
 // subject and delivers decoded ThreatScoreEvents to handler until the
 // returned unsubscribe function is called.
@@ -126,7 +160,9 @@ func (b *Bus) SubscribeThreatScores(subject, durable string, handler ThreatScore
 	sub, err := b.js.Subscribe(subject, func(msg *nats.Msg) {
 		var event ThreatScoreEvent
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
-			_ = msg.Nak()
+			// A malformed payload will never unmarshal on redelivery either;
+			// Term (not Nak) drops it instead of retrying forever.
+			_ = msg.Term()
 			return
 		}
 		if err := handler(event); err != nil {
@@ -134,7 +170,7 @@ func (b *Bus) SubscribeThreatScores(subject, durable string, handler ThreatScore
 			return
 		}
 		_ = msg.Ack()
-	}, nats.Durable(durable), nats.ManualAck())
+	}, nats.Durable(durable), nats.ManualAck(), nats.MaxDeliver(maxThreatScoreDeliveries))
 	if err != nil {
 		return nil, fmt.Errorf("subscribe to %q: %w", subject, err)
 	}

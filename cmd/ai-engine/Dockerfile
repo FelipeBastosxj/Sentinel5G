@@ -14,6 +14,10 @@ ENV AI_ENGINE_HTTP_ADDR=0.0.0.0:8090 \
     AI_ENGINE_MODE=http \
     MODEL_PATH=/app/models/autoencoder.onnx
 
+RUN useradd --system --no-create-home --uid 65532 sentinel5g \
+    && chown -R sentinel5g /app
+USER sentinel5g
+
 EXPOSE 8090
 
 ENTRYPOINT ["python", "-m", "sentinel_ai.server"]

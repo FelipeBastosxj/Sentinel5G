@@ -12,7 +12,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
 )
 
 // Reconciler reconciles a TelecomSecurityPolicy object: it validates the

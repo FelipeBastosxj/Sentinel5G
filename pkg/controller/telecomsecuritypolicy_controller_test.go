@@ -8,7 +8,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
 )
 
 func TestReconciler_TransitionsPendingToMonitoring(t *testing.T) {

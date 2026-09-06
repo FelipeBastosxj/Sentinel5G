@@ -5,7 +5,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
 )
 
 func TestSelectorMatchesOne(t *testing.T) {

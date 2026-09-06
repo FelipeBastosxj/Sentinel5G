@@ -13,10 +13,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
-	"github.com/sentinel5g/sentinel5g/pkg/ebpf"
-	"github.com/sentinel5g/sentinel5g/pkg/events"
-	"github.com/sentinel5g/sentinel5g/pkg/mesh"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/mesh"
 )
 
 // sensitivityMultiplier biases the operator-wide ThreatScoreThreshold per
