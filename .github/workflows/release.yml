@@ -68,6 +68,12 @@ jobs:
           image-ref: ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
           severity: CRITICAL,HIGH
           exit-code: "1"
+          # Base-OS CVEs with no upstream fix yet (e.g. a handful of
+          # util-linux/ncurses/perl findings in python:3.11-slim as of
+          # 2026-09) can't be acted on and would otherwise block every
+          # release forever; only fail on findings that actually have a fix
+          # available, so this stays a real gate instead of noise to ignore.
+          ignore-unfixed: true
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3

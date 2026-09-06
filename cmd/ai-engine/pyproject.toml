@@ -4,11 +4,16 @@ version = "0.1.0"
 description = "Sentinel5G AI engine: autoencoder-based unsupervised threat scoring for telecom signaling traffic."
 requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.2,<3.0",
-    "onnx>=1.22,<2.0",  # >=1.22 fixes several known CVEs in earlier 1.x releases (see pip-audit)
+    # Serving-path only (sentinel_ai.server / features -- what Dockerfile's
+    # `pip install .` actually needs). torch/onnx/onnxscript are NOT here:
+    # production inference loads the exported ONNX graph via onnxruntime
+    # (see sentinel_ai/model.py's docstring), and pulling torch's default
+    # PyPI wheel into the serving image drags in gigabytes of unused NVIDIA
+    # CUDA libraries -- besides bloating the image, that's what made the
+    # release pipeline's Trivy scan itself time out analyzing
+    # site-packages/nvidia/cusparselt. See the "train" extra below.
     "onnxruntime>=1.18,<2.0",
-    "onnxscript>=0.1,<1.0",
-    "numpy>=1.26,<3.0",  # <3.0 (not <2.0): onnx>=1.22's ml-dtypes dep requires numpy>=2.1 on Python 3.13+
+    "numpy>=1.26,<3.0",
     "fastapi>=0.111,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
     "pydantic>=2.7,<3.0",
@@ -16,6 +21,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Needed only by scripts/train.py, scripts/export_onnx.py,
+# scripts/evaluate_model.py, and tests/test_inference.py -- never imported
+# by the serving path (sentinel_ai/server.py, features.py), so kept out of
+# the base `dependencies` Dockerfile installs. Install with `.[dev,train]`
+# for local development/testing.
+train = [
+    "torch>=2.2,<3.0",
+    "onnx>=1.22,<2.0",  # >=1.22 fixes several known CVEs in earlier 1.x releases (see pip-audit)
+    "onnxscript>=0.1,<1.0",
+]
 dev = [
     "pytest>=9.0.3,<10.0",  # >=9.0.3 fixes PYSEC-2026-1845
     "black>=26.3.1,<27.0",  # >=26.3.1 fixes PYSEC-2026-2120/2121
