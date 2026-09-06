@@ -46,32 +46,56 @@ sample cycles-per-packet directly. Neither has been run yet.
 
 ## 1.2 Resource consumption: Operator (Go) and AI Engine (Python/ONNX) under stress
 
-**Measured (idle only) on 2026-09-06**, the first time the operator has ever
-run in-cluster from its published image (`ghcr.io/felipebastosxj/sentinel5g-operator:v0.1.0`,
-via `helm install`, verified as part of testing the README Quickstart —
-see `docs/getting-started.md` for the ownership gotcha hit along the way).
-`kubectl top pod -n sentinel5g-system`: **1m CPU / 11Mi memory** at idle
-(one reconciled policy, no sustained event traffic).
+**Measured** on 2026-09-06, the first time both workloads have run
+in-cluster from their published images
+(`ghcr.io/felipebastosxj/sentinel5g-operator:v0.1.0` via the Helm chart;
+`sentinel5g-ai-engine:v0.1.0` via a new plain manifest,
+[`deployments/quickstart/ai-engine.yaml`](../../deployments/quickstart/ai-engine.yaml)
+— no Helm template for the AI engine exists yet, this fills that gap with
+the real model already trained locally delivered via a Secret, created
+imperatively per that file's own header comment rather than committing
+model bytes to the repo).
 
-**Under stress: still not measured.** The `nats bench` run in 1.3 below used
-a disposable throwaway subject, not `sentinel5g.threats.scored` — it
-exercises NATS itself, not the operator's reconcile loop, so it doesn't
-answer this question. A real measurement needs a burst of actual
-`ThreatScoreEvent`s (or `NormalizedEvent`s through a running AI engine) on
-the real subjects while sampling `kubectl top pod`.
+Idle baseline: operator **1m CPU / 11Mi memory**; AI engine **~1m CPU / low
+double-digit Mi** (both negligible, as expected with no traffic).
 
-AI engine: still not deployed in-cluster at all (the Quickstart's step 3
-hand-publishes a `ThreatScoreEvent` directly, bypassing it entirely). No
-request-level latency/in-flight instrumentation exists yet either
-(`docs/observability.md`'s tracked `prometheus-fastapi-instrumentator` gap).
+Under real load (both bursts driven by a loop of `nats pub` calls — a
+crude harness whose own per-process spawn overhead was the actual
+bottleneck, not either pod; NATS itself separately benchmarked at 270k
+msgs/sec in §1.3, so treat these as a floor, not a ceiling):
 
-**Pending — next step:** deploy the AI engine in-cluster too (no Helm
-template for it yet — only the operator has one; would need a plain
-Deployment/Service or a chart addition), drive a real burst of
-`NormalizedEvent`s (e.g. via `pkg/ingestion` against the Open5GS+UERANSIM
-core's real traffic — see `02-ai-training-inference.md` §2.2/2.3 for that
-same core already up), and sample `kubectl top pod` on both workloads
-during it.
+| Workload | Load | Duration / rate | Peak CPU | Peak memory |
+|---|---|---|---|---|
+| AI engine | 500 real `NormalizedEvent`s on `sentinel5g.events.normalized` | 7s (~71 msgs/s) | 48m | 49Mi |
+| Operator | 300 real `ThreatScoreEvent`s on `sentinel5g.threats.scored` | 5s (~60 msgs/s) | 12m | 14Mi |
+
+Both bursts were confirmed actually processed, not just received: the AI
+engine burst produced exactly 500 corresponding `ThreatScoreEvent`s on the
+output subject (`nats stream info`: 1,000 total messages = 500 in + 500
+out); the operator burst moved `protect-amf-core`'s
+`status.observedThreatScore` to `0.6648` with `lastMitigationTime` matching
+the burst window, i.e. real reconciliation on every message, not a
+saturated queue silently dropping load.
+
+**Caveat, found while capturing this:** both pods restarted repeatedly
+during this session (13 restarts on the operator, 3 on the AI engine
+within 5 minutes) — but every one traces to `kubectl describe pod` /
+`kubectl get events` showing `SandboxChanged: Pod sandbox changed, it will
+be killed and re-created` hitting **both** pods simultaneously on a
+roughly 75-second cadence, a containerd/CNI-level event, not an
+application crash (exit code 0, no panic/error in the logs each time). This
+is WSL2 network-stack instability (the same `cni0` bridge already noted
+going link-down elsewhere this session — see
+`memory/wsl2_real_test_environment.md`), not a Sentinel5G bug. The CPU/mem
+numbers above are still real measurements taken during genuine load, just
+worth knowing this environment's restarts aren't evidence of an app-level
+resource leak or crash.
+
+**Still pending:** a higher-throughput load driver (the current harness's
+~60-70 msgs/s is far below NATS's own measured ceiling) and AI-engine
+request-level latency instrumentation
+(`docs/observability.md`'s tracked `prometheus-fastapi-instrumentator`
+gap) to get a real p50/p99 scoring latency, not just aggregate CPU/mem.
 
 ## 1.3 NATS JetStream metrics: pub/sub latency and throughput
 
