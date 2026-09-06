@@ -1,0 +1,49 @@
+# Minimal single-node NATS JetStream for the README quickstart -- NOT for
+# production (no persistence/HA; see docs/integrations.md's "Securing the
+# NATS message bus" section, and bring your own NATS chart/deployment for
+# anything beyond a local demo). Mirrors deployments/docker-compose.yml's
+# `nats:2.10-alpine -js` local-dev setup, just as a Deployment+Service
+# instead of a Compose service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: default
+  labels:
+    app: nats
+spec:
+  selector:
+    app: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: default
+  labels:
+    app: nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.10-alpine
+          args: ["-js"]
+          ports:
+            - containerPort: 4222
+          readinessProbe:
+            tcpSocket:
+              port: 4222
+            initialDelaySeconds: 2
+            periodSeconds: 5

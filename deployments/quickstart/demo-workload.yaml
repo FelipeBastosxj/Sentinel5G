@@ -1,0 +1,55 @@
+# A stand-in "protected" telecom workload plus an "attacker" pod, so the
+# quickstart has something real for a TelecomSecurityPolicy to protect and
+# something real to curl from before/after mitigation fires. Istio sidecar
+# injection is enabled on the namespace so the operator's isolatePod action
+# (a real Istio AuthorizationPolicy) has something to actually enforce
+# against -- if you don't have Istio installed, the policy still reaches
+# Phase: Mitigating, it just won't produce a real 403 (see the README
+# quickstart's note on running without a service mesh).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: telecom-core
+  labels:
+    istio-injection: enabled
+---
+# A bare Pod, deliberately not a Deployment: the quickstart's demo
+# ThreatScoreEvent below hardcodes `"podName":"amf-0"` to keep the demo a
+# straight copy-paste, and a Deployment-managed pod would get a generated
+# name (amf-0-<hash>-<hash>) instead of this literal one.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: amf-0
+  namespace: telecom-core
+  labels:
+    app: amf-service
+spec:
+  containers:
+    - name: amf-0
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: amf-0
+  namespace: telecom-core
+spec:
+  selector:
+    app: amf-service
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: attacker
+  namespace: telecom-core
+spec:
+  containers:
+    - name: attacker
+      image: curlimages/curl:latest
+      command: ["sleep", "infinity"]

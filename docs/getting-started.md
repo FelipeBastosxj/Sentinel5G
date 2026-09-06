@@ -99,15 +99,29 @@ nats pub sentinel5g.threats.scored '{
 (`amf-0` must exist and carry `app: amf-service` for the watcher to match it
 against the sample policy — `kubectl label pod amf-0 app=amf-service -n telecom-core`.)
 
-## 4. Install via Helm (chart-only, no cluster changes made by this repo)
+## 4. Install via Helm -- an alternative to step 3, not a continuation of it
+
+This runs the operator in-cluster from the published image instead of via
+`go run` on your machine, and manages the CRD itself. **Don't run this on
+top of step 3** if you already `kubectl apply`'d the CRD by hand there: Helm
+refuses to adopt a resource it didn't create ("invalid ownership metadata;
+missing key \"app.kubernetes.io/managed-by\""), confirmed the hard way while
+verifying this exact sequence. Either pick one path for a given cluster, or
+`kubectl delete -f config/crd/bases/security.sentinel5g.io_telecomsecuritypolicies.yaml`
+first (this deletes any `TelecomSecurityPolicy` objects too) so Helm can
+create it fresh.
 
 ```sh
 helm lint charts/sentinel5g-operator
-helm install sentinel5g charts/sentinel5g-operator --namespace sentinel5g-system --create-namespace
+helm install sentinel5g charts/sentinel5g-operator --namespace sentinel5g-system --create-namespace \
+  --set nats.url=nats://<your-nats-service>:4222
 ```
 
 See `charts/sentinel5g-operator/values.yaml` for the `ebpf.enabled` toggle
-and `docs/integrations.md` for what enabling it requires.
+and `docs/integrations.md` for what enabling it requires. The README's
+[Quick Start](../README.md#-quick-start) walks this same path end to end,
+including a minimal NATS instance and a demo workload to protect, if you
+just want to see it work rather than run it against your own cluster/NATS.
 
 ## Known local-environment gaps
 
