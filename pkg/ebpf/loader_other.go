@@ -27,4 +27,8 @@ func (l *Loader) Unblock(ip net.IP) error { return nil }
 // Close is a no-op on non-Linux platforms.
 func (l *Loader) Close() error { return nil }
 
+// Deliberately does not implement EventSource (pkg/ebpf/blocklist.go): there
+// is no ring buffer to read on a platform Attach() always fails on, so
+// callers' type assertion for EventSource fails cleanly here rather than
+// needing a "not supported" error path of its own.
 var _ BlocklistUpdater = (*Loader)(nil)

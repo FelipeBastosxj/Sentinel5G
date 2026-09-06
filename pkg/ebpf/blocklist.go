@@ -6,8 +6,10 @@
 package ebpf
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"time"
 )
 
 // BlocklistUpdater pushes/removes IPv4 addresses from the "blocklist" BPF map
@@ -19,6 +21,51 @@ type BlocklistUpdater interface {
 	Unblock(ip net.IP) error
 	// Close detaches the XDP program and releases the underlying resources.
 	Close() error
+}
+
+// SignalProtocol identifies which signaling protocol a SignalingEvent was
+// classified as, mirroring bpf/headers/common.h's SIGNAL_PROTO_* constants.
+type SignalProtocol uint8
+
+const (
+	SignalProtoUnknown SignalProtocol = 0
+	SignalProtoGTPU    SignalProtocol = 1
+	SignalProtoSIP     SignalProtocol = 2
+)
+
+// SignalingEvent is a single GTP-U/SIP packet observation read from the
+// kernel's signaling_events ring buffer (bpf/packet_filter.c). It is the
+// platform-independent counterpart of bpf's `struct signaling_event` —
+// pkg/ingestion turns this into an events.NormalizedEvent.
+type SignalingEvent struct {
+	// ObservedAt is wall-clock time, already converted from the kernel's
+	// monotonic bpf_ktime_get_ns() reading (see loader_linux.go) — never a
+	// raw reading of it.
+	ObservedAt  time.Time
+	SourceIP    net.IP
+	DestIP      net.IP
+	DestPort    uint16
+	PayloadSize uint16
+	Protocol    SignalProtocol
+	Malformed   bool
+}
+
+// EventSource is implemented by BlocklistUpdaters that can also stream
+// per-packet signaling observations for Layer 2 ingestion (pkg/ingestion).
+// Only the real Linux Loader does — callers should type-assert for it and
+// treat a missing implementation as "no event stream available" rather than
+// an error, the same way EbpfBlock actions already degrade gracefully when
+// eBPF isn't attached (see cmd/operator/main.go's attachBlocklist).
+type EventSource interface {
+	// SignalingEvents starts the background ring-buffer reader and returns
+	// a channel of decoded events; the channel closes when ctx is done or
+	// the underlying reader errors. Intended to be called at most once per
+	// Loader.
+	SignalingEvents(ctx context.Context) (<-chan SignalingEvent, error)
+	// SignalRate returns the current window's packet count for ip from the
+	// kernel's signal_rate map, and false if ip has no entry this window
+	// (see track_signal_rate() in packet_filter.c).
+	SignalRate(ip net.IP) (count uint32, ok bool)
 }
 
 // ipv4Key returns the raw 4-byte representation of ip, passed to the BPF map

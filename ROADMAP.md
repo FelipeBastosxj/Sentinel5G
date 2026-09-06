@@ -20,11 +20,23 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
 - [x] Optional NATS auth/TLS (`pkg/events.Config`, mirrored on the Python
       side) and `gosec`/`bandit`/`govulncheck`/`pip-audit` in CI — see
       `docs/integrations.md`'s "Securing the NATS message bus" section.
+- [x] Layer 1 -> Layer 2 bridge (`pkg/ingestion`): until now,
+      `bpf/packet_filter.c` exported only the `blocklist` and `signal_rate`
+      maps — nothing turned an individual kernel-observed packet into a
+      `NormalizedEvent`, so the AI engine had never scored real traffic, only
+      synthetic or hand-published events. `signaling_events` (a ring buffer)
+      plus `pkg/ingestion.Publisher` and `pkg/controller.PodIPIndex` close
+      that gap; verified against real GTP-U from a live Open5GS+UERANSIM 5G
+      core, through the real trained model, producing a real
+      `ThreatScoreEvent` correlated back to its source packet.
 
 ## Phase 1 — Real-world signal
 
-- [ ] Replace the synthetic dataset with real (or realistically replayed)
-      GTP-U/SIP/SMPP traffic; validate sensitivity thresholds against it.
+- [ ] Replace the synthetic training dataset with real (or realistically
+      replayed) GTP-U/SIP/SMPP traffic, and validate sensitivity thresholds
+      against it — the model itself is still trained on synthetic data; the
+      bridge above only makes collecting real training data possible, it
+      doesn't do the retraining.
 - [ ] `controller-gen` wired into `make manifests`, replacing the
       hand-maintained `zz_generated.deepcopy.go` and CRD YAML.
 - [ ] CO-RE (`vmlinux.h`-based) BPF program for portability across kernel
