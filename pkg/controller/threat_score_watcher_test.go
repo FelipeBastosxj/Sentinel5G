@@ -16,22 +16,28 @@ import (
 // recordingBlocklist and recordingMesh are in-memory test doubles standing
 // in for pkg/ebpf.BlocklistUpdater and pkg/mesh.Adapter, so applyPolicy's
 // decisions can be asserted without a real kernel or Istio control plane.
-type recordingBlocklist struct{ blocked []string }
+type recordingBlocklist struct{ blocked, unblocked []string }
 
 func (r *recordingBlocklist) Block(ip net.IP) error {
 	r.blocked = append(r.blocked, ip.String())
 	return nil
 }
-func (r *recordingBlocklist) Unblock(ip net.IP) error { return nil }
-func (r *recordingBlocklist) Close() error            { return nil }
+func (r *recordingBlocklist) Unblock(ip net.IP) error {
+	r.unblocked = append(r.unblocked, ip.String())
+	return nil
+}
+func (r *recordingBlocklist) Close() error { return nil }
 
-type recordingMesh struct{ quarantined []string }
+type recordingMesh struct{ quarantined, released []string }
 
 func (r *recordingMesh) Quarantine(_ context.Context, namespace string, _ map[string]string) error {
 	r.quarantined = append(r.quarantined, namespace)
 	return nil
 }
-func (r *recordingMesh) Release(_ context.Context, _ string, _ map[string]string) error { return nil }
+func (r *recordingMesh) Release(_ context.Context, namespace string, _ map[string]string) error {
+	r.released = append(r.released, namespace)
+	return nil
+}
 
 func newWatcherFixture(t *testing.T, policy *securityv1alpha1.TelecomSecurityPolicy, pod *corev1.Pod) (*ThreatScoreWatcher, *recordingBlocklist, *recordingMesh) {
 	t.Helper()
@@ -171,5 +177,25 @@ func TestApplyPolicy_AboveThresholdWithAutoMitigateBlocksAndQuarantines(t *testi
 	}
 	if got.Status.LastMitigationTime == nil {
 		t.Fatalf("expected LastMitigationTime to be set")
+	}
+	if len(got.Status.BlockedSourceIPs) != 1 || got.Status.BlockedSourceIPs[0] != "203.0.113.7" {
+		t.Fatalf("expected BlockedSourceIPs to record 203.0.113.7, got %v", got.Status.BlockedSourceIPs)
+	}
+
+	// A duplicate delivery of the same event (NATS is at-least-once) must not
+	// grow BlockedSourceIPs -- it has to stay a set for the finalizer to
+	// Unblock each real attacker IP exactly once, not repeat entries. Pass
+	// the just-persisted `got` (not the original, now-stale `policy`) as the
+	// base, mirroring how production's handle() re-reads the current policy
+	// from the Index (kept fresh by updateStatus's Index.Put) before every
+	// applyPolicy call.
+	if err := w.applyPolicy(context.Background(), &got, event); err != nil {
+		t.Fatalf("applyPolicy (redelivery) returned error: %v", err)
+	}
+	if err := w.Get(context.Background(), nnFor(policy), &got); err != nil {
+		t.Fatalf("get after redelivered applyPolicy: %v", err)
+	}
+	if len(got.Status.BlockedSourceIPs) != 1 {
+		t.Fatalf("expected BlockedSourceIPs to stay deduplicated after redelivery, got %v", got.Status.BlockedSourceIPs)
 	}
 }

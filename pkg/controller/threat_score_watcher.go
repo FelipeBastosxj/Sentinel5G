@@ -114,6 +114,7 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 			if err := w.Blocklist.Block(ip); err != nil {
 				return fmt.Errorf("ebpf block %s: %w", event.SourceIP, err)
 			}
+			latest.Status.BlockedSourceIPs = appendUnique(latest.Status.BlockedSourceIPs, event.SourceIP)
 		}
 	}
 
@@ -145,6 +146,19 @@ func sensitivityMultiplierOrDefault(s securityv1alpha1.Sensitivity) float64 {
 		return m
 	}
 	return sensitivityMultiplier[securityv1alpha1.SensitivityMedium]
+}
+
+// appendUnique appends ip to ips unless it's already present — Status.
+// BlockedSourceIPs must stay a set (repeated ThreatScoreEvents for the same
+// attacker shouldn't grow it unbounded; NATS only guarantees at-least-once
+// delivery, see this file's package doc comment).
+func appendUnique(ips []string, ip string) []string {
+	for _, existing := range ips {
+		if existing == ip {
+			return ips
+		}
+	}
+	return append(ips, ip)
 }
 
 func firstMatchLabels(selectors []securityv1alpha1.WorkloadSelector) map[string]string {

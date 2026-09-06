@@ -27,11 +27,18 @@ vet:
 lint:
 	golangci-lint run
 
+CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
+
+.PHONY: controller-gen
+controller-gen:
+	go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5
+
 .PHONY: manifests
-manifests:
-	@echo "controller-gen is not wired in yet (see ROADMAP.md)."
-	@echo "Edit api/v1alpha1/zz_generated.deepcopy.go and config/crd/bases/*.yaml by hand,"
-	@echo "keeping charts/sentinel5g-operator/templates/crd.yaml in sync."
+manifests: controller-gen
+	$(CONTROLLER_GEN) object paths="./api/v1alpha1/..."
+	$(CONTROLLER_GEN) crd paths="./api/v1alpha1/..." output:crd:artifacts:config=config/crd/bases
+	@echo "config/crd/bases/*.yaml regenerated -- keep charts/sentinel5g-operator/templates/crd.yaml"
+	@echo "in sync by hand (it's templated for the crds.install toggle, not a plain copy)."
 
 ## --- eBPF -----------------------------------------------------------------
 

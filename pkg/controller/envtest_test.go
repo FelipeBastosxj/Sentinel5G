@@ -26,8 +26,8 @@ import (
 // talking to it. Unlike pkg/controller's other tests, this is not a fake
 // client — every Create/Get/Update below is a real HTTP round trip to a
 // real API server backed by a real etcd, so it also validates that the
-// hand-maintained CRD YAML (config/crd/bases) and the Go types' JSON
-// serialization actually agree with each other.
+// controller-gen-generated CRD YAML (config/crd/bases, `make manifests`)
+// and the Go types' JSON serialization actually agree with each other.
 func startEnvtest(t *testing.T) client.Client {
 	t.Helper()
 

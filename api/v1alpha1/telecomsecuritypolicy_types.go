@@ -70,6 +70,7 @@ type TelecomSecurityPolicySpec struct {
 }
 
 // PolicyPhase is a coarse-grained summary of a TelecomSecurityPolicy's state.
+// +kubebuilder:validation:Enum=Pending;Monitoring;Mitigating;Degraded
 type PolicyPhase string
 
 const (
@@ -94,6 +95,14 @@ type TelecomSecurityPolicyStatus struct {
 	// +optional
 	LastMitigationTime *metav1.Time `json:"lastMitigationTime,omitempty"`
 
+	// BlockedSourceIPs lists source IPs this policy has pushed into the eBPF
+	// blocklist, so the finalizer can Unblock each one when the policy is
+	// deleted (see pkg/controller.Reconciler's finalize). Only populated when
+	// Actions.EbpfBlock is enabled and has actually fired.
+	// +optional
+	// +listType=set
+	BlockedSourceIPs []string `json:"blockedSourceIPs,omitempty"`
+
 	// Conditions represent the latest available observations of the policy's state.
 	// +optional
 	// +patchMergeKey=type
@@ -105,6 +114,7 @@ type TelecomSecurityPolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=tsp
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Score",type=string,JSONPath=`.status.observedThreatScore`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

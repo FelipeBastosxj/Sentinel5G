@@ -37,13 +37,24 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
       against it — the model itself is still trained on synthetic data; the
       bridge above only makes collecting real training data possible, it
       doesn't do the retraining.
-- [ ] `controller-gen` wired into `make manifests`, replacing the
-      hand-maintained `zz_generated.deepcopy.go` and CRD YAML.
+- [x] `controller-gen` wired into `make manifests` (`make manifests` /
+      `controller-gen` targets), replacing the hand-maintained
+      `zz_generated.deepcopy.go` and CRD YAML — CI now fails on drift
+      between the Go types and the generated output (ci.yml's "manifests"
+      step). Regenerating also caught two validations the hand-written CRD
+      had that the Go markers didn't (`status.phase`'s enum, the `tsp`
+      short name) — now real `+kubebuilder:validation:Enum` /
+      `+kubebuilder:resource:shortName` markers instead of drift.
 - [ ] CO-RE (`vmlinux.h`-based) BPF program for portability across kernel
       struct layouts, replacing the current UAPI-header approach.
-- [ ] Finalizer-based cleanup: automatically unblock/un-quarantine a
-      workload when its `TelecomSecurityPolicy` is deleted, rather than
-      requiring a manual `Release`/`Unblock`.
+- [x] Finalizer-based cleanup: `security.sentinel5g.io/finalizer`
+      (`pkg/controller.Reconciler.finalize`) releases any mesh quarantine
+      and unblocks every source IP a policy pushed into the eBPF blocklist
+      (tracked in the new `Status.BlockedSourceIPs`) before the object is
+      actually deleted — no more manual `kubectl delete authorizationpolicy`
+      to clean up after retiring a policy. Deliberately narrower than the
+      de-escalation item below: this only fires on policy *deletion*, never
+      on a later low score while the policy still exists.
 - [ ] Automatic de-escalation: today, once `EbpfBlock`/`IsolatePod` fires,
       nothing ever calls `Unblock`/`Release` again even if the offending
       source's score later drops — this is a deliberate fail-safe (don't
