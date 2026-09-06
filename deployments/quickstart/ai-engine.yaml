@@ -1,0 +1,63 @@
+# The AI engine (Layer 3) in-cluster, NATS worker mode, sitting alongside
+# the operator (charts/sentinel5g-operator) in the same namespace. Not part
+# of that Helm chart -- the operator is the only piece with one so far; this
+# is a plain manifest until/unless a proper chart is worth adding.
+#
+# Needs a real trained model (models/autoencoder.onnx + .onnx.data +
+# .norm.json -- see cmd/ai-engine/scripts/train.py and export_onnx.py, or
+# docs/getting-started.md's "Bring up NATS JetStream + the AI engine" step
+# to produce one) delivered via a Secret, created imperatively -- NOT
+# committed to the repo as YAML:
+#
+#   kubectl create secret generic ai-engine-model -n sentinel5g-system \
+#     --from-file=autoencoder.onnx=cmd/ai-engine/models/autoencoder.onnx \
+#     --from-file=autoencoder.onnx.data=cmd/ai-engine/models/autoencoder.onnx.data \
+#     --from-file=autoencoder.norm.json=cmd/ai-engine/models/autoencoder.norm.json
+#
+# Run that (adjust paths if needed) before applying this file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel5g-ai-engine
+  namespace: sentinel5g-system
+  labels:
+    app: sentinel5g-ai-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel5g-ai-engine
+  template:
+    metadata:
+      labels:
+        app: sentinel5g-ai-engine
+    spec:
+      containers:
+        - name: ai-engine
+          image: ghcr.io/felipebastosxj/sentinel5g-ai-engine:v0.1.0
+          env:
+            - name: AI_ENGINE_MODE
+              value: "nats"
+            - name: NATS_URL
+              value: "nats://nats.default.svc.cluster.local:4222"
+            - name: NATS_EVENTS_SUBJECT
+              value: "sentinel5g.events.normalized"
+            - name: NATS_THREATS_SUBJECT
+              value: "sentinel5g.threats.scored"
+            - name: MODEL_PATH
+              value: "/app/models/autoencoder.onnx"
+          volumeMounts:
+            - name: model
+              mountPath: /app/models
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: model
+          secret:
+            secretName: ai-engine-model
