@@ -1,6 +1,14 @@
 #ifndef SENTINEL5G_BPF_COMMON_H
 #define SENTINEL5G_BPF_COMMON_H
 
+/* ETH_P_IP is normally pulled in from <linux/if_ether.h>, but this project
+ * builds against vmlinux.h (see bpf/Makefile) instead of UAPI kernel
+ * headers -- and BTF (what vmlinux.h is generated from) only captures
+ * types/enums/functions, not preprocessor #defines, so this constant isn't
+ * there to pull in. It's a fixed IEEE 802.3 EtherType value, not something
+ * that could vary by kernel build anyway. */
+#define ETH_P_IP 0x0800
+
 /* 3GPP GTP-U (user plane tunneling, e.g. N3/N9 interfaces). */
 #define GTPU_PORT 2152
 

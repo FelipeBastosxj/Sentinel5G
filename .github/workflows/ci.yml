@@ -103,15 +103,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install clang/llvm + kernel headers
-        # linux-libc-dev is easy to assume is already present (it's pulled
-        # in transitively on many desktop setups) but is NOT guaranteed —
-        # without it, <linux/types.h>'s `#include <asm/types.h>` fails since
-        # that header only ships under /usr/include/<triplet>/asm; see the
-        # matching -I/usr/include/$(UNAME_M)-linux-gnu note in bpf/Makefile.
+      - name: Install clang/llvm + bpftool
+        # No more linux-libc-dev/linux-headers-$(uname -r): the old UAPI-
+        # header build needed those for <linux/types.h>'s <asm/types.h>
+        # chain (see bpf/Makefile's git history) -- bpf/packet_filter.c now
+        # builds against a generated vmlinux.h instead (self-contained,
+        # `make -C bpf` generates it via bpftool from this runner's own
+        # /sys/kernel/btf/vmlinux, gitignored, not committed -- see
+        # bpf/Makefile and packet_filter.c's own top comment for why a
+        # build-time-generated one is fine here). linux-tools-generic is
+        # what actually provides a working `bpftool` on Ubuntu; requires
+        # this runner's kernel to have BTF (CONFIG_DEBUG_INFO_BTF=y), true
+        # for GitHub's ubuntu-latest as of this writing.
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev linux-headers-$(uname -r)
+          sudo apt-get install -y clang llvm libbpf-dev linux-tools-common linux-tools-generic
       - name: Compile bpf/packet_filter.c
         run: make -C bpf
 

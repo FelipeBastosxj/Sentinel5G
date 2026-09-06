@@ -45,8 +45,22 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
       had that the Go markers didn't (`status.phase`'s enum, the `tsp`
       short name) — now real `+kubebuilder:validation:Enum` /
       `+kubebuilder:resource:shortName` markers instead of drift.
-- [ ] CO-RE (`vmlinux.h`-based) BPF program for portability across kernel
-      struct layouts, replacing the current UAPI-header approach.
+- [x] CO-RE (`vmlinux.h`-based) BPF program, replacing the UAPI-header
+      approach (`bpf/Makefile` generates `bpf/headers/vmlinux.h` at build
+      time from the build machine's kernel BTF, gitignored, not committed).
+      Worth being precise about what this actually bought, rather than
+      overselling it: `ethhdr`/`iphdr`/`udphdr` are wire-format structs
+      whose layout is fixed by the Ethernet/IP/UDP protocols, not kernel
+      build config, so CO-RE's actual relocation mechanism
+      (`BPF_CORE_READ()`) has nothing to protect here and isn't used — the
+      real, concrete win is dropping the UAPI-header build dependency
+      (no more `linux-libc-dev`/`linux-headers-$(uname -r)`, no more the
+      `<asm/types.h>` multiarch include-path workaround), not struct-layout
+      portability. Verified: two independent clean rebuilds produced an
+      identical 17184-byte object; attached to the live Open5GS+UERANSIM
+      core's `lo` interface, real GTP-U traffic still tracked correctly in
+      `signal_rate` (functional parity with the pre-CO-RE build), detached
+      cleanly, core undisturbed throughout.
 - [x] Finalizer-based cleanup: `security.sentinel5g.io/finalizer`
       (`pkg/controller.Reconciler.finalize`) releases any mesh quarantine
       and unblocks every source IP a policy pushed into the eBPF blocklist
