@@ -76,7 +76,11 @@ jobs:
           cache: pip
           cache-dependency-path: cmd/ai-engine/pyproject.toml
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        # [train] (torch/onnx/onnxscript) is needed for tests/test_inference.py
+        # and the train/export scripts, but deliberately excluded from the
+        # serving image's own install (Dockerfile just runs `pip install .`)
+        # -- see pyproject.toml's dependencies/train split.
+        run: pip install -e ".[dev,train]"
       - name: black --check
         run: black --check .
       - name: flake8
