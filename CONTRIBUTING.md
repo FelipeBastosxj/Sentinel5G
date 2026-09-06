@@ -58,5 +58,5 @@ docs(readme): update helm installation instructions
 
 ## Reporting issues
 
-Use [GitHub Issues](https://github.com/sentinel5g/sentinel5g/issues) with
+Use [GitHub Issues](https://github.com/FelipeBastosxj/Sentinel5G/issues) with
 the provided bug report / feature request templates.

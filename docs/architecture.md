@@ -93,6 +93,16 @@ scored threats, matches them against active policies, and — when a policy's
 Both actions are independent: a cluster without a service mesh can still run
 with `ebpfBlock: true, isolatePod: false`, and vice versa.
 
+Mitigation is currently one-directional by design: `ThreatScoreWatcher` calls
+`Block`/`Quarantine` but never `Unblock`/`Release` on its own. A later low
+score only moves `Status.Phase` back to `Monitoring` — it does not restore
+traffic. This is a deliberate fail-safe (an automated system should not be
+the one deciding an active threat has stopped being one), not an oversight;
+reversing a mitigation today is a manual `kubectl delete
+authorizationpolicy` / operator restart. See `ROADMAP.md` Phase 1 for the
+plan to make de-escalation itself a considered, hysteresis-based decision
+rather than removing the fail-safe outright.
+
 ## Design principles
 
 - **Zero-Trust by default.** The operator's default `securityContext` drops
