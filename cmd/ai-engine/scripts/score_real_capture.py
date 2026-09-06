@@ -67,7 +67,9 @@ def signal_rate_series(packets: list[tuple[float, int]]) -> list[int]:
     return counts
 
 
-def score_window(label: str, packets: list[tuple[float, int]], rates: list[int], engine: ScoringEngine) -> None:
+def score_window(
+    label: str, packets: list[tuple[float, int]], rates: list[int], engine: ScoringEngine
+) -> None:
     scores = []
     for (ts, udp_len), rate in zip(packets, rates):
         event = NormalizedEvent(
@@ -82,12 +84,16 @@ def score_window(label: str, packets: list[tuple[float, int]], rates: list[int],
 
     duration = packets[-1][0] - packets[0][0] if len(packets) > 1 else 0.0
     print(f"\n=== {label} ===")
-    print(f"packets={len(packets)} duration={duration:.2f}s "
-          f"observed_rate={len(packets) / duration if duration else 0:.2f} pkt/s "
-          f"(track_signal_rate peak window count={max(rates)})")
-    print(f"score min={min(scores):.4f} max={max(scores):.4f} "
-          f"mean={sum(scores) / len(scores):.4f} "
-          f"first={scores[0]:.4f} last={scores[-1]:.4f}")
+    print(
+        f"packets={len(packets)} duration={duration:.2f}s "
+        f"observed_rate={len(packets) / duration if duration else 0:.2f} pkt/s "
+        f"(track_signal_rate peak window count={max(rates)})"
+    )
+    print(
+        f"score min={min(scores):.4f} max={max(scores):.4f} "
+        f"mean={sum(scores) / len(scores):.4f} "
+        f"first={scores[0]:.4f} last={scores[-1]:.4f}"
+    )
     return scores
 
 
