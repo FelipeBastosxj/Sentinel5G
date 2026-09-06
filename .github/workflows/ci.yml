@@ -27,13 +27,15 @@ jobs:
       - name: golangci-lint
         # Includes gosec (see .golangci.yml) for security-specific static
         # analysis, in addition to the correctness/style linters. Pinned
-        # (not "latest"): golangci-lint v2 uses a breaking new config schema
-        # that .golangci.yml (written for v1) doesn't parse — migrate both
-        # together deliberately rather than picking up v2 as a silent CI
-        # break the next time it publishes a release.
+        # (not "latest"): golangci-lint v1 is no longer patched upstream, so
+        # "latest" landing on v2 broke CI outright (v2's binary is built
+        # against a specific Go version, and its config schema is a breaking
+        # change from v1 — .golangci.yml is already migrated to it). Bump
+        # this deliberately, in step with go.mod's toolchain line, not as a
+        # side effect of "latest" drifting.
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.8
+          version: v2.13.2
       - name: govulncheck (known-vulnerable dependency scan)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
