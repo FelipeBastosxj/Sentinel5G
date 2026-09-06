@@ -46,53 +46,59 @@ sample cycles-per-packet directly. Neither has been run yet.
 
 ## 1.2 Resource consumption: Operator (Go) and AI Engine (Python/ONNX) under stress
 
-**Status: not measured.** Checked directly against the live k3s cluster
-(`kubectl get ns`) on 2026-09-06: no `sentinel5g-system` namespace exists —
-the operator and AI engine are not currently deployed in-cluster (only the
-`telecom-core` test namespace with the `amf-0`/`attacker` Istio-enforcement
-test pods, plus the base k3s/NATS/Istio stack). There is nothing running to
-put load on yet.
+**Measured (idle only) on 2026-09-06**, the first time the operator has ever
+run in-cluster from its published image (`ghcr.io/felipebastosxj/sentinel5g-operator:v0.1.0`,
+via `helm install`, verified as part of testing the README Quickstart —
+see `docs/getting-started.md` for the ownership gotcha hit along the way).
+`kubectl top pod -n sentinel5g-system`: **1m CPU / 11Mi memory** at idle
+(one reconciled policy, no sustained event traffic).
 
-What instrumentation already exists to capture this once deployed:
-- Operator: standard `controller-runtime` metrics on `:8080` (Prometheus
-  format) — `controller_runtime_reconcile_total`, `workqueue_*` (depth,
-  latency) — real, in `cmd/operator/main.go`. No AI-engine-specific
-  instrumentation yet: `docs/observability.md` flags request-level
-  latency/in-flight count on the FastAPI app as **not yet instrumented**,
-  tracked in `ROADMAP.md` as a `prometheus-fastapi-instrumentator`
-  integration.
-- The k3s cluster already has `metrics-server` running (confirmed via
-  `kubectl top nodes` returning real numbers: `felipe-pc 185m CPU (0%),
-  3734Mi memory (23%)` at idle on 2026-09-06), so `kubectl top pod -n
-  sentinel5g-system` will work immediately once the Helm chart is
-  installed.
+**Under stress: still not measured.** The `nats bench` run in 1.3 below used
+a disposable throwaway subject, not `sentinel5g.threats.scored` — it
+exercises NATS itself, not the operator's reconcile loop, so it doesn't
+answer this question. A real measurement needs a burst of actual
+`ThreatScoreEvent`s (or `NormalizedEvent`s through a running AI engine) on
+the real subjects while sampling `kubectl top pod`.
 
-**Pending — next step:** `helm install sentinel5g charts/sentinel5g-operator
--n sentinel5g-system --create-namespace` into the existing WSL2 k3s
-cluster, drive load (e.g. the `send_5g_traffic.py` burst script already
-used for the XDP validation, or the new Open5GS+UERANSIM core once it is
-up), and capture `kubectl top pod -n sentinel5g-system` samples over the
-run.
+AI engine: still not deployed in-cluster at all (the Quickstart's step 3
+hand-publishes a `ThreatScoreEvent` directly, bypassing it entirely). No
+request-level latency/in-flight instrumentation exists yet either
+(`docs/observability.md`'s tracked `prometheus-fastapi-instrumentator` gap).
+
+**Pending — next step:** deploy the AI engine in-cluster too (no Helm
+template for it yet — only the operator has one; would need a plain
+Deployment/Service or a chart addition), drive a real burst of
+`NormalizedEvent`s (e.g. via `pkg/ingestion` against the Open5GS+UERANSIM
+core's real traffic — see `02-ai-training-inference.md` §2.2/2.3 for that
+same core already up), and sample `kubectl top pod` on both workloads
+during it.
 
 ## 1.3 NATS JetStream metrics: pub/sub latency and throughput
 
-**Status: not measured under storm conditions.** What is real: NATS
-JetStream is running in-cluster (`default/nats-*` pod, confirmed `Running`
-throughout this session) and is exercised by real integration tests (CI
-starts a real `nats:2.10-alpine -js` container — `.github/workflows/ci.yml`
-— not a mock). At idle, `kubectl top pod` shows the NATS pod at `1m CPU /
-4Mi memory` — negligible, as expected with no load.
+**Measured** on 2026-09-06, via the `nats bench` subcommand against the
+live in-cluster NATS (a disposable stream/subject created for the bench and
+cleaned up after — not `sentinel5g.threats.scored` itself, so this is
+NATS's own throughput ceiling, not this project's actual event rate):
 
-No throughput/latency benchmark (events/sec, pub-to-sub latency
-distribution) has been run against it. The `nats` CLI is already installed
-in the WSL2 environment (used to hand-publish `ThreatScoreEvent`s during
-earlier validation) and ships a bench subcommand suited to this:
 ```sh
-nats bench sentinel5g.events.normalized --js --pub 4 --sub 2 --msgs 100000
+nats bench js pub async <disposable-subject> --clients 2 --msgs 50000
 ```
 
-**Pending — next step:** run `nats bench` against the live
-`sentinel5g.events.normalized` / `sentinel5g.threats.scored` subjects,
-ideally concurrently with a real signaling-storm burst from the
-Open5GS+UERANSIM core (once up) so the measurement reflects the actual
-event shape/rate this system produces, not synthetic bench traffic alone.
+| Metric | Value |
+|---|---|
+| Aggregate throughput | **270,821 msgs/sec** (~33 MiB/sec) |
+| Per-op latency, P50 | 3.56ms |
+| Per-op latency, P90 | 4.52ms |
+| Per-op latency, P99 | 5.56ms |
+
+At idle, `kubectl top pod` showed the NATS pod at `1m CPU / 4Mi memory` —
+negligible, as expected with no load; a CPU/memory sample *during* the bench
+run above wasn't captured.
+
+**Read honestly:** this measures generic JetStream pub/sub throughput, not
+this project's actual `sentinel5g.events.normalized`/`sentinel5g.threats.scored`
+traffic shape (small, infrequent JSON events, not a 50k-message flood).
+**Pending — next step:** repeat concurrently with a real signaling-storm
+burst from the Open5GS+UERANSIM core (§2.2/2.3 in the AI-training file) on
+the actual project subjects, so the measurement reflects this system's real
+event shape/rate instead of synthetic bench traffic alone.
