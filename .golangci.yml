@@ -1,38 +1,60 @@
+# v2 schema (golangci-lint v1 is no longer patched upstream — pin the exact
+# version in .github/workflows/ci.yml, not "latest", so a new release can't
+# silently break CI again). Migrated from the old v1 config via
+# `golangci-lint migrate`; gofmt/goimports moved under `formatters` per v2's
+# split between linters and formatters.
+version: "2"
 run:
-  timeout: 5m
   build-tags:
     - linux
-
 linters:
-  disable-all: true
+  default: none
   enable:
+    - bodyclose
     - errcheck
-    - gosimple
+    - gosec
     - govet
     - ineffassign
+    - misspell
     - staticcheck
+    - unconvert
     - unused
+  settings:
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable:
+        - shadow
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - all
+        path: zz_generated.deepcopy.go
+    paths:
+      - bin
+      - dist
+      - config
+      - charts
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
-    - bodyclose
-    - unconvert
-    - gosec
-
-issues:
-  exclude-dirs:
-    - bin
-    - dist
-    - config
-    - charts
-  exclude-rules:
-    - path: zz_generated.deepcopy.go
-      linters:
-        - all
-
-linters-settings:
-  govet:
-    enable:
-      - shadow
-  errcheck:
-    check-type-assertions: true
+  exclusions:
+    generated: lax
+    paths:
+      - bin
+      - dist
+      - config
+      - charts
+      - third_party$
+      - builtin$
+      - examples$
