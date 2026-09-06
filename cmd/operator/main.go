@@ -126,9 +126,11 @@ func main() {
 	index := sentinelcontroller.NewPolicyIndex()
 
 	reconciler := &sentinelcontroller.Reconciler{
-		Client: mgr.GetClient(),
-		Log:    log.WithName("controller"),
-		Index:  index,
+		Client:    mgr.GetClient(),
+		Log:       log.WithName("controller"),
+		Index:     index,
+		Blocklist: blocklist,
+		Mesh:      meshAdapter,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "TelecomSecurityPolicy")
