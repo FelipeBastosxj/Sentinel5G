@@ -63,6 +63,30 @@ chart's `values.yaml`) drops all Linux capabilities, so:
   fails, so a misconfigured capability set degrades to mesh-only isolation
   instead of crash-looping the operator.
 
+## Securing the NATS message bus
+
+`pkg/events.Connect` (Go) and `sentinel_ai/server.py`'s NATS worker (Python)
+default to a plain, unauthenticated `nats://` connection — fine for local dev,
+but anything that can reach that URL can publish a forged `NormalizedEvent`
+or `ThreatScoreEvent` on it. Since `ThreatScoreWatcher.handle` trusts every
+message on `NATS_THREATS_SUBJECT` unconditionally, an unauthenticated bus
+reachable from outside the cluster is a real way to trigger a live mitigation
+(`EbpfBlock`/`IsolatePod`) against any workload a policy protects, by
+publishing a few lines of forged JSON.
+
+Both sides support the same optional auth/TLS knobs, documented in
+`.env.example`:
+
+- `NATS_CREDENTIALS_FILE` — an NKey/JWT `.creds` file, the recommended option
+  for a real NATS deployment (see the [NATS auth docs](https://docs.nats.io/running-a-nats-service/configuration/securing_nats)).
+- `NATS_USERNAME` / `NATS_PASSWORD` — simple username/password auth.
+- `NATS_TLS_CA_FILE`, `NATS_TLS_CERT_FILE`, `NATS_TLS_KEY_FILE` — TLS
+  transport, with optional mTLS client certs.
+
+At minimum outside of local dev, restrict who can reach the NATS port with a
+NetworkPolicy even if you don't configure the above — the operator and the AI
+engine are the only two clients that should ever be able to.
+
 ## Observability
 
 See `docs/observability.md` for metrics and dashboards.

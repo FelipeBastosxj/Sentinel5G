@@ -17,6 +17,9 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
 - [x] Closed-loop mitigation: eBPF blocklist push + Istio
       `AuthorizationPolicy` quarantine, gated by per-policy `autoMitigate`.
 - [x] Helm chart, kustomize manifests, CI (lint/test/SBOM/scan/sign).
+- [x] Optional NATS auth/TLS (`pkg/events.Config`, mirrored on the Python
+      side) and `gosec`/`bandit`/`govulncheck`/`pip-audit` in CI — see
+      `docs/integrations.md`'s "Securing the NATS message bus" section.
 
 ## Phase 1 — Real-world signal
 
@@ -29,6 +32,16 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
 - [ ] Finalizer-based cleanup: automatically unblock/un-quarantine a
       workload when its `TelecomSecurityPolicy` is deleted, rather than
       requiring a manual `Release`/`Unblock`.
+- [ ] Automatic de-escalation: today, once `EbpfBlock`/`IsolatePod` fires,
+      nothing ever calls `Unblock`/`Release` again even if the offending
+      source's score later drops — this is a deliberate fail-safe (don't
+      auto-restore access to something that scored as an active threat), not
+      an oversight, but it means every mitigation is currently a one-way
+      door requiring manual intervention (`kubectl delete authorizationpolicy
+      ...` / restarting the eBPF attach) to reverse. Worth a real design pass
+      — likely a minimum-dwell-time plus a sustained-low-score requirement —
+      rather than a naive "unblock on the next low score" rule, which would
+      itself be a trivial evasion.
 
 ## Phase 2 — Deeper integrations
 
