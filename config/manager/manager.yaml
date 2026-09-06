@@ -25,7 +25,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: manager
-          image: ghcr.io/sentinel5g/sentinel5g-operator:latest
+          image: ghcr.io/felipebastosxj/sentinel5g-operator:latest
           args:
             - --bpf-object=/var/run/sentinel5g/packet_filter.o
             - --bpf-interface=eth0

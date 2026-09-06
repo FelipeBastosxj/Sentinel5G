@@ -16,8 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
-	"github.com/sentinel5g/sentinel5g/pkg/events"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
 )
 
 // startEnvtest boots a real kube-apiserver + etcd (via KUBEBUILDER_ASSETS,
@@ -45,8 +45,8 @@ func startEnvtest(t *testing.T) client.Client {
 		t.Fatalf("start envtest environment: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := testEnv.Stop(); err != nil {
-			t.Logf("stop envtest environment: %v", err)
+		if stopErr := testEnv.Stop(); stopErr != nil {
+			t.Logf("stop envtest environment: %v", stopErr)
 		}
 	})
 

@@ -16,3 +16,18 @@ data:
   NATS_EVENTS_SUBJECT: {{ .Values.nats.eventsSubject | quote }}
   NATS_THREATS_SUBJECT: {{ .Values.nats.threatsSubject | quote }}
   NATS_STREAM_NAME: {{ .Values.nats.streamName | quote }}
+  {{- if .Values.nats.credentialsFile }}
+  NATS_CREDENTIALS_FILE: {{ .Values.nats.credentialsFile | quote }}
+  {{- end }}
+  {{- if .Values.nats.username }}
+  NATS_USERNAME: {{ .Values.nats.username | quote }}
+  {{- end }}
+  {{- if .Values.nats.tlsCAFile }}
+  NATS_TLS_CA_FILE: {{ .Values.nats.tlsCAFile | quote }}
+  {{- end }}
+  {{- if .Values.nats.tlsCertFile }}
+  NATS_TLS_CERT_FILE: {{ .Values.nats.tlsCertFile | quote }}
+  {{- end }}
+  {{- if .Values.nats.tlsKeyFile }}
+  NATS_TLS_KEY_FILE: {{ .Values.nats.tlsKeyFile | quote }}
+  {{- end }}

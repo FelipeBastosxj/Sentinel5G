@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/sentinel5g/sentinel5g-operator
+  repository: ghcr.io/felipebastosxj/sentinel5g-operator
   tag: "0.1.0"
   pullPolicy: IfNotPresent
 
@@ -50,6 +50,23 @@ nats:
   eventsSubject: sentinel5g.events.normalized
   threatsSubject: sentinel5g.threats.scored
   streamName: SENTINEL5G
+
+  # Auth/TLS for the NATS bus, all optional — empty reproduces the historical
+  # unauthenticated connection. See docs/integrations.md: anything that can
+  # reach an unauthenticated NATS_URL can forge a ThreatScoreEvent and
+  # trigger a real mitigation, so set at least one of these outside of local
+  # dev. credentialsFile/tlsCAFile/tlsCertFile/tlsKeyFile are in-container
+  # paths — this chart doesn't template a volume mount for the underlying
+  # secret, so mount it yourself (e.g. via a values override) and point
+  # these at where it lands.
+  credentialsFile: ""
+  username: ""
+  # Name of an existing Secret with a "password" key, wired to NATS_PASSWORD
+  # via secretKeyRef rather than a plaintext ConfigMap value.
+  existingPasswordSecret: ""
+  tlsCAFile: ""
+  tlsCertFile: ""
+  tlsKeyFile: ""
 
 crds:
   install: true

@@ -19,6 +19,16 @@ type OperatorConfig struct {
 	NATSThreatsSubject string
 	NATSStreamName     string
 
+	// NATS authentication/TLS, all optional — see events.Config and
+	// docs/integrations.md for why an unauthenticated bus is a real risk
+	// outside of local dev.
+	NATSCredentialsFile string
+	NATSUsername        string
+	NATSPassword        string
+	NATSTLSCAFile       string
+	NATSTLSCertFile     string
+	NATSTLSKeyFile      string
+
 	ThreatScoreThreshold float64
 	MeshAdapter          string
 }
@@ -45,6 +55,13 @@ func Load() (OperatorConfig, error) {
 		NATSEventsSubject:  getEnv("NATS_EVENTS_SUBJECT", "sentinel5g.events.normalized"),
 		NATSThreatsSubject: getEnv("NATS_THREATS_SUBJECT", "sentinel5g.threats.scored"),
 		NATSStreamName:     getEnv("NATS_STREAM_NAME", "SENTINEL5G"),
+
+		NATSCredentialsFile: getEnv("NATS_CREDENTIALS_FILE", ""),
+		NATSUsername:        getEnv("NATS_USERNAME", ""),
+		NATSPassword:        getEnv("NATS_PASSWORD", ""),
+		NATSTLSCAFile:       getEnv("NATS_TLS_CA_FILE", ""),
+		NATSTLSCertFile:     getEnv("NATS_TLS_CERT_FILE", ""),
+		NATSTLSKeyFile:      getEnv("NATS_TLS_KEY_FILE", ""),
 
 		ThreatScoreThreshold: threshold,
 		MeshAdapter:          getEnv("MESH_ADAPTER", "istio"),

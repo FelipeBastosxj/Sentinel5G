@@ -17,6 +17,7 @@ linters:
     - misspell
     - bodyclose
     - unconvert
+    - gosec
 
 issues:
   exclude-dirs:

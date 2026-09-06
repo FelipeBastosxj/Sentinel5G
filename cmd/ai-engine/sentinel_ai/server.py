@@ -105,32 +105,80 @@ async def _ensure_stream(js, settings: Settings) -> None:
         )
 
 
+# Bounds JetStream redelivery of an event whose handler keeps failing (e.g. a
+# transient NATS publish error) — mirrors pkg/events.maxThreatScoreDeliveries
+# on the Go side. Without a cap, a failing message NAKs forever.
+_MAX_EVENT_DELIVERIES = 5
+
+
+def _nats_connect_kwargs(settings: Settings) -> dict:
+    """Builds nats.connect() auth/TLS kwargs from settings, all optional —
+    mirrors pkg/events.Connect on the Go side. Empty settings reproduce the
+    historical unauthenticated connection used for local dev; see
+    docs/integrations.md for why that's a real risk outside of it.
+    """
+    kwargs: dict = {}
+    if settings.nats_creds_file:
+        kwargs["user_credentials"] = settings.nats_creds_file
+    elif settings.nats_username:
+        kwargs["user"] = settings.nats_username
+        kwargs["password"] = settings.nats_password
+
+    if settings.nats_tls_ca_file or settings.nats_tls_cert_file:
+        import ssl
+
+        ctx = ssl.create_default_context(cafile=settings.nats_tls_ca_file or None)
+        if settings.nats_tls_cert_file:
+            ctx.load_cert_chain(settings.nats_tls_cert_file, settings.nats_tls_key_file)
+        kwargs["tls"] = ctx
+
+    return kwargs
+
+
 async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
     """Consumes NATS_EVENTS_SUBJECT and republishes NATS_THREATS_SUBJECT."""
     import nats  # imported lazily so HTTP-only deployments stay light
+    from nats.js.api import ConsumerConfig
 
-    nc = await nats.connect(settings.nats_url)
+    nc = await nats.connect(settings.nats_url, **_nats_connect_kwargs(settings))
     js = nc.jetstream()
     await _ensure_stream(js, settings)
 
     async def handler(msg) -> None:
-        payload = json.loads(msg.data)
-        event = NormalizedEvent.from_dict(payload)
-        threat_score = engine.score_event(event)
+        try:
+            payload = json.loads(msg.data)
+            event = NormalizedEvent.from_dict(payload)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            # Malformed payload will never parse on redelivery either; term
+            # (not nak) drops it instead of retrying forever.
+            logger.warning("dropping malformed event on %s", settings.nats_events_subject)
+            await msg.term()
+            return
 
-        result = {
-            "sourceEventId": payload.get("eventId", str(uuid.uuid4())),
-            "namespace": payload.get("namespace", ""),
-            "podName": payload.get("podName", ""),
-            "sourceIp": payload.get("sourceIp", ""),
-            "score": threat_score,
-            "model": "autoencoder-v1",
-            "detectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
-        await js.publish(settings.nats_threats_subject, json.dumps(result).encode())
-        await msg.ack()
+        try:
+            threat_score = engine.score_event(event)
 
-    await js.subscribe(settings.nats_events_subject, durable="sentinel5g-ai-engine", cb=handler)
+            result = {
+                "sourceEventId": payload.get("eventId", str(uuid.uuid4())),
+                "namespace": payload.get("namespace", ""),
+                "podName": payload.get("podName", ""),
+                "sourceIp": payload.get("sourceIp", ""),
+                "score": threat_score,
+                "model": "autoencoder-v1",
+                "detectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            await js.publish(settings.nats_threats_subject, json.dumps(result).encode())
+            await msg.ack()
+        except Exception:
+            logger.exception("failed to score/publish event, will retry")
+            await msg.nak()
+
+    await js.subscribe(
+        settings.nats_events_subject,
+        durable="sentinel5g-ai-engine",
+        cb=handler,
+        config=ConsumerConfig(max_deliver=_MAX_EVENT_DELIVERIES),
+    )
     logger.info(
         "subscribed to %s, publishing to %s",
         settings.nats_events_subject,
@@ -153,7 +201,11 @@ def main() -> None:
     import uvicorn
 
     host, _, port = settings.http_addr.partition(":")
-    uvicorn.run(create_app(engine), host=host or "0.0.0.0", port=int(port or 8090))
+    # Binding all interfaces is deliberate — this is a network-facing service
+    # meant to be reached from inside the cluster. /v1/score has no
+    # authentication of its own; restrict who can reach it with a
+    # NetworkPolicy (see docs/integrations.md).
+    uvicorn.run(create_app(engine), host=host or "0.0.0.0", port=int(port or 8090))  # nosec B104
 
 
 if __name__ == "__main__":

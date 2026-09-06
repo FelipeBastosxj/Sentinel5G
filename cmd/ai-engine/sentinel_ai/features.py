@@ -91,5 +91,11 @@ def extract_features(event: NormalizedEvent) -> list[float]:
         math.cos(hour_angle),
     ]
 
-    assert len(features) == FEATURE_VECTOR_SIZE
+    if len(features) != FEATURE_VECTOR_SIZE:
+        # A plain check, not `assert`: assertions are stripped under
+        # `python -O`/PYTHONOPTIMIZE, which would silently drop this
+        # invariant check in an optimized production run.
+        raise RuntimeError(
+            f"feature extraction produced {len(features)} values, expected {FEATURE_VECTOR_SIZE}"
+        )
     return features

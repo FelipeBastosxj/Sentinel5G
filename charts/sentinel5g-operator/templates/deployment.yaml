@@ -34,6 +34,14 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "sentinel5g-operator.fullname" . }}-config
+          {{- if .Values.nats.existingPasswordSecret }}
+          env:
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nats.existingPasswordSecret }}
+                  key: password
+          {{- end }}
           ports:
             - name: metrics
               containerPort: 8080

@@ -2,10 +2,10 @@
 # The canonical dependency set lives in pyproject.toml; keep this in sync
 # with its [project.dependencies] whenever that list changes.
 torch>=2.2,<3.0
-onnx>=1.16,<2.0
+onnx>=1.22,<2.0
 onnxruntime>=1.18,<2.0
 onnxscript>=0.1,<1.0
-numpy>=1.26,<2.0
+numpy>=1.26,<3.0
 fastapi>=0.111,<1.0
 uvicorn[standard]>=0.30,<1.0
 pydantic>=2.7,<3.0

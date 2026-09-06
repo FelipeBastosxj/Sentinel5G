@@ -9,8 +9,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
-	"github.com/sentinel5g/sentinel5g/pkg/events"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
 )
 
 // recordingBlocklist and recordingMesh are in-memory test doubles standing

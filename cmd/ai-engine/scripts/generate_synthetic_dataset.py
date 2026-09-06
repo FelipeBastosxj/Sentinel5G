@@ -90,7 +90,8 @@ def _anomalous_event(rng: random.Random, base_time: datetime) -> NormalizedEvent
 
 
 def generate(num_normal: int, num_anomalous: int, seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
-    rng = random.Random(seed)
+    # Reproducible synthetic data generation, not a security context.
+    rng = random.Random(seed)  # nosec B311
     base_time = datetime(2026, 1, 5, tzinfo=timezone.utc)
 
     normal = [extract_features(_normal_event(rng, base_time)) for _ in range(num_normal)]

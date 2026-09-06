@@ -6,7 +6,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
 )
 
 // newScheme returns a runtime.Scheme with the built-in Kubernetes types

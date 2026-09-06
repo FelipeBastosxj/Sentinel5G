@@ -5,37 +5,53 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	securityv1alpha1 "github.com/sentinel5g/sentinel5g/api/v1alpha1"
+	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
 )
 
 // PolicyIndex is a concurrency-safe, in-memory cache of TelecomSecurityPolicy
-// objects keyed by namespace/name, kept in sync by Reconciler and queried by
-// ThreatScoreWatcher on every incoming ThreatScoreEvent. Re-querying the API
-// server on every scored event would not scale to per-packet-derived threat
-// scores, so Reconcile pushes updates here instead.
+// objects, kept in sync by Reconciler and queried by ThreatScoreWatcher on
+// every incoming ThreatScoreEvent. Re-querying the API server on every scored
+// event would not scale to per-packet-derived threat scores, so Reconcile
+// pushes updates here instead.
+//
+// Indexed by namespace first (byNamespace[namespace][name]) rather than a
+// single flat map, so MatchingPolicies only scans the policies that could
+// possibly match instead of every policy across every namespace in the
+// cluster on every single scored event.
 type PolicyIndex struct {
-	mu    sync.RWMutex
-	byKey map[types.NamespacedName]*securityv1alpha1.TelecomSecurityPolicy
+	mu          sync.RWMutex
+	byNamespace map[string]map[string]*securityv1alpha1.TelecomSecurityPolicy
 }
 
 // NewPolicyIndex returns an empty PolicyIndex.
 func NewPolicyIndex() *PolicyIndex {
-	return &PolicyIndex{byKey: make(map[types.NamespacedName]*securityv1alpha1.TelecomSecurityPolicy)}
+	return &PolicyIndex{byNamespace: make(map[string]map[string]*securityv1alpha1.TelecomSecurityPolicy)}
 }
 
 // Put inserts or replaces the cached copy of policy.
 func (idx *PolicyIndex) Put(policy *securityv1alpha1.TelecomSecurityPolicy) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	key := types.NamespacedName{Namespace: policy.Namespace, Name: policy.Name}
-	idx.byKey[key] = policy.DeepCopy()
+	byName, ok := idx.byNamespace[policy.Namespace]
+	if !ok {
+		byName = make(map[string]*securityv1alpha1.TelecomSecurityPolicy)
+		idx.byNamespace[policy.Namespace] = byName
+	}
+	byName[policy.Name] = policy.DeepCopy()
 }
 
 // Remove evicts key from the index (called when the reconciler observes a delete).
 func (idx *PolicyIndex) Remove(key types.NamespacedName) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	delete(idx.byKey, key)
+	byName, ok := idx.byNamespace[key.Namespace]
+	if !ok {
+		return
+	}
+	delete(byName, key.Name)
+	if len(byName) == 0 {
+		delete(idx.byNamespace, key.Namespace)
+	}
 }
 
 // MatchingPolicies returns every cached policy in namespace whose
@@ -45,10 +61,7 @@ func (idx *PolicyIndex) MatchingPolicies(namespace string, podLabels map[string]
 	defer idx.mu.RUnlock()
 
 	var matches []*securityv1alpha1.TelecomSecurityPolicy
-	for key, policy := range idx.byKey {
-		if key.Namespace != namespace {
-			continue
-		}
+	for _, policy := range idx.byNamespace[namespace] {
 		if selectorMatches(policy.Spec.TargetWorkloads, podLabels) {
 			matches = append(matches, policy)
 		}

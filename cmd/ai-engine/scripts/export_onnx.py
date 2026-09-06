@@ -27,7 +27,10 @@ def main() -> None:
     normal = torch.from_numpy(dataset["normal"])
 
     model = Autoencoder(input_dim=normal.shape[1])
-    model.load_state_dict(torch.load(args.weights, map_location="cpu"))
+    # weights_only=True restricts unpickling to plain tensors, not arbitrary
+    # objects — torch.load's default is unsafe to point at anything but a
+    # checkpoint you trust (train.py's own output, in the normal pipeline).
+    model.load_state_dict(torch.load(args.weights, map_location="cpu", weights_only=True))
 
     errors = reconstruction_error(model, normal).numpy()
     reference_error = float(np.percentile(errors, 99))

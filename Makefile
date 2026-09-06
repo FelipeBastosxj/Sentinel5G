@@ -1,6 +1,6 @@
 SHELL := /bin/bash
-IMG_OPERATOR  ?= ghcr.io/sentinel5g/sentinel5g-operator:latest
-IMG_AI_ENGINE ?= ghcr.io/sentinel5g/sentinel5g-ai-engine:latest
+IMG_OPERATOR  ?= ghcr.io/felipebastosxj/sentinel5g-operator:latest
+IMG_AI_ENGINE ?= ghcr.io/felipebastosxj/sentinel5g-ai-engine:latest
 
 .PHONY: all
 all: build test

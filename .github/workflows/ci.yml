@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: go.mod
           cache: true
       - name: go mod tidy (verify go.sum is up to date)
         run: |
@@ -25,9 +25,15 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: golangci-lint
+        # Includes gosec (see .golangci.yml) for security-specific static
+        # analysis, in addition to the correctness/style linters.
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+      - name: govulncheck (known-vulnerable dependency scan)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
       - name: Start NATS JetStream
         # GitHub Actions' `services:` block can't pass a custom command
         # (needed here for `-js`), so start it as a plain container instead.
@@ -66,6 +72,10 @@ jobs:
         run: black --check .
       - name: flake8
         run: flake8 .
+      - name: bandit (security lint)
+        run: bandit -q -r sentinel_ai scripts
+      - name: pip-audit (known-vulnerable dependency scan)
+        run: pip-audit
       - name: pytest
         run: pytest
 
