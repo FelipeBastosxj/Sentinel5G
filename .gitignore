@@ -26,6 +26,7 @@ cmd/ai-engine/data/*.csv
 # --- eBPF build artifacts ---
 bpf/*.o
 bpf/*.ll
+bpf/headers/vmlinux.h
 
 # --- Kubernetes / local dev ---
 *.kubeconfig
