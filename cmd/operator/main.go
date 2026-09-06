@@ -23,6 +23,7 @@ import (
 	sentinelcontroller "github.com/FelipeBastosxj/Sentinel5G/pkg/controller"
 	sentinelebpf "github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/ingestion"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/mesh"
 )
 
@@ -83,6 +84,38 @@ func main() {
 
 	blocklist := attachBlocklist(log, bpfObjectPath, bpfInterface)
 	defer blocklist.Close()
+
+	podIndex := sentinelcontroller.NewPodIPIndex()
+	podIndexer := &sentinelcontroller.PodIPIndexer{Client: mgr.GetClient(), Index: podIndex}
+	if indexerErr := podIndexer.SetupWithManager(mgr); indexerErr != nil {
+		log.Error(indexerErr, "unable to create controller", "controller", "PodIPIndexer")
+		os.Exit(1)
+	}
+
+	// Layer 1 -> Layer 2 bridge (pkg/ingestion): only runs when eBPF is
+	// actually attached (attachBlocklist's noop fallback doesn't implement
+	// EventSource), same "degrade gracefully" rule as EbpfBlock actions.
+	if source, ok := blocklist.(sentinelebpf.EventSource); ok {
+		nodeName, hostnameErr := os.Hostname()
+		if hostnameErr != nil {
+			log.Error(hostnameErr, "unable to determine node name for ingested events")
+			os.Exit(1)
+		}
+		publisher := &ingestion.Publisher{
+			Source:   source,
+			PodIndex: podIndex,
+			Bus:      bus,
+			Subject:  cfg.NATSEventsSubject,
+			NodeName: nodeName,
+			Log:      log.WithName("ingestion-publisher"),
+		}
+		if addErr := mgr.Add(publisher); addErr != nil {
+			log.Error(addErr, "unable to register ingestion publisher")
+			os.Exit(1)
+		}
+	} else {
+		log.Info("eBPF not attached; Layer 1 -> Layer 2 event publishing disabled")
+	}
 
 	meshAdapter, err := mesh.NewAdapter(cfg.MeshAdapter, mesh.IstioAdapterDeps{Client: mgr.GetClient()})
 	if err != nil {

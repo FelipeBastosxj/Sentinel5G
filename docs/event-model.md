@@ -12,7 +12,7 @@ definitions **must** be kept in lockstep by hand:
 
 | Subject (default)                    | Producer      | Consumer            | Payload            |
 |---------------------------------------|---------------|----------------------|---------------------|
-| `sentinel5g.events.normalized`        | Layer 2 (ingestion) | AI engine (`cmd/ai-engine`) | `NormalizedEvent`   |
+| `sentinel5g.events.normalized`        | `pkg/ingestion.Publisher` (Layer 2) | AI engine (`cmd/ai-engine`) | `NormalizedEvent`   |
 | `sentinel5g.threats.scored`           | AI engine     | Operator (`pkg/controller.ThreatScoreWatcher`) | `ThreatScoreEvent`  |
 
 Both subjects live on a single JetStream stream (`SENTINEL5G` by default,

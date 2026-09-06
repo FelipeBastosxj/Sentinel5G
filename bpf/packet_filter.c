@@ -11,6 +11,15 @@
 // driven by pkg/controller.ThreatScoreWatcher in response to an AI-engine
 // threat score.
 //
+// It also emits a `signaling_events` ring buffer record for every
+// GTP-U/SIP packet observed (and for UDP packets too short to have a
+// complete header, flagged malformed) — this is what pkg/ingestion turns
+// into `events.NormalizedEvent` and publishes to NATS_EVENTS_SUBJECT,
+// bridging this layer to Layer 2/3 (the AI engine). Deliberately not full
+// packet capture: only signaling-port traffic is emitted, matching
+// NormalizedEvent's "high-volume telemetry, not a packet capture" design
+// (see docs/event-model.md).
+//
 // This program intentionally avoids CO-RE BTF relocations (no vmlinux.h) so
 // it builds against plain UAPI kernel headers on any recent kernel. For full
 // portability across differing struct layouts, generate one on the target
@@ -54,6 +63,45 @@ struct {
 	__type(key, __u32);
 	__type(value, struct signal_rate_entry);
 } signal_rate SEC(".maps");
+
+// signaling_event is a coarse, per-packet observation of GTP-U/SIP traffic,
+// exported for Layer 2 normalization. Field layout is fixed and padded
+// explicitly (no reliance on compiler default padding) so pkg/ebpf can
+// decode it with a byte-exact matching Go struct — see rawSignalingEvent in
+// pkg/ebpf/loader_linux.go.
+struct signaling_event {
+	__u64 timestamp_ns; // bpf_ktime_get_ns(): monotonic, NOT wall-clock —
+	                     // pkg/ebpf converts this to a real time.Time.
+	__u32 saddr;         // network byte order, see blocklist.go's note.
+	__u32 daddr;
+	__u16 dest_port;     // host byte order.
+	__u16 payload_size;  // UDP payload size (bytes after the UDP header).
+	__u8 protocol;       // SIGNAL_PROTO_* from headers/common.h.
+	__u8 malformed;
+	__u8 _pad[2];
+} __attribute__((packed, aligned(8)));
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, SIGNALING_EVENTS_RINGBUF_BYTES);
+} signaling_events SEC(".maps");
+
+static __always_inline void emit_signaling_event(__u32 saddr, __u32 daddr, __u16 dest_port,
+						  __u16 payload_size, __u8 protocol, __u8 malformed)
+{
+	struct signaling_event *evt = bpf_ringbuf_reserve(&signaling_events, sizeof(*evt), 0);
+	if (!evt)
+		return; // Ring buffer full: drop the observation, never the packet.
+
+	evt->timestamp_ns = bpf_ktime_get_ns();
+	evt->saddr = saddr;
+	evt->daddr = daddr;
+	evt->dest_port = dest_port;
+	evt->payload_size = payload_size;
+	evt->protocol = protocol;
+	evt->malformed = malformed;
+	bpf_ringbuf_submit(evt, 0);
+}
 
 static __always_inline int is_signaling_port(__u16 dest_port_host)
 {
@@ -112,12 +160,22 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		return XDP_PASS;
 
 	struct udphdr *udph = (void *)iph + (iph->ihl * 4);
-	if ((void *)(udph + 1) > data_end)
+	if ((void *)(udph + 1) > data_end) {
+		// Too short to have a complete UDP header on an otherwise
+		// plausible signaling flow — a strong anomaly signal on its own,
+		// worth reporting even though we can't safely read dest_port.
+		emit_signaling_event(saddr, iph->daddr, 0, 0, SIGNAL_PROTO_UNKNOWN, 1);
 		return XDP_PASS;
+	}
 
 	__u16 dest_port = bpf_ntohs(udph->dest);
-	if (is_signaling_port(dest_port))
+	if (is_signaling_port(dest_port)) {
 		track_signal_rate(saddr);
+
+		__u8 protocol = (dest_port == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
+		__u16 payload_size = (__u16)((void *)data_end - (void *)(udph + 1));
+		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol, 0);
+	}
 
 	return XDP_PASS;
 }

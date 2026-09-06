@@ -62,12 +62,26 @@ differing kernel struct layouts, generate one and switch to
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/headers/vmlinux.h
 ```
 
-### Layer 2 — Ingestion & pipeline (`pkg/events`)
+### Layer 2 — Ingestion & pipeline (`pkg/events`, `pkg/ingestion`)
 
 `pkg/events` defines the wire schema (`NormalizedEvent`, `ThreatScoreEvent`)
 shared between the capture side, the AI engine, and the operator, and wraps
 a NATS JetStream connection for both. See [event-model.md](event-model.md)
 for the full schema and subject list.
+
+`pkg/ingestion` is the actual bridge from Layer 1 to this schema: its
+`Publisher` (a `manager.Runnable`, started by `cmd/operator` alongside
+`ThreatScoreWatcher`) reads `bpf/packet_filter.c`'s `signaling_events` ring
+buffer via `pkg/ebpf.EventSource`, resolves each observation's source IP to
+the Pod that owns it via `pkg/controller.PodIPIndex` (kept in sync by a
+cluster-wide `PodIPIndexer` watching all Pods, not just ones a policy
+targets — attribution has to work before a policy exists to match against),
+and publishes the result on `NATS_EVENTS_SUBJECT`. Traffic from outside the
+cluster still produces an event with an empty namespace/Pod name rather than
+being dropped — an external probe against a telecom-facing Service is
+exactly the traffic this project exists to catch. Only runs when eBPF is
+actually attached, the same "degrade gracefully" rule `EbpfBlock` already
+follows.
 
 ### Layer 3 — AI engine (`cmd/ai-engine`)
 

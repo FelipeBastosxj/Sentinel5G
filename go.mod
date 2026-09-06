@@ -8,6 +8,7 @@ require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/go-logr/logr v1.4.2
 	github.com/nats-io/nats.go v1.36.0
+	golang.org/x/sys v0.47.0
 	k8s.io/api v0.30.3
 	k8s.io/apimachinery v0.30.3
 	k8s.io/client-go v0.30.3
@@ -56,7 +57,6 @@ require (
 	golang.org/x/exp v0.0.0-20230224173230-c95f2b4c22f2 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
