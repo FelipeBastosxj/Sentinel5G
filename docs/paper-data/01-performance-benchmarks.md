@@ -30,19 +30,47 @@ Open5GS+UERANSIM core: 6 real ICMP packets through a real PDU session
 produced 6 `NormalizedEvent`s and 6 `ThreatScoreEvent`s, correlated by
 `sourceEventId`. Again: correctness, not a latency measurement.
 
-**Pending — how to actually measure this:** `bpf/packet_filter.c` does not
-currently timestamp packet entry/exit. The lowest-effort real measurement
-path, once wanted:
-```c
-// at program entry
-u64 t0 = bpf_ktime_get_ns();
-// ... existing parse/classify logic ...
-u64 dt = bpf_ktime_get_ns() - t0;
-// write dt into a new BPF_MAP_TYPE_HISTOGRAM or PERCPU_ARRAY bucket
+**Measured** on 2026-09-06, via the kernel's own BPF stats accounting
+(`kernel.bpf_stats_enabled=1`), which makes `bpftool prog show` report real
+cumulative `run_time_ns`/`run_cnt` for a running program — no code changes
+to `bpf/packet_filter.c` needed:
+
+```sh
+ip link set dev lo xdp obj bpf/packet_filter.o sec xdp   # attach (generic mode -- lo has no native XDP)
+sysctl -w kernel.bpf_stats_enabled=1
+bpftool prog show id <id>                                  # baseline run_time_ns/run_cnt
+ping -I uesimtun0 -f -c 2000 -q 8.8.8.8                     # real GTP-U burst through the live PDU session
+bpftool prog show id <id>                                   # delta / delta run_cnt = ns/invocation
 ```
-or, without touching the program at all, `bpftool prog profile` /
-`xdp-bench` against the already-compiled `bin/bpf/packet_filter.o` can
-sample cycles-per-packet directly. Neither has been run yet.
+
+Attached to `lo`, the same interface the live Open5GS+UERANSIM core's real
+GTP-U traffic already flows on (confirmed via `/etc/open5gs/upf.yaml`'s N3
+address) — safe to do because the `blocklist` map was confirmed empty
+before attaching (nothing to drop) and the PDU session/`uesimtun0` tunnel
+were confirmed still up both before and after.
+
+| Sample | Invocations | ns/packet |
+|---|---|---|
+| Burst 1 | ~5,990 | 821.2 |
+| Burst 2 | ~2,243 | 734.6 |
+
+**~735–821ns per packet (0.00074–0.00082ms) — roughly 240–270× under the
+<0.2ms design target.** Two independent samples landed within 11% of each
+other, not a single fluke reading.
+
+**Read honestly:** `lo` has no native XDP driver, so this ran in
+`xdpgeneric` mode. `run_time_ns` measures time *inside the BPF program
+itself* (parse + classify + map lookups) — real and reproducible — but
+does **not** include the generic-XDP softirq/skb-allocation dispatch
+overhead that precedes the program in this mode, which native XDP on a
+real NIC (the actual production target `docs/architecture.md` describes)
+wouldn't have at all. So this measures the classification logic's own
+cost accurately; it is not a substitute for a native-XDP NIC benchmark,
+which would need a real (non-loopback) interface to attach to.
+
+Cleanup: `ip link set dev lo xdp off` (confirmed fully unloaded —
+`bpftool prog show id <id>` afterward returns "No such file or
+directory"), `kernel.bpf_stats_enabled` reset to `0`.
 
 ## 1.2 Resource consumption: Operator (Go) and AI Engine (Python/ONNX) under stress
 
