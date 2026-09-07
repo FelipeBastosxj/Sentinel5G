@@ -173,4 +173,16 @@ func firstMatchLabels(selectors []securityv1alpha1.WorkloadSelector) map[string]
 	return nil
 }
 
+// NeedLeaderElection implements manager.LeaderElectionRunnable.
+// ThreatScoreWatcher drives cluster-wide mitigation decisions and must run
+// as exactly one active instance — controller-runtime's default for a
+// plain manager.Runnable already achieves this (an un-annotated Runnable
+// lands in the leader-gated group), so this override doesn't change
+// behavior today. It's here so that guarantee is explicit and doesn't rest
+// on an unexported third-party default that could change, rather than
+// implicit — see pkg/ingestion.Publisher's NeedLeaderElection for the
+// contrasting case (a Runnable that must NOT be leader-gated).
+func (w *ThreatScoreWatcher) NeedLeaderElection() bool { return true }
+
 var _ manager.Runnable = (*ThreatScoreWatcher)(nil)
+var _ manager.LeaderElectionRunnable = (*ThreatScoreWatcher)(nil)

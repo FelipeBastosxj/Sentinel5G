@@ -10,6 +10,16 @@ import (
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
 )
 
+// Regression guard: Publisher must NOT be leader-gated, or every
+// non-leader replica's node-local eBPF events go silently unpublished
+// (see Publisher.NeedLeaderElection's doc comment).
+func TestPublisher_RunsOnEveryReplicaNotJustTheLeader(t *testing.T) {
+	p := &Publisher{}
+	if p.NeedLeaderElection() {
+		t.Fatal("expected Publisher.NeedLeaderElection() = false (must run on every replica, not just the leader)")
+	}
+}
+
 func TestFromSignalingEvent_ResolvesKnownPod(t *testing.T) {
 	podIndex := controller.NewPodIPIndex()
 	podIndex.Put("10.42.0.7", controller.PodRef{Namespace: "telecom-core", Name: "amf-0"})

@@ -51,4 +51,16 @@ func (p *Publisher) Start(ctx context.Context) error {
 	}
 }
 
+// NeedLeaderElection implements manager.LeaderElectionRunnable. Publisher
+// reads a per-node eBPF ring buffer (bpf/packet_filter.c's signaling_events,
+// attached to whatever node this specific pod landed on) — it has to run on
+// every replica, not just the leader, or every non-leader node's real
+// signaling traffic goes silently unpublished. Without this override,
+// controller-runtime's default for a plain manager.Runnable is to already
+// be leader-gated (see runnable_group.go's Add()), which would silently
+// drop every non-leader node's events with no error, no log, no metric —
+// found by reading controller-runtime's source directly, not by symptom.
+func (p *Publisher) NeedLeaderElection() bool { return false }
+
 var _ manager.Runnable = (*Publisher)(nil)
+var _ manager.LeaderElectionRunnable = (*Publisher)(nil)
