@@ -4,8 +4,8 @@ description: >-
   Sentinel5G Kubernetes operator: AI-driven threat detection and automated
   closed-loop remediation for cloud-native 5G/LTE telecom workloads.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.26.0-0"
 home: https://github.com/FelipeBastosxj/Sentinel5G
 sources:
