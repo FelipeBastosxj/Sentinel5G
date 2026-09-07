@@ -218,12 +218,83 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
 - [ ] Prometheus instrumentation for the AI engine (request latency,
       inference count), not just the operator's `controller-runtime` metrics.
 
+The following items came out of a full-project audit on 2026-09-07
+(scaling/architecture/dependency-freshness/first-time-user review) —
+real, verified findings, deliberately not bundled into that same day's
+fix pass (see the Go/eBPF/config/CI/docs commits from that date for what
+*was* fixed: an eBPF fragmentation-parsing bug, per-node event loss under
+multi-replica, `LOG_LEVEL` never being wired up, the AI engine's inability
+to scale out, 0%-covered `pkg/mesh`/`server.py`, a release pipeline that
+published before scanning, and a few stale docs).
+
+- [ ] No VLAN (802.1Q/802.1ad) support in `bpf/packet_filter.c`: the
+      `eth->h_proto != ETH_P_IP` check only matches untagged frames, so
+      *all* VLAN-tagged IPv4 traffic — common on real telecom N3/N9
+      sub-interfaces — bypasses inspection entirely (no blocklist check, no
+      signal/scan detection). Needs its own parse-path redesign (an extra
+      conditional VLAN-tag hop before the IP header) plus live testing, not
+      a quick patch.
+- [ ] No IPv6 support at all: same root cause (IPv4-only `h_proto` check),
+      and `pkg/ebpf`'s map-key design (`ipv4Key`, the `blocklist`/
+      `signal_rate`/`scan_rate` maps) is IPv4-only throughout, so this is
+      roughly double the eBPF+Go surface of the VLAN item, not an
+      incremental add. Real gap for 5G cores that are commonly IPv6 or
+      dual-stack.
+- [ ] No real multi-node eBPF coverage story: the operator is a scalable
+      `Deployment`, not a `DaemonSet`, so `ebpf.enabled: true` only
+      protects whichever node(s) replicas happen to land on — not the
+      whole cluster. `docs/integrations.md` now documents a
+      `podAntiAffinity` workaround (avoids two replicas silently clobbering
+      each other's XDP attach on the same node, see
+      `pkg/ebpf.Loader.AttachXDP`), but an actual `DaemonSet` option in the
+      Helm chart, for the `ebpf.enabled: true` case specifically, is bigger
+      work — bundle with the `NetworkPolicy`/`PodDisruptionBudget`/metrics
+      `Service` items below, all real gaps against what `docs/
+      integrations.md` and `docs/observability.md` already describe.
+- [ ] No `NetworkPolicy` shipped for the NATS bus despite `docs/
+      integrations.md` explicitly recommending one — needs to be
+      optional/opt-in given how much CNIs vary across clusters.
+- [ ] No `PodDisruptionBudget`, and no `Service`/`ServiceMonitor` for the
+      operator's metrics port despite `docs/observability.md` describing
+      Prometheus metrics as available "out of the box" — a user has to
+      hand-roll a `Service` themselves to actually scrape them today.
+- [ ] `pkg/controller.PodIPIndex` grows unbounded for the operator's
+      uptime — entries are only overwritten on IP reuse, never evicted on
+      Pod deletion (documented, deliberate for now). Needs a watch/informer
+      hook to evict on delete; a slow memory-growth vector for long-lived
+      deployments at real cluster scale.
+- [ ] `k8s.io/*`/`sigs.k8s.io/controller-runtime` are pinned to the
+      Kubernetes 1.30 release line (`v0.30.3`/`v0.18.4`), roughly two
+      Kubernetes support windows behind as of this writing. A major bump
+      has real blast radius (API surface touches every file in
+      `pkg/controller`, `api/v1alpha1`) and needs its own dedicated
+      regression pass — not a diff bundled in with something else.
+- [ ] No path-based CI job filtering: every PR runs all four `ci.yml` jobs
+      (Go, Python, eBPF, Helm) even for a single-toolchain or docs-only
+      change. Slower CI, not incorrect CI — low urgency.
+- [ ] `cmd/ai-engine/Dockerfile`/`Dockerfile`: base image on a floating tag
+      rather than a pinned digest, no `HEALTHCHECK`, and the AI engine
+      image's `FROM python:3.11-slim AS base` names a stage that was never
+      followed by a second one (dead multi-stage scaffolding). Bundle into
+      a future Dockerfile-hardening pass alongside the `torch>=2.2` floor
+      (`cmd/ai-engine/pyproject.toml`), worth tightening once verified
+      against the actual dynamo-based ONNX export API `model.py` uses —
+      low urgency since CI already pins a working combination.
+
 ## Phase 3 — Scale & multi-cluster
 
 - [ ] Multi-cluster policy propagation.
 - [ ] Load-testing harness validating the <0.2ms/packet and single-digit-ms
       mitigation-latency targets in `docs/observability.md` under sustained
-      throughput, not just unit tests.
+      throughput, not just unit tests. Also the natural place to settle two
+      more findings from the 2026-09-07 audit that need real load data, not
+      guesses: whether `bpf/packet_filter.c`'s `blocklist` map (a plain
+      `BPF_HASH`, not LRU — no self-eviction past `MAX_BLOCKLIST_ENTRIES`)
+      needs LRU semantics, a larger capacity, or both; and whether
+      `signaling_events`' 256KB ring buffer (self-acknowledged as
+      "reasoned about, not empirically validated" in `bpf/headers/
+      common.h`) actually holds up under real telecom-scale signaling
+      volume.
 - [ ] Poetry-based lockfile support for `cmd/ai-engine` alongside the
       current `pyproject.toml`/`requirements.txt` pair, if the community
       wants a stricter reproducible-build story.
