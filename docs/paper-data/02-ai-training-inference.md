@@ -180,7 +180,7 @@ module docstring before trusting the pooled numbers below at face value:
 | `real_storm_pingflood` (in-tunnel flood) | 3,348 | **Yes — the only fully protocol-real storm sample** | Yes |
 | `real_storm_udpflood` (direct UDP to the N3 port) | 25,944 | No — real packets, real port, no TEID/GTP header | Yes (rate-tracking doesn't parse GTP-U payload either) |
 | `real_malformed` (tiny real payload, valid header) | 700 | Yes, but not what the kernel's own `malformed` flag detects | Yes, but classified as normal signaling traffic, not "malformed" |
-| `real_scan` (off-signaling-port real probe) | 708 | N/A (not GTP-U/SIP) | **No — `is_signaling_port()` gates emission; Layer 1 never observes this today** |
+| `real_scan` (off-signaling-port real probe) | 708 | N/A (not GTP-U/SIP) | **Partially, as of `ROADMAP.md` Phase 1's later `scan_rate` fix — see below** |
 | kernel-malformed (exact reproduction, not a capture) | 1,534 | N/A | Yes — the literal, only feature vector `packet_filter.c:172` ever emits for a UDP-header-truncated packet |
 
 **Per-category scores**, from the real-trained model
@@ -235,7 +235,20 @@ Near-identical pooled AUC to the synthetic evaluation (0.9449 vs 0.9459)
 looks like a clean validation at a glance; the per-category breakdown above
 is why it isn't read as one here. A second real, structural finding
 surfaced by this exercise (not a training-data problem — a Layer 1 gap):
-`real_scan`'s perfect separability is moot for production today, since
-`is_signaling_port()` means `bpf/packet_filter.c` never emits an
-observation for non-signaling-port traffic at all — tracked as a new,
-deliberately-deferred item (see `ROADMAP.md` Phase 1/2).
+at the time this evaluation was run, `real_scan`'s perfect separability was
+moot for production, since `is_signaling_port()` meant
+`bpf/packet_filter.c` never emitted an observation for non-signaling-port
+traffic at all.
+
+**Update, same day:** `ROADMAP.md` Phase 1 closed part of that gap — a new
+`scan_rate` map now escalates a source into an observation once it sends a
+sustained burst to *one* off-signaling port. Read that entry before
+assuming this dataset's `real_scan.pcap` is now representative of what
+production would see: it isn't. That capture sends each of its 700 packets
+to an independently random port (`docs/paper-data/real-dataset/
+gen_scan.py`), which essentially never repeats a port enough times to
+cross the new detector's threshold — by the birthday-paradox math, ~0 of
+those 700 packets would produce a real event under the fix. The fix targets
+a different, real pattern (a flood against one specific off-signaling
+port), not the classic multi-port low-and-slow scan this capture models;
+general port-scan detection remains open (`ROADMAP.md` Phase 2).

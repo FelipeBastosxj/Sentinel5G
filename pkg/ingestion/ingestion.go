@@ -21,11 +21,12 @@ import (
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
 )
 
-// SignalRateLookup returns the current signaling rate (packets in the
-// active window) for sourceIP, mirroring ebpf.Loader.SignalRate. Accepting
-// this as a function (rather than a *ebpf.Loader) keeps this package
-// testable without a real kernel attachment.
-type SignalRateLookup func(sourceIP net.IP) (count uint32, ok bool)
+// SignalRateLookup returns the current rate (packets in the active window)
+// for (sourceIP, destPort), mirroring ebpf.Loader.SignalRate — destPort
+// selects signal_rate vs scan_rate kernel-side, see that method's doc.
+// Accepting this as a function (rather than a *ebpf.Loader) keeps this
+// package testable without a real kernel attachment.
+type SignalRateLookup func(sourceIP net.IP, destPort uint16) (count uint32, ok bool)
 
 // FromSignalingEvent converts a raw kernel observation into a
 // events.NormalizedEvent (see docs/event-model.md), resolving the source IP
@@ -43,7 +44,7 @@ func FromSignalingEvent(evt ebpf.SignalingEvent, podIndex *controller.PodIPIndex
 	ref, _ := podIndex.Lookup(evt.SourceIP.String())
 
 	var ratePerSecond float64
-	if count, ok := rateLookup(evt.SourceIP); ok {
+	if count, ok := rateLookup(evt.SourceIP, evt.DestPort); ok {
 		// signal_rate's window is fixed at SIGNALING_RATE_WINDOW_NS (1s, see
 		// bpf/headers/common.h), so the window's packet count already is a
 		// per-second rate; no scaling needed unless that window ever

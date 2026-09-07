@@ -56,22 +56,66 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
       WSL2-specific throughput cap or a realistic real-attacker bound is
       still open — needs a non-WSL2, higher-throughput environment to
       settle, not assumed either way here.
-- [ ] Layer 1 can't see non-signaling-port traffic at all: `bpf/
-      packet_filter.c`'s `is_signaling_port()` gates both
-      `track_signal_rate()` and `emit_signaling_event()`, so any UDP packet
-      outside port 2152/5060 is `XDP_PASS`ed with zero observation emitted
-      — a real "scan"/off-protocol-probe capture (`real_scan.pcap` above)
-      scores maximally anomalous *if* scored, but no code path today ever
-      turns it into a `NormalizedEvent` in production. Needs a real design
-      pass before touching the XDP hot path, not a quick patch — the
-      options considered so far trade off differently against
-      `CLAUDE.md`'s <0.2ms/packet budget and the eBPF maps' fixed sizing:
-      (1) a generic per-source rate counter gated by a minimum threshold
-      before emitting for non-signaling ports (cheap, but only gives a rate
-      signal, not payload visibility), vs (2) emitting for all UDP
-      unconditionally and filtering in `pkg/ingestion` instead (simple, but
-      reintroduces exactly the per-packet userspace cost eBPF exists to
-      avoid). Deliberately deferred rather than decided under today's push.
+- [x] Layer 1 can now see off-signaling-port UDP traffic, within a stated
+      limit. `is_signaling_port()` used to gate both `track_signal_rate()`
+      and `emit_signaling_event()`, so any UDP packet outside port
+      2152/5060 was `XDP_PASS`ed with zero observation emitted — a real
+      "scan"/off-protocol-probe capture (`real_scan.pcap`, previous item)
+      scored maximally anomalous *if* scored, but no code path ever turned
+      it into a `NormalizedEvent`. Fixed with the cheaper of the two options
+      this item previously weighed: a new `scan_rate` LRU map + escalation
+      to `emit_signaling_event()` once a source's burst to one
+      off-signaling port crosses `SCAN_EMIT_THRESHOLD` (10/window,
+      `bpf/headers/common.h`) within the existing 1s window — not
+      unconditional per-packet emission, which would have both blown the
+      <0.2ms/packet budget and let unbounded off-protocol volume overrun
+      `signaling_events`.
+      **Read the honest limit before assuming this closes the gap
+      generally**: `scan_rate` is keyed by `(source, dest_port)`, not
+      source alone — deliberately, since real-testing this against the
+      live WSL2 core caught a genuine cross-attribution bug in an earlier
+      source-only version (unrelated background loopback UDP on one port
+      shared a counter with synthetic probe traffic on a different port,
+      and the emitted event got attributed to whichever packet happened to
+      cross the line — found via `bpftool map dump`, not inspection, fixed
+      by keying on the port too). The consequence: this detects a
+      *sustained flood against one off-signaling port*, not classic
+      low-and-slow multi-port scanning — by the birthday-paradox math, the
+      existing `real_scan.pcap` capture itself (700 packets, each to an
+      independently random port 1024-65535) essentially never repeats a
+      port enough times to cross the threshold, so that specific capture
+      would *still* produce ~zero real events under this fix. General
+      port-scan detection (many distinct ports, low volume each) remains
+      open — would need a bounded distinct-port-count structure per
+      source, meaningfully more complex than what shipped here.
+      Also found and fixed via the same real-testing pass, in
+      already-shipped code, not introduced by this change:
+      `pkg/ebpf.Loader.SignalRate()`'s Go value struct
+      (`{WindowStartNs uint64; Count uint32}`, no explicit trailing pad)
+      was 12 bytes by `encoding/binary.Size` reflection — the size
+      cilium/ebpf's marshaling actually checks — while the real kernel map
+      value is 16 bytes (C's natural alignment padding), so *every* real
+      `SignalRate()` lookup against a real map hit failed with "doesn't
+      consume all data" and silently returned `ok=false`. This means
+      `NormalizedEvent.RatePerSecond` has been 0 for every real
+      kernel-observed event since `pkg/ingestion` shipped, regardless of
+      actual signaling rate — never caught because `pkg/ebpf` had 0% test
+      coverage. Fixed (explicit padding field) and now covered by
+      `pkg/ebpf/loader_linux_test.go`'s
+      `TestSignalRateEntryMatchesKernelValueSize`, which asserts the exact
+      size cilium/ebpf checks, not `unsafe.Sizeof` (which would have
+      passed on the broken version too — the mismatch was between Go's
+      struct layout and cilium/ebpf's reflection, not between Go and C).
+      Verified end to end against the live core: real GTP-U traffic
+      through the UE tunnel (regression — protocol/port/rate all correct,
+      `SignalRate` now returns real counts instead of always `ok=false`)
+      and synthetic off-port traffic (new path — one event at exactly the
+      10th packet, correct port/payload, `SignalRate` returns the real
+      window count) captured together in one run via a throwaway verifier
+      program built against `pkg/ebpf` directly, not just `bpftool map
+      dump` in isolation.
+      `SCAN_EMIT_THRESHOLD=10` is reasoned about, not empirically tuned —
+      same caveat as when it was first written.
 - [x] `controller-gen` wired into `make manifests` (`make manifests` /
       `controller-gen` targets), replacing the hand-maintained
       `zz_generated.deepcopy.go` and CRD YAML — CI now fails on drift
@@ -117,6 +161,15 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
 
 ## Phase 2 — Deeper integrations
 
+- [ ] General multi-port scan detection: the `scan_rate` map added in Phase
+      1 (above) catches a sustained flood against *one* off-signaling port
+      per source, not classic low-and-slow port scanning (many distinct
+      ports, low volume each) — a per-(source, port) counter structurally
+      can't, since no single port's count ever crosses the threshold. Would
+      need a bounded distinct-port-count structure per source (e.g. a small
+      counting Bloom filter/HyperLogLog-style sketch keyed by source alone)
+      to catch that pattern within XDP's constraints — meaningfully more
+      complex than the current counter, needs its own design pass.
 - [ ] Cilium-native capture path (Hubble flow API or a Cilium custom BPF
       program) as an alternative to the standalone XDP attachment.
 - [ ] Falco output bridging into `NormalizedEvent`, so syscall-level signals

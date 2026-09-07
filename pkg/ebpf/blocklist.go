@@ -33,6 +33,14 @@ const (
 	SignalProtoSIP     SignalProtocol = 2
 )
 
+// gtpuPort/sipPort mirror bpf/headers/common.h's GTPU_PORT/SIP_PORT —
+// same hand-kept-in-sync convention as SignalProtocol above. Used by
+// Loader.SignalRate (loader_linux.go) to pick signal_rate vs scan_rate.
+const (
+	gtpuPort uint16 = 2152
+	sipPort  uint16 = 5060
+)
+
 // SignalingEvent is a single GTP-U/SIP packet observation read from the
 // kernel's signaling_events ring buffer (bpf/packet_filter.c). It is the
 // platform-independent counterpart of bpf's `struct signaling_event` —
@@ -62,10 +70,15 @@ type EventSource interface {
 	// the underlying reader errors. Intended to be called at most once per
 	// Loader.
 	SignalingEvents(ctx context.Context) (<-chan SignalingEvent, error)
-	// SignalRate returns the current window's packet count for ip from the
-	// kernel's signal_rate map, and false if ip has no entry this window
-	// (see track_signal_rate() in packet_filter.c).
-	SignalRate(ip net.IP) (count uint32, ok bool)
+	// SignalRate returns the current window's packet count for (ip,
+	// destPort), and false if there's no entry this window. Backed by one
+	// of two kernel maps depending on destPort: signal_rate (GTP-U/SIP,
+	// keyed by source IP only — see track_signal_rate()) or scan_rate
+	// (everything else, keyed by source IP *and* port — see
+	// track_scan_rate()'s comment in packet_filter.c for why those two
+	// need different keying). Callers holding a SignalingEvent should pass
+	// its own DestPort, not a guess.
+	SignalRate(ip net.IP, destPort uint16) (count uint32, ok bool)
 }
 
 // ipv4Key returns the raw 4-byte representation of ip, passed to the BPF map

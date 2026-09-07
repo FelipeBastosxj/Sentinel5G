@@ -24,7 +24,7 @@ func TestFromSignalingEvent_ResolvesKnownPod(t *testing.T) {
 		Protocol:    ebpf.SignalProtoGTPU,
 		Malformed:   false,
 	}
-	rate := func(net.IP) (uint32, bool) { return 42, true }
+	rate := func(net.IP, uint16) (uint32, bool) { return 42, true }
 
 	got := FromSignalingEvent(raw, podIndex, rate, "node-1")
 
@@ -61,7 +61,7 @@ func TestFromSignalingEvent_UnknownSourceStillProducesEvent(t *testing.T) {
 		DestPort:   5060,
 		Protocol:   ebpf.SignalProtoSIP,
 	}
-	rate := func(net.IP) (uint32, bool) { return 0, false }
+	rate := func(net.IP, uint16) (uint32, bool) { return 0, false }
 
 	got := FromSignalingEvent(raw, podIndex, rate, "node-1")
 
@@ -86,7 +86,7 @@ func TestFromSignalingEvent_MalformedAndUnknownProtocol(t *testing.T) {
 		Protocol:   ebpf.SignalProtoUnknown,
 		Malformed:  true,
 	}
-	rate := func(net.IP) (uint32, bool) { return 0, false }
+	rate := func(net.IP, uint16) (uint32, bool) { return 0, false }
 
 	got := FromSignalingEvent(raw, podIndex, rate, "node-1")
 

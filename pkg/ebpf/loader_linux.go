@@ -20,6 +20,7 @@ import (
 const (
 	blocklistMapName       = "blocklist"
 	signalRateMapName      = "signal_rate"
+	scanRateMapName        = "scan_rate"
 	signalingEventsMapName = "signaling_events"
 	xdpProgramName         = "xdp_packet_filter"
 	blockedValue           = uint8(1)
@@ -32,6 +33,7 @@ type Loader struct {
 	link            link.Link
 	blocklist       *ebpf.Map
 	signalRate      *ebpf.Map
+	scanRate        *ebpf.Map
 	signalingEvents *ebpf.Map
 
 	// bootTime is wall-clock "now" minus CLOCK_MONOTONIC "now", read once at
@@ -73,6 +75,12 @@ func Attach(objPath, iface string) (*Loader, error) {
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, signalRateMapName)
 	}
 
+	scanRate, ok := coll.Maps[scanRateMapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, scanRateMapName)
+	}
+
 	signalingEvents, ok := coll.Maps[signalingEventsMapName]
 	if !ok {
 		coll.Close()
@@ -106,6 +114,7 @@ func Attach(objPath, iface string) (*Loader, error) {
 		link:            xdpLink,
 		blocklist:       blocklist,
 		signalRate:      signalRate,
+		scanRate:        scanRate,
 		signalingEvents: signalingEvents,
 		bootTime:        bootTime,
 	}, nil
@@ -237,21 +246,68 @@ func (l *Loader) SignalingEvents(ctx context.Context) (<-chan SignalingEvent, er
 	return out, nil
 }
 
-// SignalRate returns the current window's packet count for ip from the
-// signal_rate map (see track_signal_rate() in packet_filter.c), and false
-// if ip has no entry (no signaling traffic observed from it this window).
-// Used by pkg/ingestion to populate NormalizedEvent.RatePerSecond.
-func (l *Loader) SignalRate(ip net.IP) (count uint32, ok bool) {
-	key, err := ipv4Key(ip)
-	if err != nil {
-		return 0, false
+// signalRateEntry is the Go mirror of bpf/packet_filter.c's
+// `struct signal_rate_entry` (window_start_ns + count), the shared value
+// type for both signal_rate and scan_rate.
+//
+// The trailing `_ uint32` is load-bearing, not cosmetic: C naturally pads
+// this struct to 16 bytes (8-byte alignment from window_start_ns), which is
+// what the map's value size actually is (`bpftool map list` confirms
+// "value 16B") -- but cilium/ebpf's key/value marshaling sums each Go
+// field's own size via reflection (like encoding/binary.Size) rather than
+// using Go's struct-level unsafe.Sizeof, so a two-field
+// {uint64;uint32} version (12 bytes by that reflection-based sum) fails
+// every real Lookup with "doesn't consume all data" the moment the map
+// actually returns a hit -- found by real-testing this exact bug via
+// `bpftool map dump` against a live kernel map, not by inspection: the
+// pre-fix version of this struct existed, unchanged, since the original
+// signal_rate map shipped, silently making Loader.SignalRate() return
+// ok=false for every real entry, always -- see TestSignalRateEntryMatchesKernelValueSize.
+type signalRateEntry struct {
+	WindowStartNs uint64
+	Count         uint32
+	_             uint32
+}
+
+// scanRateKey is the byte-exact Go mirror of bpf/packet_filter.c's
+// `struct scan_key` — saddr (4 bytes) + dest_port (2 bytes, host byte order)
+// + 2 bytes of explicit padding, `packed, aligned(4)`. Field order and sizes
+// MUST stay in sync by hand with that struct, the same convention as
+// rawSignalingEvent below.
+type scanRateKey struct {
+	Saddr    uint32
+	DestPort uint16
+	_        uint16
+}
+
+// SignalRate returns the current window's packet count for (ip, destPort),
+// and false if there's no entry this window. destPort selects which kernel
+// map to consult: GTPU_PORT/SIP_PORT traffic is tracked in signal_rate
+// (keyed by source IP only — track_signal_rate() in packet_filter.c), any
+// other port in scan_rate (keyed by source IP *and* port — see
+// track_scan_rate()'s comment there for why scan_rate can't get away with
+// signal_rate's coarser source-only keying). Used by pkg/ingestion to
+// populate NormalizedEvent.RatePerSecond.
+func (l *Loader) SignalRate(ip net.IP, destPort uint16) (count uint32, ok bool) {
+	var entry signalRateEntry
+
+	if destPort == gtpuPort || destPort == sipPort {
+		key, err := ipv4Key(ip)
+		if err != nil {
+			return 0, false
+		}
+		if err := l.signalRate.Lookup(key, &entry); err != nil {
+			return 0, false
+		}
+		return entry.Count, true
 	}
 
-	var entry struct {
-		WindowStartNs uint64
-		Count         uint32
+	v4 := ip.To4()
+	if v4 == nil {
+		return 0, false
 	}
-	if err := l.signalRate.Lookup(key, &entry); err != nil {
+	key := scanRateKey{Saddr: binary.LittleEndian.Uint32(v4), DestPort: destPort}
+	if err := l.scanRate.Lookup(&key, &entry); err != nil {
 		return 0, false
 	}
 	return entry.Count, true
