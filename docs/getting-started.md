@@ -6,7 +6,9 @@ Kubernetes cluster (e.g. [kind](https://kind.sigs.k8s.io/)).
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.26+ (matches `go.mod`'s `go`/`toolchain` directives; with the default
+  `GOTOOLCHAIN=auto`, an older local Go silently downloads 1.26 the first
+  time you build, which needs network access)
 - Python 3.11+
 - Docker (or another OCI runtime) and Docker Compose
 - A local Kubernetes cluster (`kind`, `minikube`, or similar) and `kubectl`
@@ -33,7 +35,7 @@ The AI engine needs a trained, exported model before it can serve scores:
 
 ```sh
 cd cmd/ai-engine
-pip install -e ".[dev]"        # or: pip install -r requirements.txt
+pip install -e ".[dev,train]"  # train.py/export_onnx.py need torch -- see requirements.txt's header
 
 python scripts/generate_synthetic_dataset.py
 python scripts/train.py
@@ -91,6 +93,10 @@ curl -X POST localhost:8090/v1/score -H 'content-type: application/json' \
 ```
 
 ## 3. Run the operator against a local cluster
+
+Needs step 2's NATS instance already running (`docker compose up` in
+`deployments/`, or at minimum a bare `docker run -p 4222:4222 nats:2.10-alpine
+-js`) — the operator exits immediately if it can't reach `NATS_URL`.
 
 ```sh
 kubectl apply -f config/crd/bases/security.sentinel5g.io_telecomsecuritypolicies.yaml
@@ -153,7 +159,6 @@ just want to see it work rather than run it against your own cluster/NATS.
 - If you're starting from a fresh clone without a `go.sum` yet, `go mod
   tidy` needs network access to a Go module proxy to populate it the first
   time.
-- `bpf/packet_filter.c` only compiles on Linux — a `linux-libc-dev` package
-  is required in addition to `clang`/`libbpf-dev`/kernel headers (see the
-  Prerequisites note above); CI installs all of these explicitly (see
-  `.github/workflows/ci.yml`).
+- `bpf/packet_filter.c` only compiles on Linux — see the Prerequisites note
+  above for what that needs (`clang`/`llvm`/`libbpf-dev`/`bpftool`; no
+  kernel-headers packages required since the CO-RE migration).
