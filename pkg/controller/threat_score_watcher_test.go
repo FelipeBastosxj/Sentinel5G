@@ -13,6 +13,16 @@ import (
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
 )
 
+// Regression guard: ThreatScoreWatcher must stay leader-gated (exactly one
+// active instance cluster-wide) — see NeedLeaderElection's doc comment for
+// why this is defensive hardening, not a bug fix.
+func TestThreatScoreWatcher_IsLeaderGated(t *testing.T) {
+	w := &ThreatScoreWatcher{}
+	if !w.NeedLeaderElection() {
+		t.Fatal("expected ThreatScoreWatcher.NeedLeaderElection() = true (must run as a single active instance)")
+	}
+}
+
 // recordingBlocklist and recordingMesh are in-memory test doubles standing
 // in for pkg/ebpf.BlocklistUpdater and pkg/mesh.Adapter, so applyPolicy's
 // decisions can be asserted without a real kernel or Istio control plane.

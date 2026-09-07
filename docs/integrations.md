@@ -63,6 +63,31 @@ chart's `values.yaml`) drops all Linux capabilities, so:
   fails, so a misconfigured capability set degrades to mesh-only isolation
   instead of crash-looping the operator.
 
+**Scaling `replicaCount` with eBPF enabled — two things to know:**
+
+- `pkg/ingestion.Publisher` (the per-node ring-buffer reader) deliberately
+  runs on *every* replica, not just the leader — `--bpf-interface` is
+  attached per-pod, so each replica only ever sees its own node's traffic,
+  and the operator needs every replica publishing for full coverage. This
+  also means a plain `Deployment` gives you coverage on however many
+  *distinct* nodes your replicas happen to land on — not the whole cluster
+  the way a `DaemonSet` would guarantee (tracked as a real gap in
+  `ROADMAP.md`, not yet implemented).
+- `pkg/ebpf.Loader`'s `AttachXDP` has no guard against a second attach on
+  the same interface: if two replicas land on the *same* node, the second
+  pod's XDP attach silently replaces the first's, breaking that node's
+  event stream. Use `podAntiAffinity` to keep replicas on distinct nodes,
+  e.g. in the Helm chart's `values.yaml`:
+  ```yaml
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinel5g-operator
+          topologyKey: kubernetes.io/hostname
+  ```
+
 ## Securing the NATS message bus
 
 `pkg/events.Connect` (Go) and `sentinel_ai/server.py`'s NATS worker (Python)
