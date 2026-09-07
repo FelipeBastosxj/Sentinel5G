@@ -110,6 +110,24 @@ async def _ensure_stream(js, settings: Settings) -> None:
 # on the Go side. Without a cap, a failing message NAKs forever.
 _MAX_EVENT_DELIVERIES = 5
 
+# Durable consumer name AND queue group for the NATS worker below. Scoring
+# is stateless, so this deliberately differs from the Go operator's
+# ThreatScoreWatcher (a single-active-instance consumer by design, see
+# pkg/controller.ThreatScoreWatcher.NeedLeaderElection) — this workload
+# should scale out across replicas instead, and `queue=` is what makes
+# JetStream load-balance a subject across multiple subscribers bound to the
+# same durable rather than rejecting the second bind outright.
+#
+# Named "-workers", not reusing the older "sentinel5g-ai-engine" name: a
+# durable consumer's deliver_group is fixed at creation time server-side,
+# and JetStream refuses to add a queue group to an existing durable that
+# was created without one ("cannot create a queue subscription for a
+# consumer without a deliver group"). This is a deliberate breaking change,
+# not an oversight — any existing deployment must redeploy to pick up the
+# new consumer name; the old "sentinel5g-ai-engine" durable is orphaned
+# (delete it with `nats consumer rm`, or let the stream's MaxAge retire it).
+_WORKER_GROUP = "sentinel5g-ai-engine-workers"
+
 
 def _nats_connect_kwargs(settings: Settings) -> dict:
     """Builds nats.connect() auth/TLS kwargs from settings, all optional —
@@ -175,13 +193,15 @@ async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
 
     await js.subscribe(
         settings.nats_events_subject,
-        durable="sentinel5g-ai-engine",
+        durable=_WORKER_GROUP,
+        queue=_WORKER_GROUP,
         cb=handler,
         config=ConsumerConfig(max_deliver=_MAX_EVENT_DELIVERIES),
     )
     logger.info(
-        "subscribed to %s, publishing to %s",
+        "subscribed to %s as part of queue group %s, publishing to %s",
         settings.nats_events_subject,
+        _WORKER_GROUP,
         settings.nats_threats_subject,
     )
 

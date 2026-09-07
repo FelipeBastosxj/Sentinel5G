@@ -23,6 +23,11 @@ metadata:
   labels:
     app: sentinel5g-ai-engine
 spec:
+  # 1 for this quickstart demo, but scoring is stateless and the NATS worker
+  # (sentinel_ai/server.py) now subscribes as part of a queue group
+  # ("sentinel5g-ai-engine-workers"), so replicas: N safely load-balances
+  # across the subject instead of every replica conflicting on the same
+  # durable consumer -- bump this for real throughput.
   replicas: 1
   selector:
     matchLabels:
