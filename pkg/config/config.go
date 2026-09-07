@@ -33,6 +33,12 @@ type OperatorConfig struct {
 	ThreatScoreThreshold float64
 	MeshAdapter          string
 
+	// LogLevel is passed through as-is (zap vocabulary: debug/info/warn/
+	// error/...) for cmd/operator/main.go to parse — validated there, not
+	// here, since a bad value should log a warning through the very logger
+	// being constructed, not fail config.Load() before any logger exists.
+	LogLevel string
+
 	// DeEscalationDwell is how long a TelecomSecurityPolicy must go without
 	// a new mitigation before pkg/controller.Reconciler automatically
 	// reverses its active ones (see that package's tryDeEscalate for why
@@ -77,6 +83,7 @@ func Load() (OperatorConfig, error) {
 
 		ThreatScoreThreshold: threshold,
 		MeshAdapter:          getEnv("MESH_ADAPTER", "istio"),
+		LogLevel:             getEnv("LOG_LEVEL", "info"),
 
 		DeEscalationDwell: deEscalationDwell,
 	}
