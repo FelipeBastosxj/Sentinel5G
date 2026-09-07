@@ -10,11 +10,14 @@ Kubernetes cluster (e.g. [kind](https://kind.sigs.k8s.io/)).
 - Python 3.11+
 - Docker (or another OCI runtime) and Docker Compose
 - A local Kubernetes cluster (`kind`, `minikube`, or similar) and `kubectl`
-- `clang`/`llvm` + `libbpf-dev` + `linux-libc-dev` + `linux-headers-$(uname -r)`,
-  only if you want to compile `bpf/packet_filter.c` (Linux-only; see
-  `bpf/Makefile`). `linux-libc-dev` specifically is easy to miss — without
-  it, the build fails on a missing `asm/types.h` even with the kernel
-  headers installed, since that comes from a different package.
+- `clang`/`llvm` + `libbpf-dev` + `bpftool`, only if you want to compile
+  `bpf/packet_filter.c` (Linux-only; see `bpf/Makefile`). The build generates
+  `bpf/headers/vmlinux.h` from your own kernel's BTF via `bpftool btf dump`
+  (CO-RE — see that file's top comment), so `linux-libc-dev`/
+  `linux-headers-$(uname -r)` are no longer needed. If your distro's
+  `bpftool` package is unreliable (Ubuntu's `linux-tools-generic` often
+  isn't — see `.github/workflows/ci.yml`'s eBPF job), install a static
+  release from https://github.com/libbpf/bpftool/releases instead.
 
 ## 1. Bootstrap the Go module
 
@@ -43,6 +46,28 @@ This produces `models/autoencoder.onnx` and `models/autoencoder.norm.json`.
 or claim to represent, real telecom captures) purely to exercise the
 pipeline end to end — see the module docstring and
 `docs/architecture.md`.
+
+### Training against real captures instead
+
+`docs/paper-data/real-dataset/` bundles real GTP-U packet captures from a
+live Open5GS+UERANSIM 5G core (see that directory's README for exactly how
+they were produced, and its honestly-stated scope limits — single UE, no
+real SIP/SMPP, roughly one hour of wall-clock capture time). To train
+against those instead of synthetic data:
+
+```sh
+python scripts/build_real_dataset.py
+python scripts/train.py --dataset data/real_dataset.npz --output models/autoencoder.pt
+python scripts/export_onnx.py --weights models/autoencoder.pt --dataset data/real_dataset.npz
+```
+
+This overwrites the same `models/autoencoder.onnx` the server loads by
+default. See `docs/paper-data/02-ai-training-inference.md` for the
+accuracy/threshold numbers this produces, and
+`scripts/build_real_dataset.py`'s module docstring for which anomaly types
+in the resulting dataset are genuinely real vs. still an approximation (not
+every synthetic anomaly type has an equally real production equivalent
+yet).
 
 With a model in place, bring up the local stack:
 

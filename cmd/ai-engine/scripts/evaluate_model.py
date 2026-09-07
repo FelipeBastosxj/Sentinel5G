@@ -8,17 +8,26 @@ scripts/export_onnx.py, sentinel_ai/server.py) and intentionally holds out a
 slice of "normal" samples the model never trains on, so the reported numbers
 are not measuring memorization of the training set.
 
-Run: python scripts/evaluate_model.py
+Run: python scripts/evaluate_model.py [--source synthetic|real]
+
+--source real evaluates against scripts/build_real_dataset.py's real,
+on-wire captures (docs/paper-data/real-dataset/) instead of the synthetic
+generator — read that script's module docstring before trusting the
+"anomalous" numbers from a --source real run: not every synthetic anomaly
+type has an equally real production equivalent yet.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import numpy as np
 import torch
 
-from scripts.generate_synthetic_dataset import generate
+from scripts.build_real_dataset import _REAL_DATASET_DIR
+from scripts.build_real_dataset import build as build_real
+from scripts.generate_synthetic_dataset import generate as generate_synthetic
 from sentinel_ai.model import Autoencoder, export_onnx, reconstruction_error, train
 from sentinel_ai.server import ScoringEngine
 
@@ -78,7 +87,21 @@ def auc(points: list[dict]) -> float:
 
 
 def main() -> None:
-    normal, anomalous = generate(num_normal=4000, num_anomalous=200, seed=42)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source",
+        choices=["synthetic", "real"],
+        default="synthetic",
+        help="synthetic: scripts/generate_synthetic_dataset.py (default, reproducible, no live "
+        "capture needed). real: scripts/build_real_dataset.py against docs/paper-data/"
+        "real-dataset/ captures.",
+    )
+    args = parser.parse_args()
+
+    if args.source == "real":
+        normal, anomalous = build_real(_REAL_DATASET_DIR)
+    else:
+        normal, anomalous = generate_synthetic(num_normal=4000, num_anomalous=200, seed=42)
 
     rng = np.random.default_rng(42)
     idx = rng.permutation(len(normal))
@@ -93,9 +116,9 @@ def main() -> None:
     train_errors = reconstruction_error(model, torch.from_numpy(normal_train)).numpy()
     reference_error = float(np.percentile(train_errors, 99))
 
-    model_path = "models/eval_autoencoder.onnx"
+    model_path = f"models/eval_autoencoder_{args.source}.onnx"
     export_onnx(model, __import__("pathlib").Path(model_path), input_dim=normal.shape[1])
-    __import__("pathlib").Path("models/eval_autoencoder.norm.json").write_text(
+    __import__("pathlib").Path(f"models/eval_autoencoder_{args.source}.norm.json").write_text(
         json.dumps({"reference_error": reference_error})
     )
 
@@ -112,6 +135,7 @@ def main() -> None:
 
     result = {
         "dataset": {
+            "source": args.source,
             "normal_total": int(len(normal)),
             "normal_train": int(len(normal_train)),
             "normal_holdout": int(len(normal_holdout)),

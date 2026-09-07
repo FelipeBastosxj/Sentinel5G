@@ -141,14 +141,101 @@ attack distributions, and the module's own docstring says so explicitly):
 - Default generation size: 4,000 normal / 200 anomalous samples (seed 42,
   reproducible — `python scripts/generate_synthetic_dataset.py`).
 
-**Real captures (PCAP):** now exist — `docs/paper-data/normal.pcap` and
-`storm.pcap` (2.2 above), the first real PCAP pair this project has. The
-earlier WSL2 real-traffic validation rounds (500+500 packet UDP burst; the
-6-ICMP PDU-session run) generated genuine on-wire GTP-U/SIP/ICMP traffic
-and proved the capture→scoring pipeline against it, but neither wrote a
-`tcpdump` capture to disk — only `bpftool map dump` counts and NATS event
-logs were captured. These two are 4.7KB/97KB respectively — real but small;
-growing this into an actual replacement training set (per `ROADMAP.md`
-Phase 1) needs materially more volume and traffic-shape variety (multiple
-UEs, real attack tooling rather than `ping -f`, SIP alongside GTP-U) than a
-single flood-ping session provides.
+**Real captures (PCAP):** `docs/paper-data/normal.pcap` and `storm.pcap`
+(2.2 above) were the first real PCAP pair this project had — 4.7KB/97KB,
+real but small (30/618 packets, one traffic shape each). Superseded on
+2026-09-07 by `docs/paper-data/real-dataset/` (5 capture pairs, 6.9MB,
+1,889 normal + 32,235 anomalous samples after feature extraction) — see 2.4
+below for the full retraining/evaluation results, and that directory's own
+README for exactly how each capture was produced and its stated scope
+limits.
+
+## 2.4 Real dataset at scale: retraining and threshold validation
+
+**Measured** on 2026-09-07, closing `ROADMAP.md` Phase 1's "replace the
+synthetic training dataset with real traffic, and validate sensitivity
+thresholds against it" — against a live Open5GS+UERANSIM core in the same
+WSL2 environment as 2.2, this time capturing at materially greater volume
+and variety instead of a single 30/618-packet pair. Full method,
+per-capture packet counts, and honestly-stated scope limits (single UE,
+no real SIP/SMPP — this deployment runs no IMS or SMPP infrastructure at
+all — roughly one hour of wall-clock capture time) are in
+[`docs/paper-data/real-dataset/README.md`](real-dataset/README.md).
+Reproduce with, from `cmd/ai-engine/`:
+
+```sh
+python scripts/build_real_dataset.py   # -> data/real_dataset.npz
+python scripts/train.py --dataset data/real_dataset.npz --output models/autoencoder_real.pt
+python scripts/export_onnx.py --weights models/autoencoder_real.pt --dataset data/real_dataset.npz --output models/autoencoder_real.onnx
+python scripts/evaluate_model.py --source real
+```
+
+**Not every anomaly type in the resulting dataset is equally real** — read
+[`scripts/build_real_dataset.py`](../../cmd/ai-engine/scripts/build_real_dataset.py)'s
+module docstring before trusting the pooled numbers below at face value:
+
+| Capture | n | Real GTP-U framing? | Reachable by `bpf/packet_filter.c` today? |
+|---|---|---|---|
+| `real_normal` (baseline) | 1,889 | Yes | Yes |
+| `real_storm_pingflood` (in-tunnel flood) | 3,348 | **Yes — the only fully protocol-real storm sample** | Yes |
+| `real_storm_udpflood` (direct UDP to the N3 port) | 25,944 | No — real packets, real port, no TEID/GTP header | Yes (rate-tracking doesn't parse GTP-U payload either) |
+| `real_malformed` (tiny real payload, valid header) | 700 | Yes, but not what the kernel's own `malformed` flag detects | Yes, but classified as normal signaling traffic, not "malformed" |
+| `real_scan` (off-signaling-port real probe) | 708 | N/A (not GTP-U/SIP) | **No — `is_signaling_port()` gates emission; Layer 1 never observes this today** |
+| kernel-malformed (exact reproduction, not a capture) | 1,534 | N/A | Yes — the literal, only feature vector `packet_filter.c:172` ever emits for a UDP-header-truncated packet |
+
+**Per-category scores**, from the real-trained model
+(`models/eval_autoencoder_real.onnx`, same instance the pooled ROC/AUC
+below comes from; held-out normal is the same 378-sample, seed-42, 80/20
+split `evaluate_model.py` uses):
+
+| Category | Rate (min/mean/max pkt/s) | Score (min/mean/max) |
+|---|---|---|
+| Normal (held out, n=378) | — | 0.0083 / 0.0811 / 0.2624 |
+| Storm — in-tunnel flood (n=3,348) | 1 / 31 / 63 | 0.0450 / 0.0679 / 0.0855 |
+| Storm — direct UDP flood (n=25,944) | 1 / 1,172 / 3,026 | 0.1022 / 0.8638 / 1.0000 |
+| Malformed — tiny real payload (n=700) | 1 / 10.5 / 20 | 0.2838 / 0.2840 / 0.2845 |
+| Scan — off-port probe (n=708) | 1 / 10.6 / 22 | 1.0000 / 1.0000 / 1.0000 |
+| Kernel-malformed, exact (n=1,534) | — | 1.0000 / 1.0000 / 1.0000 |
+
+**Read honestly — this is the load-bearing finding, not a footnote:** the
+only sample type in this table that is simultaneously (a) genuinely
+protocol-real GTP-U and (b) something `bpf/packet_filter.c` would actually
+observe in production today — the in-tunnel flood — scores *lower on
+average than the held-out normal baseline* (0.0679 vs 0.0811). Neither the
+original synthetic-trained model (2.2) nor this real-trained one flags it
+at any of the three production sensitivity thresholds
+(`pkg/controller/threat_score_watcher.go`'s `BaseThreshold=0.85`, high
+0.68 / medium 0.85 / low 1.00): recall for this subtype alone is 0/3,348.
+This WSL2 kernel's real achievable flood-ping ceiling (~60 pkt/s, same
+figure as 2.2's original measurement) sits inside normal traffic's own
+rate variance rather than clearly outside it — whether that reflects a
+WSL2-specific throughput cap or a realistic bound on what a real attacker
+could sustain against a well-provisioned N3 interface is explicitly *not*
+something this measurement can determine, and is now open follow-up work
+(a non-WSL2, higher-throughput real environment).
+
+**Pooled ROC/AUC** (`evaluate_model.py --source real`, all anomaly
+categories combined, 32,235 samples — 80% of which is the non-protocol-real
+direct-UDP-flood category, so this number should be read alongside the
+per-category table above, not instead of it):
+
+| Metric | Synthetic (2.1) | Real |
+|---|---|---|
+| ROC AUC | 0.9459 | 0.9449 |
+| Normal holdout — mean score | 0.0856 | 0.0811 |
+| Anomalous — mean score | 0.7074 | 0.7781 |
+
+| Sensitivity | Threshold | TP | FP | TN | FN | Precision | Recall | F1 |
+|---|---|---|---|---|---|---|---|---|
+| high | 0.68 | 23,477 | 0 | 378 | 8,758 | 1.00 | 0.728 | 0.843 |
+| medium | 0.85 | 22,847 | 0 | 378 | 9,388 | 1.00 | 0.709 | 0.830 |
+| low | 1.00 | 22,352 | 0 | 378 | 9,883 | 1.00 | 0.693 | 0.819 |
+
+Near-identical pooled AUC to the synthetic evaluation (0.9449 vs 0.9459)
+looks like a clean validation at a glance; the per-category breakdown above
+is why it isn't read as one here. A second real, structural finding
+surfaced by this exercise (not a training-data problem — a Layer 1 gap):
+`real_scan`'s perfect separability is moot for production today, since
+`is_signaling_port()` means `bpf/packet_filter.c` never emits an
+observation for non-signaling-port traffic at all — tracked as a new,
+deliberately-deferred item (see `ROADMAP.md` Phase 1/2).
