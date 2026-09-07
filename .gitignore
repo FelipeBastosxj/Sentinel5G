@@ -31,6 +31,7 @@ bpf/headers/vmlinux.h
 # --- Kubernetes / local dev ---
 *.kubeconfig
 kubeconfig
+.kube-quickstart.yaml
 .env
 
 # --- Helm ---

@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings and their executable bit
+# regardless of the checkout platform -- a CRLF-mangled shebang
+# (`#!/usr/bin/env bash\r`) fails to execute on Linux/macOS.
+*.sh text eol=lf
