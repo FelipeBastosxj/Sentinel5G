@@ -231,6 +231,20 @@ int xdp_packet_filter(struct xdp_md *ctx)
 	if (iph->protocol != IPPROTO_UDP)
 		return XDP_PASS;
 
+	// A non-initial IP fragment (nonzero fragment offset) has no UDP header
+	// at this computed offset at all -- these are arbitrary fragment payload
+	// bytes, not dest_port/payload_size. Reading them as if they were a real
+	// UDP header would feed garbage into track_signal_rate/track_scan_rate/
+	// emit_signaling_event. Deliberately NOT also bailing on the MF (more
+	// fragments) flag alone: a *first* fragment (MF=1, offset=0) still has a
+	// real, intact UDP header right here -- skipping it too would blind
+	// signal/scan detection to fragmentation-based evasion, a well-known
+	// IDS-bypass technique, which is a worse gap than the one being fixed.
+	// iph->frag_off is network byte order; IP_OFFMASK (0x1FFF) is the
+	// low-13-bit fragment-offset field per RFC 791.
+	if (bpf_ntohs(iph->frag_off) & 0x1FFF)
+		return XDP_PASS;
+
 	struct udphdr *udph = (void *)iph + (iph->ihl * 4);
 	if ((void *)(udph + 1) > data_end) {
 		// Too short to have a complete UDP header on an otherwise
