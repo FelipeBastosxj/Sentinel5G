@@ -52,6 +52,10 @@ jobs:
       # image by the same tag reference (no pull needed, Syft/Trivy resolve
       # it from the local daemon); the image is only pushed, further down,
       # once the scan has actually passed.
+      # TEMPORARY DRY RUN: :latest tag removed from this step (and the push
+      # step below) so a dry-run test tag can't overwrite the real :latest
+      # image real users pull. Revert this whole TEMPORARY block once the
+      # dry run is confirmed working.
       - name: Build image (not pushed yet)
         id: build
         uses: docker/build-push-action@v6
@@ -62,7 +66,6 @@ jobs:
           load: true
           tags: |
             ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
-            ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:latest
 
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
@@ -99,7 +102,6 @@ jobs:
           set -euo pipefail
           IMAGE="ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}"
           docker push "$IMAGE:${{ github.ref_name }}"
-          docker push "$IMAGE:latest"
           digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:${{ github.ref_name }}" | cut -d'@' -f2)
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
