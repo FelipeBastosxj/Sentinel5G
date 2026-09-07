@@ -12,7 +12,9 @@ import (
 	"github.com/go-logr/logr"
 	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -136,11 +138,7 @@ func main() {
 		log.Info("eBPF not attached; Layer 1 -> Layer 2 event publishing disabled")
 	}
 
-	meshAdapter, err := mesh.NewAdapter(cfg.MeshAdapter, mesh.IstioAdapterDeps{Client: mgr.GetClient()})
-	if err != nil {
-		log.Error(err, "unable to build mesh adapter")
-		os.Exit(1)
-	}
+	meshAdapter := buildMeshAdapter(log, cfg.MeshAdapter, mesh.IstioAdapterDeps{Client: mgr.GetClient()}, mgr.GetRESTMapper())
 
 	index := sentinelcontroller.NewPolicyIndex()
 
@@ -199,6 +197,39 @@ func attachBlocklist(log logr.Logger, objectPath, iface string) sentinelebpf.Blo
 		return noopBlocklist{}
 	}
 	return loader
+}
+
+// buildMeshAdapter builds the configured mesh.Adapter, but for "istio"
+// specifically checks first whether the AuthorizationPolicy CRD is actually
+// registered on this cluster -- mirroring attachBlocklist's exact
+// try-then-degrade-gracefully pattern above. Without this check, IsolatePod
+// actions on a cluster that never installed Istio fail every single time
+// with "no matches for kind AuthorizationPolicy" -- and because
+// ThreatScoreWatcher.applyPolicy (threat_score_watcher.go) returns on the
+// first action error rather than continuing past a partial failure, that
+// also silently prevents Status.Phase from ever reaching Mitigating, even
+// when EbpfBlock (if also enabled on the same policy) succeeded. Found by
+// running the real quickstart flow against a real kind cluster with no
+// Istio installed, not by inspection -- config/samples/
+// security_v1alpha1_telecomsecuritypolicy.yaml sets isolatePod: true, and
+// MESH_ADAPTER defaults to "istio", so this is the default experience for
+// anyone following docs/getting-started.md or README.md without Istio,
+// not an edge case.
+func buildMeshAdapter(log logr.Logger, kind string, deps mesh.IstioAdapterDeps, restMapper meta.RESTMapper) mesh.Adapter {
+	if kind == "istio" {
+		gvk := schema.GroupVersionKind{Group: "security.istio.io", Version: "v1", Kind: "AuthorizationPolicy"}
+		if _, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+			log.Info("Istio AuthorizationPolicy CRD not found on this cluster; IsolatePod actions will be no-ops", "reason", err.Error())
+			return mesh.NoopAdapter{}
+		}
+	}
+
+	adapter, err := mesh.NewAdapter(kind, deps)
+	if err != nil {
+		log.Error(err, "unable to build mesh adapter")
+		os.Exit(1)
+	}
+	return adapter
 }
 
 type noopBlocklist struct{}
