@@ -39,11 +39,19 @@
 ## 🚀 Quick Start
 
 Go from zero to watching a real automated mitigation fire, using only the
-already-published `ghcr.io/felipebastosxj/*:v0.2.0` images — no local Go/Python
+already-published `ghcr.io/felipebastosxj/*:v0.2.1` images — no local Go/Python
 build required. Verified end to end against a real k3s cluster; see
 [`docs/getting-started.md`](docs/getting-started.md) for the deeper walkthrough
 that runs every layer (real eBPF capture + the AI engine) instead of hand-
 publishing the AI engine's output like step 3 below does.
+
+**Prefer one command?** `./scripts/quickstart.sh` runs every step below
+automatically (installing `kind`/`helm` locally if you don't have them, and
+working around a real `kind`-on-Docker DNS-resolution failure mode found the
+hard way — not specific to any one machine or cloud sandbox). Needs `docker`
+and `kubectl` already available; everything else it handles. The steps below
+are what it's actually running, for anyone who wants to follow along or
+adapt them.
 
 ### Prerequisites
 

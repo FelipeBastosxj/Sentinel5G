@@ -1,9 +1,9 @@
 image:
   repository: ghcr.io/felipebastosxj/sentinel5g-operator
   # Must match an actual published tag (release.yml tags images with the
-  # full ref name, "v0.2.0", not "0.2.0") -- ghcr.io/.../sentinel5g-operator:0.2.0
+  # full ref name, "v0.2.1", not "0.2.1") -- ghcr.io/.../sentinel5g-operator:0.2.1
   # doesn't exist and would ImagePullBackOff.
-  tag: "v0.2.0"
+  tag: "v0.2.1"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
