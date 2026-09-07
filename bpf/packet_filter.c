@@ -12,13 +12,18 @@
 // threat score.
 //
 // It also emits a `signaling_events` ring buffer record for every
-// GTP-U/SIP packet observed (and for UDP packets too short to have a
-// complete header, flagged malformed) — this is what pkg/ingestion turns
-// into `events.NormalizedEvent` and publishes to NATS_EVENTS_SUBJECT,
-// bridging this layer to Layer 2/3 (the AI engine). Deliberately not full
-// packet capture: only signaling-port traffic is emitted, matching
-// NormalizedEvent's "high-volume telemetry, not a packet capture" design
-// (see docs/event-model.md).
+// GTP-U/SIP packet observed, for UDP packets too short to have a complete
+// header (flagged malformed), and — since this file's `scan_rate`/
+// `track_scan_rate()` addition — once per second for a source sending a
+// sustained burst of UDP to ports outside 2152/5060 (see
+// SCAN_EMIT_THRESHOLD in headers/common.h; a single stray off-port packet
+// does not emit). This is what pkg/ingestion turns into
+// `events.NormalizedEvent` and publishes to NATS_EVENTS_SUBJECT, bridging
+// this layer to Layer 2/3 (the AI engine). Still deliberately not full
+// packet capture: every signaling-port packet is emitted, but off-port UDP
+// only once a burst crosses the threshold, matching NormalizedEvent's
+// "high-volume telemetry, not a packet capture" design (see
+// docs/event-model.md).
 //
 // Builds against a generated vmlinux.h (bpf/headers/vmlinux.h, `make -C bpf`
 // -- see bpf/Makefile) instead of plain UAPI kernel headers. Worth being
@@ -68,6 +73,39 @@ struct {
 	__type(key, __u32);
 	__type(value, struct signal_rate_entry);
 } signal_rate SEC(".maps");
+
+// scan_key deliberately keys scan_rate by (source, dest_port), NOT just
+// source the way signal_rate does. Tried source-only first; a real test
+// against the live WSL2 core caught why that's wrong here specifically:
+// signal_rate can get away with coarse per-source-only aggregation because
+// is_signaling_port() traffic is *never* threshold-gated before emitting —
+// every signaling packet gets its own accurate event regardless of the
+// shared rate counter, so the counter being coarse never corrupts an
+// individual event. scan_rate's emission, below, IS threshold-gated (has to
+// be — off-signaling volume isn't bounded the way signaling volume is), so
+// which packet happens to be "the one that crosses the line" is now
+// semantically significant: a source-only key let unrelated background
+// loopback UDP (e.g. a local resolver reply on an ephemeral port) share one
+// counter with genuine probe traffic on a different port, and the emitted
+// event got attributed to whichever happened to cross the threshold —
+// observed directly via `bpftool map dump` during testing, not inferred.
+// Per-(source, port) keying makes each emitted event self-consistent: the
+// dest_port it reports is always the same port whose own rate crossed
+// SCAN_EMIT_THRESHOLD. LRU eviction still bounds total map memory
+// regardless of key cardinality (MAX_RATE_ENTRIES), so this doesn't
+// reintroduce the "unbounded eBPF map" problem CLAUDE.md rules out.
+struct scan_key {
+	__u32 saddr;
+	__u16 dest_port; // host byte order, matches emit_signaling_event's arg.
+	__u16 _pad;
+} __attribute__((packed, aligned(4)));
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_RATE_ENTRIES);
+	__type(key, struct scan_key);
+	__type(value, struct signal_rate_entry);
+} scan_rate SEC(".maps");
 
 // signaling_event is a coarse, per-packet observation of GTP-U/SIP traffic,
 // exported for Layer 2 normalization. Field layout is fixed and padded
@@ -132,6 +170,35 @@ static __always_inline void track_signal_rate(__u32 saddr)
 	}
 }
 
+// Returns the window's packet count *before* this packet was counted, so the
+// caller can detect the exact packet that crosses SCAN_EMIT_THRESHOLD and
+// emit once per window rather than once per packet — off-signaling-port UDP
+// has no assumed bound on volume the way signaling traffic does, so
+// unconditional per-packet emission here risks both the <0.2ms/packet
+// latency budget and overrunning signaling_events with non-signaling noise.
+static __always_inline __u32 track_scan_rate(__u32 saddr, __u16 dest_port)
+{
+	struct scan_key key = {.saddr = saddr, .dest_port = dest_port};
+	struct signal_rate_entry *entry = bpf_map_lookup_elem(&scan_rate, &key);
+	__u64 now = bpf_ktime_get_ns();
+
+	if (!entry) {
+		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
+		bpf_map_update_elem(&scan_rate, &key, &fresh, BPF_ANY);
+		return 0;
+	}
+
+	__u32 prior_count = entry->count;
+	if (now - entry->window_start_ns > SIGNALING_RATE_WINDOW_NS) {
+		prior_count = 0;
+		entry->window_start_ns = now;
+		entry->count = 1;
+	} else {
+		entry->count += 1;
+	}
+	return prior_count;
+}
+
 SEC("xdp")
 int xdp_packet_filter(struct xdp_md *ctx)
 {
@@ -174,12 +241,24 @@ int xdp_packet_filter(struct xdp_md *ctx)
 	}
 
 	__u16 dest_port = bpf_ntohs(udph->dest);
+	__u16 payload_size = (__u16)((void *)data_end - (void *)(udph + 1));
+
 	if (is_signaling_port(dest_port)) {
 		track_signal_rate(saddr);
 
 		__u8 protocol = (dest_port == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
-		__u16 payload_size = (__u16)((void *)data_end - (void *)(udph + 1));
 		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol, 0);
+	} else {
+		// Off-signaling-port UDP: previously invisible here no matter its
+		// volume (is_signaling_port() gated all observation, not just
+		// signal_rate tracking) — a real off-protocol probe/scan had no way
+		// to reach Layer 2/3 (see ROADMAP.md Phase 1). Escalate to an
+		// observation once a sustained burst from this source crosses
+		// SCAN_EMIT_THRESHOLD within the window, not on every packet.
+		__u32 prior_count = track_scan_rate(saddr, dest_port);
+		if (prior_count + 1 == SCAN_EMIT_THRESHOLD)
+			emit_signaling_event(saddr, iph->daddr, dest_port, payload_size,
+					      SIGNAL_PROTO_UNKNOWN, 0);
 	}
 
 	return XDP_PASS;

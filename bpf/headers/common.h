@@ -18,8 +18,25 @@
 #define MAX_BLOCKLIST_ENTRIES 65536
 #define MAX_RATE_ENTRIES 65536
 
-/* Rolling window used by track_signal_rate() to bucket packet counts. */
+/* Rolling window used by track_signal_rate()/track_scan_rate() to bucket
+ * packet counts. */
 #define SIGNALING_RATE_WINDOW_NS 1000000000ULL /* 1 second */
+
+/* Packets from one source, within SIGNALING_RATE_WINDOW_NS, before an
+ * off-signaling-port UDP burst gets escalated into a signaling_events
+ * observation (see scan_rate/track_scan_rate() in packet_filter.c).
+ * Previously this traffic was invisible to Layer 2/3 no matter its volume —
+ * is_signaling_port() gated ALL observation, not just signal_rate tracking
+ * (see ROADMAP.md Phase 1). Chosen to roughly match the synthetic dataset's
+ * own "normal" signaling baseline rate (~20/s,
+ * cmd/ai-engine/scripts/generate_synthetic_dataset.py) so a single stray
+ * non-signaling packet (DNS, NTP, a health check) doesn't trigger this path,
+ * while a sustained probe/scan pattern does. A compile-time constant
+ * deliberately, not yet a runtime-tunable one (see MAX_BLOCKLIST_ENTRIES
+ * above for the same convention) — not empirically validated against real
+ * off-protocol traffic on a production telecom-facing interface, only
+ * reasoned about; revisit once there's real data to tune it against. */
+#define SCAN_EMIT_THRESHOLD 10
 
 /* Ring buffer capacity for signaling_events (see struct signaling_event in
  * packet_filter.c) — must be a power of 2. 256KB comfortably holds bursts of

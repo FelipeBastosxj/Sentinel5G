@@ -52,6 +52,23 @@ every pod. It maintains a coarse per-source-IP signaling-rate counter
 by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
 at the kernel/NIC level.
 
+It also tracks UDP traffic on ports *other* than 2152/5060, per
+(source IP, destination port), and escalates a source into a
+`signaling_events` observation once a sustained burst to one such port
+crosses `SCAN_EMIT_THRESHOLD` (`bpf/headers/common.h`) within the same
+1-second window `track_signal_rate()` uses — previously this traffic was
+completely invisible to Layer 2/3 no matter its volume. Read the honest
+limit of what this catches before assuming it: keying by
+`(source, port)` — deliberately, to avoid one source's unrelated,
+low-volume traffic on *different* ports getting misattributed to whichever
+port happened to cross a shared counter first, a cross-attribution bug
+this project's own test traffic caught during development — means it
+detects a sustained flood against *one* off-signaling port, not classic
+low-and-slow multi-port scanning (many distinct ports, one or two packets
+each never lets any single port's counter reach the threshold). Real,
+useful visibility into probe traffic aimed at a single unexpected port; not
+general port-scan detection.
+
 Builds against a generated `vmlinux.h` (`make -C bpf`; see `bpf/Makefile`)
 rather than plain UAPI kernel headers. Worth being precise about what this
 actually buys, since it's easy to overstate: `struct ethhdr`/`iphdr`/`udphdr`
