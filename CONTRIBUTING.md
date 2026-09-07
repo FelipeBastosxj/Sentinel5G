@@ -35,10 +35,12 @@ docs(readme): update helm installation instructions
 
 - **Go (`api/`, `cmd/operator`, `pkg/`):** `go build ./...`, `go vet ./...`,
   `go test ./... -cover`, `golangci-lint run`. If you changed
-  `api/v1alpha1/*_types.go`, update `zz_generated.deepcopy.go` and
-  `config/crd/bases/*.yaml` / `charts/sentinel5g-operator/templates/crd.yaml`
-  by hand to match (see the note at the top of `zz_generated.deepcopy.go`
-  about wiring in `controller-gen`).
+  `api/v1alpha1/*_types.go`, run `make manifests` (wraps `controller-gen`) to
+  regenerate `zz_generated.deepcopy.go` and `config/crd/bases/*.yaml` — CI
+  fails on drift between the Go types and that generated output, so don't
+  hand-edit either file. `charts/sentinel5g-operator/templates/crd.yaml` is
+  a separate, still hand-copied file (see the note at its own top for why);
+  update it to match `config/crd/bases/*.yaml`'s new content too.
 - **eBPF (`bpf/`):** `make -C bpf` must compile cleanly. Keep stack usage
   well under the 512-byte eBPF limit and stick to standard integer sizing
   (`__u32`, `__u64`, `__u8`).
