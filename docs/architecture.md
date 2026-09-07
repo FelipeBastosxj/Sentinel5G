@@ -135,14 +135,26 @@ scored threats, matches them against active policies, and — when a policy's
 Both actions are independent: a cluster without a service mesh can still run
 with `ebpfBlock: true, isolatePod: false`, and vice versa.
 
-Mitigation is one-directional *while a policy exists*, by design:
 `ThreatScoreWatcher` calls `Block`/`Quarantine` but never `Unblock`/`Release`
-on its own — a later low score only moves `Status.Phase` back to
-`Monitoring`, it does not restore traffic. This is a deliberate fail-safe
-(an automated system should not be the one deciding an active threat has
-stopped being one), not an oversight. See `ROADMAP.md` Phase 1 for the plan
-to make that specific decision itself a considered, hysteresis-based one
-rather than removing the fail-safe outright.
+itself — a later low score only moves `Status.Phase` back to `Monitoring`,
+it does not restore traffic. Reversal instead happens automatically,
+separately, on a timer: `Reconciler.tryDeEscalate` unblocks/releases once a
+policy has gone `DeEscalationDwell` (`DE_ESCALATION_DWELL`, default 5m)
+without a *new* mitigation. This is a quiet-period timer on
+`Status.LastMitigationTime`, not "wait for that source's score to sustain
+low" — once a source is blocked, `bpf/packet_filter.c`'s XDP program drops
+every subsequent packet from it before any protocol parsing, so a blocked
+source produces zero further `ThreatScoreEvent`s and there is nothing
+further to sample. A new mitigation for *any* source under a policy resets
+the quiet-period clock for *every* currently mitigated source under it, not
+just the new one — deliberately conservative (don't start unwinding
+anything while the policy is still actively seeing new threats), and
+resistant to a trivial "send one benign packet to get unblocked" evasion,
+since nothing in the event stream can make time move faster. See
+`ROADMAP.md` Phase 1's "Automatic de-escalation" entry for the full
+reasoning, including the mesh-only case
+(`isolatePod: true, ebpfBlock: false`, where the source *isn't* silenced by
+XDP) sharing this same timer rather than a separate per-source one.
 
 Deleting the `TelecomSecurityPolicy` itself is different: a finalizer
 (`security.sentinel5g.io/finalizer`, `pkg/controller.Reconciler.finalize`)

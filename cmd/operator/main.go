@@ -126,11 +126,12 @@ func main() {
 	index := sentinelcontroller.NewPolicyIndex()
 
 	reconciler := &sentinelcontroller.Reconciler{
-		Client:    mgr.GetClient(),
-		Log:       log.WithName("controller"),
-		Index:     index,
-		Blocklist: blocklist,
-		Mesh:      meshAdapter,
+		Client:            mgr.GetClient(),
+		Log:               log.WithName("controller"),
+		Index:             index,
+		Blocklist:         blocklist,
+		Mesh:              meshAdapter,
+		DeEscalationDwell: cfg.DeEscalationDwell,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "TelecomSecurityPolicy")
@@ -161,7 +162,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter)
+	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Error(err, "manager exited with an error")
 		os.Exit(1)

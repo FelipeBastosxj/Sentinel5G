@@ -148,16 +148,55 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
       to clean up after retiring a policy. Deliberately narrower than the
       de-escalation item below: this only fires on policy *deletion*, never
       on a later low score while the policy still exists.
-- [ ] Automatic de-escalation: today, once `EbpfBlock`/`IsolatePod` fires,
-      nothing ever calls `Unblock`/`Release` again even if the offending
-      source's score later drops — this is a deliberate fail-safe (don't
-      auto-restore access to something that scored as an active threat), not
-      an oversight, but it means every mitigation is currently a one-way
-      door requiring manual intervention (`kubectl delete authorizationpolicy
-      ...` / restarting the eBPF attach) to reverse. Worth a real design pass
-      — likely a minimum-dwell-time plus a sustained-low-score requirement —
-      rather than a naive "unblock on the next low score" rule, which would
-      itself be a trivial evasion.
+- [x] Automatic de-escalation: `Reconciler.tryDeEscalate`
+      (`pkg/controller/telecomsecuritypolicy_controller.go`) now reverses a
+      policy's active mitigations — eBPF unblock for every entry in
+      `Status.BlockedSourceIPs`, mesh release if `IsolatePod` — once it has
+      gone `DE_ESCALATION_DWELL` (env var, default 5m,
+      `Reconciler.DeEscalationDwell`/`defaultDeEscalationDwell`) without a
+      *new* mitigation, closing the one-way-door gap this item opened with.
+      Wired as a normal part of `Reconcile()` (not a separate goroutine or
+      manager.Runnable): a policy in `Mitigating` phase either de-escalates
+      immediately if the dwell has already elapsed, or self-schedules
+      `ctrl.Result{RequeueAfter: remaining}` for exactly when it will —
+      idiomatic controller-runtime, and correct without needing a new event
+      to wake it up (see below for why one might never come). State lives
+      in `Status.LastMitigationTime`, an existing field — no CRD schema
+      change, and de-escalation timing survives an operator restart for
+      free, unlike an in-memory timer would have.
+      **What changed from this item's original framing, and why, stated
+      plainly rather than glossed over**: the plan here used to be "a
+      minimum-dwell-time plus a *sustained-low-score* requirement." The
+      sustained-low-score half turned out to not be achievable as
+      envisioned: `bpf/packet_filter.c`'s blocklist check
+      (`if (blocked && *blocked) return XDP_DROP;`) runs before any
+      protocol parsing, so once `EbpfBlock` fires, every subsequent packet
+      from that source is dropped before it can ever be classified,
+      counted, or turned into a `ThreatScoreEvent` — there is no "next low
+      score" to wait for, even in principle, for a blocked source. (A
+      mesh-only quarantine via `IsolatePod` without `EbpfBlock` doesn't
+      silence the source the same way — Istio enforces at L7, downstream of
+      XDP — so a per-source signal would in theory exist there, but running
+      two different de-escalation mechanisms depending on which action
+      fired is real added complexity for a case `Actions` can already
+      combine; both share this one dwell timer instead.) What shipped is a
+      pure elapsed-time gate on `Status.LastMitigationTime`
+      (policy-wide, covering every source the policy has ever mitigated,
+      not per-IP): deliberately conservative — a new mitigation for *any*
+      source resets the quiet-period clock for *every* currently mitigated
+      source under that policy, not just the new one, so nothing starts
+      unwinding while the policy is still actively seeing new threats. It's
+      still resistant to the specific evasion this item was written to
+      guard against ("unblock on the next low score" — send one benign
+      packet, get unblocked, resume attacking): nothing in the event stream
+      can make elapsed time move faster.
+      Tested with an injected clock (`Reconciler.Now`) for deterministic
+      before/after-dwell assertions
+      (`TestReconciler_DeEscalatesAfterQuietDwellPeriod`,
+      `TestReconciler_DoesNotDeEscalateBeforeQuietDwellPeriod`), plus the
+      existing real-API-server envtest suite re-run clean (`go test
+      ./pkg/controller/... -run TestReconciler` against a real
+      kube-apiserver, not just the fake client).
 
 ## Phase 2 — Deeper integrations
 
