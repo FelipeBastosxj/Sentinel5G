@@ -138,4 +138,39 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: "v3.15.0"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - run: helm lint charts/sentinel5g-operator
+      - name: CRD drift check (config/crd/bases vs. the Helm chart's copy)
+        # charts/sentinel5g-operator/templates/crd.yaml is a hand-copied
+        # duplicate of config/crd/bases/...yaml (controller-gen's own
+        # output, already diff-checked against the Go types in the "go"
+        # job's "manifests" step) -- nothing tied the two copies together
+        # until now, so a schema change could update one and silently ship
+        # a stale CRD via `helm install`. YAML-aware compare, not a raw
+        # text/regex diff: the chart file has Helm's own `{{- if }}`/
+        # `{{- end }}` wrapper lines a plain CRD file doesn't.
+        run: |
+          pip install --quiet pyyaml
+          helm template x charts/sentinel5g-operator --show-only templates/crd.yaml --set crds.install=true > /tmp/chart-crd.yaml
+          python3 - <<'EOF'
+          import sys
+          import yaml
+
+          with open("config/crd/bases/security.sentinel5g.io_telecomsecuritypolicies.yaml") as f:
+              base = yaml.safe_load(f)
+          with open("/tmp/chart-crd.yaml") as f:
+              chart = yaml.safe_load(f)
+
+          if base != chart:
+              print(
+                  "charts/sentinel5g-operator/templates/crd.yaml has drifted from "
+                  "config/crd/bases/security.sentinel5g.io_telecomsecuritypolicies.yaml "
+                  "-- update the chart's hand-copied CRD to match controller-gen's "
+                  "output (run `make manifests` first if config/crd/bases/ itself is "
+                  "stale). See CONTRIBUTING.md."
+              )
+              sys.exit(1)
+          print("CRD copies match.")
+          EOF
