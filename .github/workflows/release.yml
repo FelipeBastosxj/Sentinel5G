@@ -44,13 +44,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push image
+      # push: false, load: true -- build into the local Docker daemon only.
+      # Previously this pushed straight to GHCR (:vX.Y.Z and :latest, both
+      # public immediately) *before* the Trivy scan below ran -- a failing
+      # scan couldn't un-publish an already-public, unscanned image. SBOM
+      # generation and the Trivy scan below both work against this local
+      # image by the same tag reference (no pull needed, Syft/Trivy resolve
+      # it from the local daemon); the image is only pushed, further down,
+      # once the scan has actually passed.
+      - name: Build image (not pushed yet)
         id: build
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.component.context }}
           file: ${{ matrix.component.dockerfile }}
-          push: true
+          push: false
+          load: true
           tags: |
             ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
             ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:latest
@@ -75,13 +84,32 @@ jobs:
           # available, so this stays a real gate instead of noise to ignore.
           ignore-unfixed: true
 
+      # Only reached once Trivy has actually passed -- this is the step that
+      # makes the image public. Pushes the same, already-scanned local image
+      # (built once, above) rather than rebuilding, so the bytes that were
+      # scanned are exactly the bytes that get signed and published. Reads
+      # the digest back via `docker inspect` after pushing, rather than
+      # trusting docker/build-push-action's own digest output with
+      # push:false (whether that's populated for a load-only build isn't
+      # something this project has verified) -- this queries the real,
+      # just-pushed state instead of a build-time value.
+      - name: Push image (only after a clean scan)
+        id: push
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}"
+          docker push "$IMAGE:${{ github.ref_name }}"
+          docker push "$IMAGE:latest"
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:${{ github.ref_name }}" | cut -d'@' -f2)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image (keyless)
         run: |
           cosign sign --yes \
-            ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}@${{ steps.build.outputs.digest }}
+            ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}@${{ steps.push.outputs.digest }}
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
