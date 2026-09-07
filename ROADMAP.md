@@ -32,11 +32,46 @@ to be read alongside the gaps called out in `docs/getting-started.md`,
 
 ## Phase 1 — Real-world signal
 
-- [ ] Replace the synthetic training dataset with real (or realistically
-      replayed) GTP-U/SIP/SMPP traffic, and validate sensitivity thresholds
-      against it — the model itself is still trained on synthetic data; the
-      bridge above only makes collecting real training data possible, it
-      doesn't do the retraining.
+- [x] Real dataset at scale, retrained, thresholds validated against it
+      (`docs/paper-data/real-dataset/`, `cmd/ai-engine/scripts/
+      build_real_dataset.py`) — 5 capture pairs against the live
+      Open5GS+UERANSIM core (1,889 normal + 32,235 anomalous samples,
+      superseding the original 30/618-packet pair). "Validate" surfaced a
+      real, load-bearing negative result, not a clean pass: the only sample
+      type that is both genuinely protocol-real GTP-U *and* actually
+      observable by `bpf/packet_filter.c` today — an in-tunnel flood-ping
+      storm — scores *below* the normal baseline on the real-trained model
+      and is caught at 0/3,348 recall at every production sensitivity tier.
+      The real-trained model's near-identical pooled AUC to the synthetic
+      one (0.9449 vs 0.9459) is driven almost entirely by a non-protocol-
+      real high-rate UDP injection needed to reach the synthetic training
+      range, plus a scan category the current kernel program can't observe
+      in production at all (see the item below). Real SIP/SMPP remain
+      synthetic-only — this Open5GS deployment runs no IMS or SMPP
+      infrastructure. Full breakdown and honest reading:
+      `docs/paper-data/02-ai-training-inference.md` section 2.4.
+      Reproduce: `python scripts/build_real_dataset.py && python
+      scripts/evaluate_model.py --source real` from `cmd/ai-engine/`.
+      Whether the real flood-ping ceiling (~60 pkt/s) reflects a
+      WSL2-specific throughput cap or a realistic real-attacker bound is
+      still open — needs a non-WSL2, higher-throughput environment to
+      settle, not assumed either way here.
+- [ ] Layer 1 can't see non-signaling-port traffic at all: `bpf/
+      packet_filter.c`'s `is_signaling_port()` gates both
+      `track_signal_rate()` and `emit_signaling_event()`, so any UDP packet
+      outside port 2152/5060 is `XDP_PASS`ed with zero observation emitted
+      — a real "scan"/off-protocol-probe capture (`real_scan.pcap` above)
+      scores maximally anomalous *if* scored, but no code path today ever
+      turns it into a `NormalizedEvent` in production. Needs a real design
+      pass before touching the XDP hot path, not a quick patch — the
+      options considered so far trade off differently against
+      `CLAUDE.md`'s <0.2ms/packet budget and the eBPF maps' fixed sizing:
+      (1) a generic per-source rate counter gated by a minimum threshold
+      before emitting for non-signaling ports (cheap, but only gives a rate
+      signal, not payload visibility), vs (2) emitting for all UDP
+      unconditionally and filtering in `pkg/ingestion` instead (simple, but
+      reintroduces exactly the per-packet userspace cost eBPF exists to
+      avoid). Deliberately deferred rather than decided under today's push.
 - [x] `controller-gen` wired into `make manifests` (`make manifests` /
       `controller-gen` targets), replacing the hand-maintained
       `zz_generated.deepcopy.go` and CRD YAML — CI now fails on drift
