@@ -9,6 +9,7 @@ require (
 	github.com/go-logr/logr v1.4.2
 	github.com/google/uuid v1.3.0
 	github.com/nats-io/nats.go v1.36.0
+	go.uber.org/zap v1.26.0
 	golang.org/x/sys v0.47.0
 	k8s.io/api v0.30.3
 	k8s.io/apimachinery v0.30.3
@@ -52,7 +53,6 @@ require (
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/exp v0.0.0-20230224173230-c95f2b4c22f2 // indirect
 	golang.org/x/net v0.58.0 // indirect

@@ -5,10 +5,12 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"net"
 	"os"
 
 	"github.com/go-logr/logr"
+	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -41,13 +43,30 @@ func main() {
 	flag.StringVar(&bpfInterface, "bpf-interface", "eth0", "network interface to attach the XDP program to")
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	log := ctrl.Log.WithName("sentinel5g-operator")
-
+	// config.Load() must happen before the logger is constructed (its
+	// result decides the log level), so a load failure here can't yet go
+	// through ctrl.Log -- plain stderr, matching how flag-parsing errors
+	// above are also reported before any logger exists.
 	cfg, err := config.Load()
 	if err != nil {
-		log.Error(err, "invalid configuration")
+		fmt.Fprintf(os.Stderr, "invalid configuration: %v\n", err)
 		os.Exit(1)
+	}
+
+	// LogLevel accepts the full zap vocabulary (debug/info/warn/error/...)
+	// via zapcore.Level's standard UnmarshalText -- broader than
+	// controller-runtime's own --zap-log-level flag, which only recognizes
+	// debug/info/error plus numeric verbosity. UseDevMode(false): JSON
+	// encoding is the production-appropriate default for every deployment
+	// path (Helm chart included), not just a Helm-specific setting.
+	logLevel := zapcore.InfoLevel
+	logLevelErr := logLevel.UnmarshalText([]byte(cfg.LogLevel))
+
+	ctrl.SetLogger(zap.New(zap.UseDevMode(false), zap.Level(logLevel)))
+	log := ctrl.Log.WithName("sentinel5g-operator")
+
+	if logLevelErr != nil {
+		log.Info("invalid LOG_LEVEL, defaulting to info", "value", cfg.LogLevel, "error", logLevelErr.Error())
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -162,7 +181,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell)
+	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell, "logLevel", logLevel)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Error(err, "manager exited with an error")
 		os.Exit(1)
