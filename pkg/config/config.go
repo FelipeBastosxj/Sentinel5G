@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // OperatorConfig holds the operator's runtime configuration.
@@ -31,6 +32,12 @@ type OperatorConfig struct {
 
 	ThreatScoreThreshold float64
 	MeshAdapter          string
+
+	// DeEscalationDwell is how long a TelecomSecurityPolicy must go without
+	// a new mitigation before pkg/controller.Reconciler automatically
+	// reverses its active ones (see that package's tryDeEscalate for why
+	// this is a quiet-period timer, not a "sustained low score" check).
+	DeEscalationDwell time.Duration
 }
 
 // Load reads OperatorConfig from the environment, applying the same defaults
@@ -42,6 +49,11 @@ func Load() (OperatorConfig, error) {
 	}
 
 	leaderElect, err := parseBoolEnv("LEADER_ELECT", false)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	deEscalationDwell, err := parseDurationEnv("DE_ESCALATION_DWELL", 5*time.Minute)
 	if err != nil {
 		return OperatorConfig{}, err
 	}
@@ -65,6 +77,8 @@ func Load() (OperatorConfig, error) {
 
 		ThreatScoreThreshold: threshold,
 		MeshAdapter:          getEnv("MESH_ADAPTER", "istio"),
+
+		DeEscalationDwell: deEscalationDwell,
 	}
 
 	if cfg.ThreatScoreThreshold < 0 || cfg.ThreatScoreThreshold > 1 {
@@ -101,6 +115,18 @@ func parseBoolEnv(key string, fallback bool) (bool, error) {
 	parsed, err := strconv.ParseBool(v)
 	if err != nil {
 		return false, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func parseDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
 	}
 	return parsed, nil
 }

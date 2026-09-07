@@ -39,9 +39,12 @@ Every automated mitigation is reflected onto the triggering
 - `status.phase` (`Pending` → `Monitoring` → `Mitigating`/`Degraded`)
 - `status.observedThreatScore` — the last score matched against this policy
 - `status.lastMitigationTime` — set only when an actual mitigation fired
-- `status.blockedSourceIPs` — every source IP this policy has pushed into
-  the eBPF blocklist; also what the deletion finalizer unblocks before the
-  policy object is actually removed (see `docs/architecture.md`)
+- `status.blockedSourceIPs` — every source IP this policy has *currently*
+  pushed into the eBPF blocklist; also what the deletion finalizer unblocks
+  before the policy object is actually removed. Entries are removed
+  automatically once `Reconciler.tryDeEscalate`'s quiet-period timer fires
+  (`DE_ESCALATION_DWELL`, default 5m since the last mitigation, not since
+  each individual IP), not just on deletion (see `docs/architecture.md`)
 
 ```sh
 kubectl get telecomsecuritypolicy -A -o wide
