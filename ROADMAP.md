@@ -1,303 +1,96 @@
 # Roadmap
 
 Sentinel5G is at an early, foundational stage: the four-layer architecture
-described in [`docs/architecture.md`](docs/architecture.md) is implemented
-end to end as a working reference, but several pieces are intentionally
-scoped down for a first release. This page tracks what's next, and is meant
-to be read alongside the gaps called out in `docs/getting-started.md`,
-`docs/integrations.md`, and `CONTRIBUTING.md`.
+in [`docs/architecture.md`](docs/architecture.md) works end to end, but
+several pieces are intentionally scoped down for a first release. Read
+alongside `docs/getting-started.md`, `docs/integrations.md`, and
+`CONTRIBUTING.md`.
 
-## Phase 0 — Foundations (current)
+## Phase 0 — Foundations
 
-- [x] `TelecomSecurityPolicy` CRD, reconciler, and in-memory policy index.
-- [x] `bpf/packet_filter.c`: XDP capture with a blocklist map and a
-      per-source signaling-rate counter (UAPI headers, not CO-RE/`vmlinux.h`).
-- [x] Autoencoder-based AI engine: synthetic dataset generation, training,
-      ONNX export, and an HTTP + NATS-worker inference server.
-- [x] Closed-loop mitigation: eBPF blocklist push + Istio
-      `AuthorizationPolicy` quarantine, gated by per-policy `autoMitigate`.
+- [x] `TelecomSecurityPolicy` CRD, reconciler, in-memory policy index.
+- [x] `bpf/packet_filter.c`: XDP capture, blocklist map, per-source
+      signaling-rate counter.
+- [x] Autoencoder AI engine: synthetic dataset, training, ONNX export,
+      HTTP + NATS-worker inference server.
+- [x] Closed-loop mitigation: eBPF blocklist push + Istio quarantine.
 - [x] Helm chart, kustomize manifests, CI (lint/test/SBOM/scan/sign).
-- [x] Optional NATS auth/TLS (`pkg/events.Config`, mirrored on the Python
-      side) and `gosec`/`bandit`/`govulncheck`/`pip-audit` in CI — see
-      `docs/integrations.md`'s "Securing the NATS message bus" section.
-- [x] Layer 1 -> Layer 2 bridge (`pkg/ingestion`): until now,
-      `bpf/packet_filter.c` exported only the `blocklist` and `signal_rate`
-      maps — nothing turned an individual kernel-observed packet into a
-      `NormalizedEvent`, so the AI engine had never scored real traffic, only
-      synthetic or hand-published events. `signaling_events` (a ring buffer)
-      plus `pkg/ingestion.Publisher` and `pkg/controller.PodIPIndex` close
-      that gap; verified against real GTP-U from a live Open5GS+UERANSIM 5G
-      core, through the real trained model, producing a real
-      `ThreatScoreEvent` correlated back to its source packet.
+- [x] Optional NATS auth/TLS, security scanners in CI.
+- [x] Layer 1 → Layer 2 bridge (`pkg/ingestion`): real kernel-observed
+      packets now become `NormalizedEvent`s, scored by the real model —
+      verified against a live Open5GS+UERANSIM core.
 
 ## Phase 1 — Real-world signal
 
-- [x] Real dataset at scale, retrained, thresholds validated against it
-      (`docs/paper-data/real-dataset/`, `cmd/ai-engine/scripts/
-      build_real_dataset.py`) — 5 capture pairs against the live
-      Open5GS+UERANSIM core (1,889 normal + 32,235 anomalous samples,
-      superseding the original 30/618-packet pair). "Validate" surfaced a
-      real, load-bearing negative result, not a clean pass: the only sample
-      type that is both genuinely protocol-real GTP-U *and* actually
-      observable by `bpf/packet_filter.c` today — an in-tunnel flood-ping
-      storm — scores *below* the normal baseline on the real-trained model
-      and is caught at 0/3,348 recall at every production sensitivity tier.
-      The real-trained model's near-identical pooled AUC to the synthetic
-      one (0.9449 vs 0.9459) is driven almost entirely by a non-protocol-
-      real high-rate UDP injection needed to reach the synthetic training
-      range, plus a scan category the current kernel program can't observe
-      in production at all (see the item below). Real SIP/SMPP remain
-      synthetic-only — this Open5GS deployment runs no IMS or SMPP
-      infrastructure. Full breakdown and honest reading:
-      `docs/paper-data/02-ai-training-inference.md` section 2.4.
-      Reproduce: `python scripts/build_real_dataset.py && python
-      scripts/evaluate_model.py --source real` from `cmd/ai-engine/`.
-      Whether the real flood-ping ceiling (~60 pkt/s) reflects a
-      WSL2-specific throughput cap or a realistic real-attacker bound is
-      still open — needs a non-WSL2, higher-throughput environment to
-      settle, not assumed either way here.
-- [x] Layer 1 can now see off-signaling-port UDP traffic, within a stated
-      limit. `is_signaling_port()` used to gate both `track_signal_rate()`
-      and `emit_signaling_event()`, so any UDP packet outside port
-      2152/5060 was `XDP_PASS`ed with zero observation emitted — a real
-      "scan"/off-protocol-probe capture (`real_scan.pcap`, previous item)
-      scored maximally anomalous *if* scored, but no code path ever turned
-      it into a `NormalizedEvent`. Fixed with the cheaper of the two options
-      this item previously weighed: a new `scan_rate` LRU map + escalation
-      to `emit_signaling_event()` once a source's burst to one
-      off-signaling port crosses `SCAN_EMIT_THRESHOLD` (10/window,
-      `bpf/headers/common.h`) within the existing 1s window — not
-      unconditional per-packet emission, which would have both blown the
-      <0.2ms/packet budget and let unbounded off-protocol volume overrun
-      `signaling_events`.
-      **Read the honest limit before assuming this closes the gap
-      generally**: `scan_rate` is keyed by `(source, dest_port)`, not
-      source alone — deliberately, since real-testing this against the
-      live WSL2 core caught a genuine cross-attribution bug in an earlier
-      source-only version (unrelated background loopback UDP on one port
-      shared a counter with synthetic probe traffic on a different port,
-      and the emitted event got attributed to whichever packet happened to
-      cross the line — found via `bpftool map dump`, not inspection, fixed
-      by keying on the port too). The consequence: this detects a
-      *sustained flood against one off-signaling port*, not classic
-      low-and-slow multi-port scanning — by the birthday-paradox math, the
-      existing `real_scan.pcap` capture itself (700 packets, each to an
-      independently random port 1024-65535) essentially never repeats a
-      port enough times to cross the threshold, so that specific capture
-      would *still* produce ~zero real events under this fix. General
-      port-scan detection (many distinct ports, low volume each) remains
-      open — would need a bounded distinct-port-count structure per
-      source, meaningfully more complex than what shipped here.
-      Also found and fixed via the same real-testing pass, in
-      already-shipped code, not introduced by this change:
-      `pkg/ebpf.Loader.SignalRate()`'s Go value struct
-      (`{WindowStartNs uint64; Count uint32}`, no explicit trailing pad)
-      was 12 bytes by `encoding/binary.Size` reflection — the size
-      cilium/ebpf's marshaling actually checks — while the real kernel map
-      value is 16 bytes (C's natural alignment padding), so *every* real
-      `SignalRate()` lookup against a real map hit failed with "doesn't
-      consume all data" and silently returned `ok=false`. This means
-      `NormalizedEvent.RatePerSecond` has been 0 for every real
-      kernel-observed event since `pkg/ingestion` shipped, regardless of
-      actual signaling rate — never caught because `pkg/ebpf` had 0% test
-      coverage. Fixed (explicit padding field) and now covered by
-      `pkg/ebpf/loader_linux_test.go`'s
-      `TestSignalRateEntryMatchesKernelValueSize`, which asserts the exact
-      size cilium/ebpf checks, not `unsafe.Sizeof` (which would have
-      passed on the broken version too — the mismatch was between Go's
-      struct layout and cilium/ebpf's reflection, not between Go and C).
-      Verified end to end against the live core: real GTP-U traffic
-      through the UE tunnel (regression — protocol/port/rate all correct,
-      `SignalRate` now returns real counts instead of always `ok=false`)
-      and synthetic off-port traffic (new path — one event at exactly the
-      10th packet, correct port/payload, `SignalRate` returns the real
-      window count) captured together in one run via a throwaway verifier
-      program built against `pkg/ebpf` directly, not just `bpftool map
-      dump` in isolation.
-      `SCAN_EMIT_THRESHOLD=10` is reasoned about, not empirically tuned —
-      same caveat as when it was first written.
-- [x] `controller-gen` wired into `make manifests` (`make manifests` /
-      `controller-gen` targets), replacing the hand-maintained
-      `zz_generated.deepcopy.go` and CRD YAML — CI now fails on drift
-      between the Go types and the generated output (ci.yml's "manifests"
-      step). Regenerating also caught two validations the hand-written CRD
-      had that the Go markers didn't (`status.phase`'s enum, the `tsp`
-      short name) — now real `+kubebuilder:validation:Enum` /
-      `+kubebuilder:resource:shortName` markers instead of drift.
-- [x] CO-RE (`vmlinux.h`-based) BPF program, replacing the UAPI-header
-      approach (`bpf/Makefile` generates `bpf/headers/vmlinux.h` at build
-      time from the build machine's kernel BTF, gitignored, not committed).
-      Worth being precise about what this actually bought, rather than
-      overselling it: `ethhdr`/`iphdr`/`udphdr` are wire-format structs
-      whose layout is fixed by the Ethernet/IP/UDP protocols, not kernel
-      build config, so CO-RE's actual relocation mechanism
-      (`BPF_CORE_READ()`) has nothing to protect here and isn't used — the
-      real, concrete win is dropping the UAPI-header build dependency
-      (no more `linux-libc-dev`/`linux-headers-$(uname -r)`, no more the
-      `<asm/types.h>` multiarch include-path workaround), not struct-layout
-      portability. Verified: two independent clean rebuilds produced an
-      identical 17184-byte object; attached to the live Open5GS+UERANSIM
-      core's `lo` interface, real GTP-U traffic still tracked correctly in
-      `signal_rate` (functional parity with the pre-CO-RE build), detached
-      cleanly, core undisturbed throughout.
-- [x] Finalizer-based cleanup: `security.sentinel5g.io/finalizer`
-      (`pkg/controller.Reconciler.finalize`) releases any mesh quarantine
-      and unblocks every source IP a policy pushed into the eBPF blocklist
-      (tracked in the new `Status.BlockedSourceIPs`) before the object is
-      actually deleted — no more manual `kubectl delete authorizationpolicy`
-      to clean up after retiring a policy. Deliberately narrower than the
-      de-escalation item below: this only fires on policy *deletion*, never
-      on a later low score while the policy still exists.
-- [x] Automatic de-escalation: `Reconciler.tryDeEscalate`
-      (`pkg/controller/telecomsecuritypolicy_controller.go`) now reverses a
-      policy's active mitigations — eBPF unblock for every entry in
-      `Status.BlockedSourceIPs`, mesh release if `IsolatePod` — once it has
-      gone `DE_ESCALATION_DWELL` (env var, default 5m,
-      `Reconciler.DeEscalationDwell`/`defaultDeEscalationDwell`) without a
-      *new* mitigation, closing the one-way-door gap this item opened with.
-      Wired as a normal part of `Reconcile()` (not a separate goroutine or
-      manager.Runnable): a policy in `Mitigating` phase either de-escalates
-      immediately if the dwell has already elapsed, or self-schedules
-      `ctrl.Result{RequeueAfter: remaining}` for exactly when it will —
-      idiomatic controller-runtime, and correct without needing a new event
-      to wake it up (see below for why one might never come). State lives
-      in `Status.LastMitigationTime`, an existing field — no CRD schema
-      change, and de-escalation timing survives an operator restart for
-      free, unlike an in-memory timer would have.
-      **What changed from this item's original framing, and why, stated
-      plainly rather than glossed over**: the plan here used to be "a
-      minimum-dwell-time plus a *sustained-low-score* requirement." The
-      sustained-low-score half turned out to not be achievable as
-      envisioned: `bpf/packet_filter.c`'s blocklist check
-      (`if (blocked && *blocked) return XDP_DROP;`) runs before any
-      protocol parsing, so once `EbpfBlock` fires, every subsequent packet
-      from that source is dropped before it can ever be classified,
-      counted, or turned into a `ThreatScoreEvent` — there is no "next low
-      score" to wait for, even in principle, for a blocked source. (A
-      mesh-only quarantine via `IsolatePod` without `EbpfBlock` doesn't
-      silence the source the same way — Istio enforces at L7, downstream of
-      XDP — so a per-source signal would in theory exist there, but running
-      two different de-escalation mechanisms depending on which action
-      fired is real added complexity for a case `Actions` can already
-      combine; both share this one dwell timer instead.) What shipped is a
-      pure elapsed-time gate on `Status.LastMitigationTime`
-      (policy-wide, covering every source the policy has ever mitigated,
-      not per-IP): deliberately conservative — a new mitigation for *any*
-      source resets the quiet-period clock for *every* currently mitigated
-      source under that policy, not just the new one, so nothing starts
-      unwinding while the policy is still actively seeing new threats. It's
-      still resistant to the specific evasion this item was written to
-      guard against ("unblock on the next low score" — send one benign
-      packet, get unblocked, resume attacking): nothing in the event stream
-      can make elapsed time move faster.
-      Tested with an injected clock (`Reconciler.Now`) for deterministic
-      before/after-dwell assertions
-      (`TestReconciler_DeEscalatesAfterQuietDwellPeriod`,
-      `TestReconciler_DoesNotDeEscalateBeforeQuietDwellPeriod`), plus the
-      existing real-API-server envtest suite re-run clean (`go test
-      ./pkg/controller/... -run TestReconciler` against a real
-      kube-apiserver, not just the fake client).
+- [x] **Real training dataset.** Real GTP-U captures from a live
+      Open5GS+UERANSIM core replace the synthetic-only dataset (1,889
+      normal / 32,235 anomalous samples). Found a real gap: the only
+      fully-real, production-observable anomaly type (an in-tunnel flood)
+      scores *below* normal traffic and isn't caught at any threshold.
+      Details: `docs/paper-data/02-ai-training-inference.md` §2.4.
+- [x] **Off-signaling-port visibility.** Layer 1 now detects a sustained
+      flood against one off-signaling port (`scan_rate` map in
+      `bpf/packet_filter.c`). Doesn't catch classic multi-port scanning —
+      see Phase 2. Also fixed a real, pre-existing bug found while testing
+      this: `pkg/ebpf.Loader.SignalRate()` was silently broken and always
+      returned 0 for every real event.
+- [x] `controller-gen` wired into `make manifests`; CI fails on drift
+      between the Go types and generated CRD/deepcopy output.
+- [x] CO-RE: `bpf/packet_filter.c` builds against a generated `vmlinux.h`
+      instead of UAPI kernel headers — drops the kernel-headers build
+      dependency.
+- [x] Finalizer-based cleanup: deleting a policy now releases its mesh
+      quarantine and unblocks its eBPF-blocked IPs automatically.
+- [x] Automatic de-escalation: mitigations reverse on their own after a
+      quiet period (`DE_ESCALATION_DWELL`, default 5m) instead of needing
+      manual cleanup.
+- [x] Fixed the operator getting stuck at `Phase: Monitoring` forever when
+      `MESH_ADAPTER=istio` (the default) but Istio isn't installed — it now
+      falls back to a no-op mesh adapter, same as eBPF already does when
+      not attached.
+- [x] `scripts/quickstart.sh`: one command from a fresh clone to a real
+      mitigation firing, using published images. Installs `kind`/`helm` if
+      missing and works around a real DNS-resolution failure common to
+      `kind` on Docker (any host, not just one cloud sandbox).
 
 ## Phase 2 — Deeper integrations
 
-- [ ] General multi-port scan detection: the `scan_rate` map added in Phase
-      1 (above) catches a sustained flood against *one* off-signaling port
-      per source, not classic low-and-slow port scanning (many distinct
-      ports, low volume each) — a per-(source, port) counter structurally
-      can't, since no single port's count ever crosses the threshold. Would
-      need a bounded distinct-port-count structure per source (e.g. a small
-      counting Bloom filter/HyperLogLog-style sketch keyed by source alone)
-      to catch that pattern within XDP's constraints — meaningfully more
-      complex than the current counter, needs its own design pass.
-- [ ] Cilium-native capture path (Hubble flow API or a Cilium custom BPF
-      program) as an alternative to the standalone XDP attachment.
-- [ ] Falco output bridging into `NormalizedEvent`, so syscall-level signals
-      feed the same AI engine as network-level ones.
-- [ ] Additional `pkg/mesh.Adapter` implementations beyond Istio (Linkerd,
-      Cilium mesh mode).
-- [ ] Prometheus instrumentation for the AI engine (request latency,
-      inference count), not just the operator's `controller-runtime` metrics.
-
-The following items came out of a full-project audit on 2026-09-07
-(scaling/architecture/dependency-freshness/first-time-user review) —
-real, verified findings, deliberately not bundled into that same day's
-fix pass (see the Go/eBPF/config/CI/docs commits from that date for what
-*was* fixed: an eBPF fragmentation-parsing bug, per-node event loss under
-multi-replica, `LOG_LEVEL` never being wired up, the AI engine's inability
-to scale out, 0%-covered `pkg/mesh`/`server.py`, a release pipeline that
-published before scanning, and a few stale docs).
-
-- [ ] No VLAN (802.1Q/802.1ad) support in `bpf/packet_filter.c`: the
-      `eth->h_proto != ETH_P_IP` check only matches untagged frames, so
-      *all* VLAN-tagged IPv4 traffic — common on real telecom N3/N9
-      sub-interfaces — bypasses inspection entirely (no blocklist check, no
-      signal/scan detection). Needs its own parse-path redesign (an extra
-      conditional VLAN-tag hop before the IP header) plus live testing, not
-      a quick patch.
-- [ ] No IPv6 support at all: same root cause (IPv4-only `h_proto` check),
-      and `pkg/ebpf`'s map-key design (`ipv4Key`, the `blocklist`/
-      `signal_rate`/`scan_rate` maps) is IPv4-only throughout, so this is
-      roughly double the eBPF+Go surface of the VLAN item, not an
-      incremental add. Real gap for 5G cores that are commonly IPv6 or
-      dual-stack.
-- [ ] No real multi-node eBPF coverage story: the operator is a scalable
-      `Deployment`, not a `DaemonSet`, so `ebpf.enabled: true` only
-      protects whichever node(s) replicas happen to land on — not the
-      whole cluster. `docs/integrations.md` now documents a
-      `podAntiAffinity` workaround (avoids two replicas silently clobbering
-      each other's XDP attach on the same node, see
-      `pkg/ebpf.Loader.AttachXDP`), but an actual `DaemonSet` option in the
-      Helm chart, for the `ebpf.enabled: true` case specifically, is bigger
-      work — bundle with the `NetworkPolicy`/`PodDisruptionBudget`/metrics
-      `Service` items below, all real gaps against what `docs/
-      integrations.md` and `docs/observability.md` already describe.
-- [ ] No `NetworkPolicy` shipped for the NATS bus despite `docs/
-      integrations.md` explicitly recommending one — needs to be
-      optional/opt-in given how much CNIs vary across clusters.
-- [ ] No `PodDisruptionBudget`, and no `Service`/`ServiceMonitor` for the
-      operator's metrics port despite `docs/observability.md` describing
-      Prometheus metrics as available "out of the box" — a user has to
-      hand-roll a `Service` themselves to actually scrape them today.
-- [ ] `pkg/controller.PodIPIndex` grows unbounded for the operator's
-      uptime — entries are only overwritten on IP reuse, never evicted on
-      Pod deletion (documented, deliberate for now). Needs a watch/informer
-      hook to evict on delete; a slow memory-growth vector for long-lived
-      deployments at real cluster scale.
-- [ ] `k8s.io/*`/`sigs.k8s.io/controller-runtime` are pinned to the
-      Kubernetes 1.30 release line (`v0.30.3`/`v0.18.4`), roughly two
-      Kubernetes support windows behind as of this writing. A major bump
-      has real blast radius (API surface touches every file in
-      `pkg/controller`, `api/v1alpha1`) and needs its own dedicated
-      regression pass — not a diff bundled in with something else.
-- [ ] No path-based CI job filtering: every PR runs all four `ci.yml` jobs
-      (Go, Python, eBPF, Helm) even for a single-toolchain or docs-only
-      change. Slower CI, not incorrect CI — low urgency.
-- [ ] `cmd/ai-engine/Dockerfile`/`Dockerfile`: base image on a floating tag
-      rather than a pinned digest, no `HEALTHCHECK`, and the AI engine
-      image's `FROM python:3.11-slim AS base` names a stage that was never
-      followed by a second one (dead multi-stage scaffolding). Bundle into
-      a future Dockerfile-hardening pass alongside the `torch>=2.2` floor
-      (`cmd/ai-engine/pyproject.toml`), worth tightening once verified
-      against the actual dynamo-based ONNX export API `model.py` uses —
-      low urgency since CI already pins a working combination.
+- [ ] General multi-port scan detection. `scan_rate` only catches a flood
+      against *one* port; needs a distinct-port-count structure per source
+      to catch classic low-and-slow scanning.
+- [ ] Cilium-native capture path (Hubble or a custom BPF program) as an
+      alternative to standalone XDP.
+- [ ] Falco output bridging into `NormalizedEvent`.
+- [ ] Additional `pkg/mesh.Adapter` implementations (Linkerd, Cilium mesh).
+- [ ] Prometheus instrumentation for the AI engine.
+- [ ] VLAN (802.1Q) support in `bpf/packet_filter.c` — tagged frames
+      bypass inspection entirely today.
+- [ ] IPv6 support — `pkg/ebpf` and the XDP program are IPv4-only.
+- [ ] Real multi-node eBPF coverage: the operator is a `Deployment`, not a
+      `DaemonSet`, so `ebpf.enabled: true` only protects whichever node(s)
+      it lands on. `docs/integrations.md` documents a `podAntiAffinity`
+      workaround; a real `DaemonSet` option is still open.
+- [ ] `NetworkPolicy` for the NATS bus (optional/opt-in).
+- [ ] `PodDisruptionBudget` and a `Service`/`ServiceMonitor` for the
+      operator's metrics port.
+- [ ] `pkg/controller.PodIPIndex` grows unbounded — needs eviction on Pod
+      deletion.
+- [ ] `k8s.io/*`/`controller-runtime` dependency bump — currently pinned
+      to the Kubernetes 1.30 line, needs its own regression pass.
+- [ ] Path-based CI job filtering (skip unrelated jobs on single-toolchain
+      PRs).
+- [ ] Dockerfile hardening: pin base images to a digest, add
+      `HEALTHCHECK`.
 
 ## Phase 3 — Scale & multi-cluster
 
 - [ ] Multi-cluster policy propagation.
-- [ ] Load-testing harness validating the <0.2ms/packet and single-digit-ms
-      mitigation-latency targets in `docs/observability.md` under sustained
-      throughput, not just unit tests. Also the natural place to settle two
-      more findings from the 2026-09-07 audit that need real load data, not
-      guesses: whether `bpf/packet_filter.c`'s `blocklist` map (a plain
-      `BPF_HASH`, not LRU — no self-eviction past `MAX_BLOCKLIST_ENTRIES`)
-      needs LRU semantics, a larger capacity, or both; and whether
-      `signaling_events`' 256KB ring buffer (self-acknowledged as
-      "reasoned about, not empirically validated" in `bpf/headers/
-      common.h`) actually holds up under real telecom-scale signaling
-      volume.
-- [ ] Poetry-based lockfile support for `cmd/ai-engine` alongside the
-      current `pyproject.toml`/`requirements.txt` pair, if the community
-      wants a stricter reproducible-build story.
+- [ ] Load-testing harness for the <0.2ms/packet and mitigation-latency
+      targets in `docs/observability.md`. Also where to settle two open
+      questions: whether the `blocklist` eBPF map needs LRU semantics, and
+      whether the `signaling_events` ring buffer holds up under real
+      telecom-scale volume.
+- [ ] Poetry-based lockfile for `cmd/ai-engine`, if wanted.
 
 Have an idea that isn't here? Open an issue — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
