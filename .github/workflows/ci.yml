@@ -103,30 +103,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install clang/llvm + bpftool
-        # No more linux-libc-dev/linux-headers-$(uname -r): the old UAPI-
-        # header build needed those for <linux/types.h>'s <asm/types.h>
-        # chain (see bpf/Makefile's git history) -- bpf/packet_filter.c now
-        # builds against a generated vmlinux.h instead (self-contained,
-        # `make -C bpf` generates it via bpftool from this runner's own
-        # /sys/kernel/btf/vmlinux, gitignored, not committed -- see
-        # bpf/Makefile and packet_filter.c's own top comment for why a
-        # build-time-generated one is fine here).
-        #
-        # bpftool comes from a static upstream release, not apt's
-        # linux-tools-generic: that package failed outright here (its
-        # bpftool binary isn't reliably on PATH across Ubuntu
-        # releases/kernel-flavor combinations -- the same unreliability
-        # already documented in this project's WSL2 dev-environment notes,
-        # which is why that environment also switched to this exact static
-        # binary). v7.7.0 matches what's already proven working there.
+      - name: Install clang/llvm
+        # No more bpftool or host BTF: bpf/packet_filter.c now builds
+        # against headers/vmlinux_min.h, a small hand-maintained stand-in
+        # for a `bpftool btf dump`-generated vmlinux.h (see that file's own
+        # top comment for why the host's /sys/kernel/btf/vmlinux is no
+        # longer needed at all) -- this runner, a dev machine, and
+        # `docker build` (see Dockerfile's bpf-builder stage) all now build
+        # the exact same way. libbpf-dev still provides <bpf/bpf_helpers.h>
+        # and <bpf/bpf_endian.h>.
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev
-          curl -sL https://github.com/libbpf/bpftool/releases/download/v7.7.0/bpftool-v7.7.0-amd64.tar.gz \
-            | sudo tar -xzC /usr/local/bin bpftool
-          sudo chmod +x /usr/local/bin/bpftool
-          bpftool version
       - name: Compile bpf/packet_filter.c
         run: make -C bpf
 

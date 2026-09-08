@@ -90,7 +90,7 @@ func Attach(objPath, iface string) (*Loader, error) {
 	ifi, err := net.InterfaceByName(iface)
 	if err != nil {
 		coll.Close()
-		return nil, fmt.Errorf("resolve interface %q: %w", iface, err)
+		return nil, fmt.Errorf("resolve interface %q: %w: %w", iface, ErrInterfaceNotFound, err)
 	}
 
 	xdpLink, err := link.AttachXDP(link.XDPOptions{

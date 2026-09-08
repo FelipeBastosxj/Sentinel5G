@@ -193,7 +193,8 @@ func main() {
 func attachBlocklist(log logr.Logger, objectPath, iface string) sentinelebpf.BlocklistUpdater {
 	loader, err := sentinelebpf.Attach(objectPath, iface)
 	if err != nil {
-		log.Info("eBPF blocklist not attached; EbpfBlock actions will be no-ops", "reason", err.Error())
+		log.Info("eBPF blocklist not attached; EbpfBlock actions will be no-ops",
+			"cause", sentinelebpf.ClassifyAttachError(err), "reason", err.Error())
 		return noopBlocklist{}
 	}
 	return loader

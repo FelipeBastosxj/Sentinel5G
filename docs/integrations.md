@@ -57,11 +57,20 @@ chart's `values.yaml`) drops all Linux capabilities, so:
 
 - `EbpfBlock` actions silently no-op until you opt in.
 - To opt in: set `ebpf.enabled: true` in the Helm chart's values (or pass
-  `--bpf-object`/`--bpf-interface` directly to `cmd/operator`) **and** add
-  the required capabilities to the manager container's `securityContext`.
+  `--bpf-object`/`--bpf-interface` directly to `cmd/operator`). The chart
+  now also adds `ebpf.capabilities` (default `["BPF", "NET_ADMIN"]`) to the
+  manager container's `securityContext` automatically when `ebpf.enabled` is
+  true — override `ebpf.capabilities` to `["SYS_ADMIN", "NET_ADMIN"]` on
+  older kernels instead of editing `securityContext` by hand.
+- The compiled `bpf/packet_filter.o` is baked into the operator image at
+  build time (see the `Dockerfile`'s `bpf-builder` stage) — no manual step
+  needed to get it onto the node/container.
 - `cmd/operator/main.go` logs (rather than fails) when the eBPF attach
-  fails, so a misconfigured capability set degrades to mesh-only isolation
-  instead of crash-looping the operator.
+  fails, classifying *why* (missing object, insufficient capability, unknown
+  interface, or unrecognized) via `pkg/ebpf.ClassifyAttachError` — see
+  `docs/troubleshooting.md#ebpf` — so a misconfigured capability set
+  degrades to mesh-only isolation instead of crash-looping the operator, and
+  the cause shows up in the log instead of a bare error string.
 
 **Scaling `replicaCount` with eBPF enabled — two things to know:**
 

@@ -4,6 +4,7 @@ package ebpf
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +34,21 @@ func TestScanRateKeyMatchesKernelKeySize(t *testing.T) {
 	if got := binary.Size(scanRateKey{}); got != kernelKeySize {
 		t.Fatalf("binary.Size(scanRateKey{}) = %d, want %d (must match bpf/packet_filter.c's "+
 			"struct scan_key exactly)", got, kernelKeySize)
+	}
+}
+
+// Regression guard for ClassifyAttachError's fs.ErrNotExist branch (see
+// errors.go): asserts against a real Attach() failure, not a synthetic one,
+// since what actually matters is whether cilium/ebpf's real error chain for
+// a missing object file still satisfies errors.Is(err, fs.ErrNotExist) after
+// its own wrapping -- errors_test.go covers the classification logic itself
+// with synthetic errors, this covers the assumption underneath it.
+func TestAttachMissingObjectClassifiesAsNotFound(t *testing.T) {
+	_, err := Attach("/nonexistent/path/does/not/exist/packet_filter.o", "lo")
+	if err == nil {
+		t.Fatal("Attach with a nonexistent object path unexpectedly succeeded")
+	}
+	if got := ClassifyAttachError(err); !strings.Contains(got, "was not found") {
+		t.Fatalf("ClassifyAttachError(%v) = %q, want it to classify as a missing object file", err, got)
 	}
 }
