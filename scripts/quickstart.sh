@@ -140,35 +140,88 @@ kubectl config use-context "kind-${CLUSTER_NAME}" >/dev/null
 # known class of kind-on-Docker networking issue that shows up on corporate
 # VPNs, some WSL2 setups, and some cloud VM network configs.
 #
-# A previous version of this fix pointed every node's resolver at a public
-# DNS server (8.8.8.8/1.1.1.1) unconditionally, every run, reasoning that
-# doing so when DNS was already fine was harmless. That reasoning was wrong
-# on GitHub Codespaces specifically -- found the hard way running this
-# exact script there: each node already resolves DNS correctly by default
-# (via Docker's own per-container embedded resolver, which forwards to
-# whatever the host's real upstream DNS is), but Codespaces' network policy
-# blocks a container from querying a public resolver like 8.8.8.8 directly
-# over UDP/53 -- so the unconditional "fix" actively broke a node that
-# would otherwise have worked. Testing first, and only overriding when
-# resolution genuinely fails, is what makes this safe everywhere: it can't
-# break an environment where the default was already fine (Codespaces,
-# apparently most cloud VMs), and it still recovers the environments where
-# the default genuinely is broken (some WSL2 setups, some VPNs).
+# Two things learned the hard way running this exact script on a real
+# GitHub Codespace, in order:
+#
+# 1. An earlier version pointed every node's resolver at a public DNS
+#    server (8.8.8.8/1.1.1.1) unconditionally, every run, reasoning that
+#    doing so when DNS was already fine was harmless. Wrong on Codespaces:
+#    a node's default resolver (Docker's own per-container embedded one)
+#    already worked there, but Codespaces' network policy blocks a
+#    container from querying a public resolver directly over UDP/53 -- so
+#    the unconditional "fix" broke a node that would otherwise have
+#    worked. Fixed by testing first, only overriding when resolution
+#    genuinely fails.
+#
+# 2. That alone isn't enough, though: on a *second* real Codespace run, the
+#    default resolver genuinely didn't work either, and falling back to
+#    8.8.8.8/1.1.1.1 hit the exact same block as (1) -- a hard-coded public
+#    resolver was never going to work there. What actually resolves DNS on
+#    that host is Azure's own internal resolver (168.63.129.16 -- Codespaces
+#    runs on Azure), reachable only from inside Azure's network, which
+#    would be equally wrong to hard-code (breaks the same way on AWS/GCP/
+#    bare metal). The fix that actually generalizes: discover whatever
+#    upstream resolver the *host* itself successfully uses -- via
+#    resolvectl/systemd-resolve, looking past systemd-resolved's meaningless
+#    (from inside a different network namespace) 127.0.0.53 stub straight to
+#    the real server behind it -- and try that before falling back to a
+#    public resolver as a last resort.
 step "Checking cluster nodes can resolve DNS"
+
+# Best-effort: a non-loopback nameserver already in the host's own
+# /etc/resolv.conf is usable as-is; otherwise dig through systemd-resolved
+# (resolvectl on newer systems, systemd-resolve on older ones) for the real
+# server behind its 127.0.0.53 stub. Empty output (neither available, or
+# neither yields a real address) just means the public-resolver fallback
+# below is tried first instead -- not a fatal condition on its own.
+discover_host_dns() {
+  local candidate
+  candidate="$(grep -m1 -oE '^nameserver [0-9.]+' /etc/resolv.conf 2>/dev/null | awk '{print $2}')"
+  if [ -n "$candidate" ] && [ "${candidate#127.}" = "$candidate" ]; then
+    echo "$candidate"
+    return
+  fi
+  if command -v resolvectl >/dev/null 2>&1; then
+    candidate="$(resolvectl status 2>/dev/null | grep -oE '(Current DNS Server|DNS Servers): [0-9.]+' \
+      | awk '{print $NF}' | grep -vE '^(127\.|169\.254\.)' | head -1)"
+  elif command -v systemd-resolve >/dev/null 2>&1; then
+    candidate="$(systemd-resolve --status 2>/dev/null | grep -oE '(Current DNS Server|DNS Servers): [0-9.]+' \
+      | awk '{print $NF}' | grep -vE '^(127\.|169\.254\.)' | head -1)"
+  fi
+  [ -n "$candidate" ] && echo "$candidate"
+}
+
 # `timeout` wraps the whole `docker exec`, run from the host -- not relying
 # on a `timeout` binary existing inside the node image itself -- because a
 # genuinely broken resolver makes `getent hosts` hang rather than fail
 # fast (found the hard way: an unbounded check here left the whole script
-# stuck instead of falling through to the public-resolver fallback).
+# stuck instead of falling through to the fallback below).
 for node in $(docker ps --filter "label=io.x-k8s.kind.cluster=${CLUSTER_NAME}" --format '{{.Names}}'); do
   if timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1; then
     continue
   fi
-  info "DNS inside node '$node' isn't working by default -- pointing it at a public resolver instead"
-  docker exec "$node" sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf'
-  if ! timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1; then
-    echo "WARNING: node '$node' still can't resolve DNS after falling back to a" >&2
-    echo "public resolver. See docs/troubleshooting.md#dns-resolution-inside-kind." >&2
+
+  fixed=false
+  host_dns="$(discover_host_dns || true)"
+  if [ -n "$host_dns" ]; then
+    info "DNS inside node '$node' isn't working by default -- trying the host's own upstream resolver ($host_dns)"
+    docker exec "$node" sh -c "printf 'nameserver %s\n' '$host_dns' > /etc/resolv.conf"
+    if timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1; then
+      fixed=true
+    fi
+  fi
+
+  if [ "$fixed" = false ]; then
+    info "Falling back to a public resolver for node '$node'"
+    docker exec "$node" sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf'
+    if timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1; then
+      fixed=true
+    fi
+  fi
+
+  if [ "$fixed" = false ]; then
+    echo "WARNING: node '$node' still can't resolve DNS after trying the host's own" >&2
+    echo "resolver and a public fallback. See docs/troubleshooting.md#dns-resolution-inside-kind." >&2
   fi
 done
 ok "Node DNS resolvers checked"
