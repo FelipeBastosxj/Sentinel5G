@@ -36,9 +36,11 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       returned 0 for every real event.
 - [x] `controller-gen` wired into `make manifests`; CI fails on drift
       between the Go types and generated CRD/deepcopy output.
-- [x] CO-RE: `bpf/packet_filter.c` builds against a generated `vmlinux.h`
-      instead of UAPI kernel headers — drops the kernel-headers build
-      dependency.
+- [x] `bpf/packet_filter.c` builds against a small hand-maintained header
+      (`bpf/headers/vmlinux_min.h`) instead of UAPI kernel headers or a
+      host-BTF-generated `vmlinux.h` — no `bpftool`/kernel-headers
+      dependency, and it now builds inside a plain `docker build` too (see
+      the next item).
 - [x] Finalizer-based cleanup: deleting a policy now releases its mesh
       quarantine and unblocks its eBPF-blocked IPs automatically.
 - [x] Automatic de-escalation: mitigations reverse on their own after a
@@ -52,6 +54,23 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       mitigation firing, using published images. Installs `kind`/`helm` if
       missing and works around a real DNS-resolution failure common to
       `kind` on Docker (any host, not just one cloud sandbox).
+- [x] The compiled eBPF object is now baked into the published operator
+      image at build time (`Dockerfile`'s `bpf-builder` stage) — previously
+      nothing put it there, so `ebpf.enabled: true` silently no-op'd on
+      every real deployment. `ebpf.enabled: true` now also wires the
+      required Linux capabilities automatically, and attach failures are
+      classified (missing object / insufficient privilege / unknown
+      interface / incompatible kernel) instead of a bare error string.
+- [x] Real e2e test in CI (`.github/workflows/e2e.yml`): builds each PR's
+      own images and runs `scripts/quickstart.sh` against a real `kind`
+      cluster — the class of bug the Istio-CRD fallback fix above was only
+      found by running by hand is now caught automatically.
+- [x] `scripts/quickstart.sh` preflight checks (network egress, RBAC) with
+      root-caused error messages, plus `docs/troubleshooting.md`
+      consolidating the DNS/RBAC/egress/ARM64/eBPF causes reported from
+      cloud VMs and Codespaces that don't show up on a local dev machine.
+- [x] Images published to Docker Hub alongside GHCR, both as multi-arch
+      (`linux/amd64`+`linux/arm64`) manifests, signed with cosign.
 
 ## Phase 2 — Deeper integrations
 
