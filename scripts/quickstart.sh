@@ -21,6 +21,14 @@ CLUSTER_NAME="sentinel5g-quickstart"
 NAMESPACE="sentinel5g-system"
 DEMO_NAMESPACE="telecom-core"
 
+# Overridable so CI (.github/workflows/e2e.yml) can point this exact script
+# at images built from the PR's own code instead of the last published
+# release, and load them into the kind cluster instead of pulling from a
+# registry -- everything defaults to the normal, documented published-image
+# behavior when unset, so plain `./scripts/quickstart.sh` is unaffected.
+OPERATOR_IMAGE="${SENTINEL5G_OPERATOR_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-operator:v0.2.1}"
+KIND_LOAD_IMAGES="${SENTINEL5G_KIND_LOAD_IMAGES:-}"
+
 # ANSI colors, disabled automatically when not writing to a real terminal
 # (CI logs, piping to a file) so output stays readable either way.
 if [ -t 1 ]; then
@@ -61,6 +69,26 @@ if ! command -v kubectl >/dev/null 2>&1; then
   echo "  https://kubernetes.io/docs/tasks/tools/#kubectl" >&2
   exit 1
 fi
+
+# Network egress check, run before anything that would otherwise fail as a
+# slow, generic timeout deep inside `kind create cluster` or an image pull
+# (corporate VPNs, locked-down cloud VM egress rules, and restricted
+# GitHub Codespaces allowlists all hit this the same way -- see
+# docs/troubleshooting.md#network-egress). --max-time 10, not something
+# tighter: found the hard way that a real, working connection can still take
+# 5+ seconds end to end when the host's default route prefers IPv6 and that
+# route is broken/unreachable (curl tries it first, times out, then falls
+# back to IPv4) -- a real, if slow, environment some hosts (including one of
+# this project's own WSL2 dev setups) actually have, not a hypothetical.
+for host in ghcr.io docker.io; do
+  if ! curl -sS --max-time 10 -o /dev/null "https://$host/v2/"; then
+    echo "ERROR: no network egress to https://$host -- quickstart needs to pull" >&2
+    echo "container images from this host. See docs/troubleshooting.md#network-egress" >&2
+    echo "for what to check (corporate VPN/firewall, cloud VM security group," >&2
+    echo "GitHub Codespaces egress allowlist)." >&2
+    exit 1
+  fi
+done
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -128,6 +156,30 @@ ok "Node DNS resolvers set"
 step "Waiting for the cluster's own node to be Ready"
 kubectl wait --for=condition=Ready node --all --timeout=120s
 
+# Only meaningful against a pre-existing, non-kind cluster: KUBECONFIG can be
+# pointed at a managed cluster (the AWS/Azure VM scenario this preflight
+# exists for) whose kubeconfig user isn't cluster-admin -- a fresh kind
+# cluster's own generated kubeconfig always is, so this never fires there.
+# Without this, a missing ClusterRoleBinding only surfaces as a generic
+# "forbidden" error from partway through `helm upgrade --install` below.
+# See docs/troubleshooting.md#rbac.
+step "Checking cluster-admin permissions"
+if ! kubectl auth can-i create clusterrolebindings >/dev/null 2>&1; then
+  echo "ERROR: the current kubeconfig user cannot create ClusterRoleBindings." >&2
+  echo "Sentinel5G's Helm chart installs a ClusterRole/ClusterRoleBinding" >&2
+  echo "(see charts/sentinel5g-operator/templates/clusterrole.yaml)." >&2
+  echo "See docs/troubleshooting.md#rbac." >&2
+  exit 1
+fi
+ok "Current user can create ClusterRoleBindings"
+
+if [ -n "$KIND_LOAD_IMAGES" ]; then
+  step "Loading locally built images into the kind cluster"
+  for image in $KIND_LOAD_IMAGES; do
+    kind load docker-image "$image" --name "$CLUSTER_NAME"
+  done
+fi
+
 # --- 4. NATS JetStream --------------------------------------------------------
 step "Deploying NATS JetStream"
 kubectl apply -f deployments/quickstart/nats.yaml
@@ -137,8 +189,15 @@ kubectl rollout status deployment/nats --timeout=120s
 step "Installing the Sentinel5G operator (Helm)"
 # upgrade --install, not install: makes this step -- and the whole script --
 # safe to re-run without "cannot reuse a name that is still in use" errors.
+# image.repository/image.tag are always passed explicitly (split from
+# OPERATOR_IMAGE) rather than left to the chart's own values.yaml defaults --
+# a no-op when SENTINEL5G_OPERATOR_IMAGE is unset (the split reproduces
+# values.yaml's own default), and what lets CI point this at a PR's own
+# locally built, kind-loaded image (see SENTINEL5G_KIND_LOAD_IMAGES above).
 helm upgrade --install sentinel5g charts/sentinel5g-operator \
   --namespace "$NAMESPACE" --create-namespace \
+  --set image.repository="${OPERATOR_IMAGE%:*}" \
+  --set image.tag="${OPERATOR_IMAGE##*:}" \
   --set nats.url=nats://nats.default.svc.cluster.local:4222 \
   --wait --timeout=180s
 
