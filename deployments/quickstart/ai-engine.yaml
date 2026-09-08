@@ -39,7 +39,7 @@ spec:
     spec:
       containers:
         - name: ai-engine
-          image: ghcr.io/felipebastosxj/sentinel5g-ai-engine:v0.2.1
+          image: ghcr.io/felipebastosxj/sentinel5g-ai-engine:v0.2.2
           env:
             - name: AI_ENGINE_MODE
               value: "nats"

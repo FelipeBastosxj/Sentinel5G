@@ -26,7 +26,7 @@ DEMO_NAMESPACE="telecom-core"
 # release, and load them into the kind cluster instead of pulling from a
 # registry -- everything defaults to the normal, documented published-image
 # behavior when unset, so plain `./scripts/quickstart.sh` is unaffected.
-OPERATOR_IMAGE="${SENTINEL5G_OPERATOR_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-operator:v0.2.1}"
+OPERATOR_IMAGE="${SENTINEL5G_OPERATOR_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-operator:v0.2.2}"
 KIND_LOAD_IMAGES="${SENTINEL5G_KIND_LOAD_IMAGES:-}"
 
 # ANSI colors, disabled automatically when not writing to a real terminal

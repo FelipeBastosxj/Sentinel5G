@@ -3,6 +3,39 @@
 Notable changes to Sentinel5G, per release. See `ROADMAP.md` for what's
 planned next.
 
+## [0.2.2] - 2026-09-08
+
+### Added
+- Images now also published to Docker Hub, and every published image
+  (GHCR and Docker Hub alike) is now multi-arch (`linux/amd64` +
+  `linux/arm64`) instead of `amd64`-only.
+- `.github/workflows/e2e.yml`: builds this ref's own images and runs
+  `scripts/quickstart.sh` against a real `kind` cluster on every PR --
+  catches cluster-environment bugs (like the Istio-CRD one fixed in 0.2.1)
+  in CI instead of by hand.
+- `docs/troubleshooting.md`: consolidated guide for the install issues
+  reported from cloud VMs and GitHub Codespaces that don't show up on a
+  local dev machine (network egress, RBAC, DNS-in-kind, ARM64, eBPF).
+- `scripts/quickstart.sh`: fast, root-caused preflight checks for network
+  egress and RBAC permissions, instead of failing as a generic timeout
+  deep inside `kind`/`helm`.
+
+### Fixed
+- The compiled eBPF object (`bpf/packet_filter.o`) was never actually
+  included in the published operator image, and nothing documented how to
+  get it there -- `ebpf.enabled: true` silently no-op'd on every real
+  deployment. Now baked into the image at build time.
+- `ebpf.enabled: true` didn't grant the Linux capabilities it needs
+  (`CAP_BPF`/`CAP_NET_ADMIN`) -- now wired automatically.
+- eBPF attach failures logged a bare error string; now classified (missing
+  object, insufficient privilege, unknown interface, incompatible kernel).
+
+### Changed
+- The eBPF build no longer depends on `bpftool` or the host kernel's BTF
+  (`bpf/headers/vmlinux_min.h` replaces the generated `vmlinux.h`), so it
+  now also builds inside a plain `docker build`, not just on a real Linux
+  machine.
+
 ## [0.2.1] - 2026-09-07
 
 ### Fixed
