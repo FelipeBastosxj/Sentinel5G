@@ -44,31 +44,50 @@ retrying.
 host itself can resolve DNS fine.
 
 This is a known class of kind-on-Docker networking issue, unrelated to
-Sentinel5G specifically — it shows up on corporate VPNs and some WSL2
-setups.
+Sentinel5G specifically — it shows up on corporate VPNs, some WSL2 setups,
+and some cloud dev environments.
 
-`quickstart.sh` handles this by testing each node's DNS first
-(`getent hosts ghcr.io`, bounded by a 5s `timeout` so a genuinely broken
-resolver fails fast instead of hanging the script) and only overriding
-`/etc/resolv.conf` with a public resolver (`8.8.8.8`/`1.1.1.1`) for a node
-where that test actually fails. An earlier version applied the override
-unconditionally, every run, reasoning that doing so when DNS was already
-fine was harmless — that reasoning broke on GitHub Codespaces specifically:
-each node already resolves DNS correctly by default there (via Docker's own
-per-container embedded resolver), but Codespaces' network policy blocks a
-container from querying a public resolver directly over UDP/53, so the
-unconditional override actively broke a node that would otherwise have
-worked. Test-first is what makes this safe everywhere: it can't break an
-environment where the default was already fine, and it still recovers the
-environments where the default genuinely is broken.
+`quickstart.sh` handles this in three steps, each only applied if the
+previous one didn't already fix it:
+
+1. **Test first.** `getent hosts ghcr.io` inside the node, bounded by a 5s
+   `timeout` (a genuinely broken resolver makes `getent` hang rather than
+   fail fast). If this already succeeds, nothing is touched. An earlier
+   version skipped this and always overrode `/etc/resolv.conf`, reasoning
+   that doing so when DNS was already fine was harmless — wrong on GitHub
+   Codespaces, where a node's default resolver (Docker's own per-container
+   embedded one) already worked, but Codespaces' network policy blocks a
+   container from querying a public resolver directly over UDP/53, so the
+   unconditional override broke a node that would otherwise have worked.
+2. **Try the host's own real upstream resolver**, discovered by looking at
+   `/etc/resolv.conf` (if it's not just a `127.0.0.53` systemd-resolved
+   stub, meaningless from inside a different network namespace) or, if it
+   is, digging behind that stub via `resolvectl`/`systemd-resolve`. This
+   matters because a hard-coded public resolver isn't reachable from every
+   host either: on a real Codespace, the *default* resolver also failed
+   outright, and the only thing that worked was Azure's own internal
+   resolver (`168.63.129.16` — Codespaces runs on Azure), reachable only
+   from inside Azure's network. Discovering the real upstream instead of
+   guessing is what generalizes to AWS/GCP/bare-metal hosts too.
+3. **Fall back to a public resolver** (`8.8.8.8`/`1.1.1.1`) only if step 2
+   didn't find a candidate or it didn't work either.
+
+If none of the three works, the script warns instead of failing silently —
+that's a genuinely unusual network setup worth filing an issue about.
 
 If you're diagnosing a similar issue outside the quickstart script, the
-same test-then-fix applies:
+same idea applies — test, try the host's real resolver, then fall back:
 
 ```sh
 for node in $(docker ps --filter "label=io.x-k8s.kind.cluster=<cluster-name>" --format '{{.Names}}'); do
-  timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1 \
-    || docker exec "$node" sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf'
+  timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1 && continue
+  host_dns=$(resolvectl status 2>/dev/null | grep -oE '(Current DNS Server|DNS Servers): [0-9.]+' \
+    | awk '{print $NF}' | grep -vE '^(127\.|169\.254\.)' | head -1)
+  if [ -n "$host_dns" ]; then
+    docker exec "$node" sh -c "printf 'nameserver %s\n' '$host_dns' > /etc/resolv.conf"
+  else
+    docker exec "$node" sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf'
+  fi
 done
 ```
 
@@ -164,13 +183,16 @@ project moved away from that approach — see `docs/architecture.md`).
   cluster` works the same way it does on a real Linux host or WSL2 — no
   special handling needed for that part.
 - **Direct public-DNS queries from inside a container are blocked:**
-  confirmed by running the quickstart against a real Codespace — a kind
-  node's DNS works correctly by default there (via Docker's own
-  per-container embedded resolver), but a container querying a public
-  resolver (`8.8.8.8`/`1.1.1.1`) directly over UDP/53 gets no response.
-  This only matters if you're troubleshooting DNS manually; `quickstart.sh`
-  itself already only overrides a node's resolver when its default
-  actually fails (see [DNS resolution inside
+  confirmed by running the quickstart against a real Codespace, twice, with
+  two different results — sometimes a kind node's DNS works correctly by
+  default there (via Docker's own per-container embedded resolver) and
+  sometimes it genuinely doesn't, but either way a container querying a
+  public resolver (`8.8.8.8`/`1.1.1.1`) directly over UDP/53 gets no
+  response: Codespaces' actual working resolver is Azure's own internal
+  one (`168.63.129.16`), reachable only from inside Azure's network. This
+  only matters if you're troubleshooting DNS manually; `quickstart.sh`
+  itself discovers and tries the host's real upstream resolver before ever
+  falling back to a public one (see [DNS resolution inside
   kind](#dns-resolution-inside-kind)), so it isn't affected.
 
 ## Getting more diagnostic output
