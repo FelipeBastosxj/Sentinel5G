@@ -47,10 +47,10 @@ publishing the AI engine's output like step 3 below does.
 
 Images are published to [GHCR](https://github.com/FelipeBastosxj?tab=packages)
 and, from the next tagged release on, also to [Docker
-Hub](https://hub.docker.com/u/felipebastosxj) — both as multi-arch
-(`linux/amd64`+`linux/arm64`) manifests. Pull whichever registry your
-network allows; pass `--set
-image.repository=docker.io/felipebastosxj/sentinel5g-operator` to the Helm
+Hub](https://hub.docker.com/r/312181015/sentinel5g-operator) — both as
+multi-arch (`linux/amd64`+`linux/arm64`) manifests. Pull whichever registry
+your network allows; pass `--set
+image.repository=docker.io/312181015/sentinel5g-operator` to the Helm
 install below to use Docker Hub instead of the GHCR default.
 
 **Prefer one command?** `./scripts/quickstart.sh` runs every step below

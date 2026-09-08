@@ -39,15 +39,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compute lowercase image owner and a filesystem-safe platform slug
+      - name: Compute lowercase image owners and a filesystem-safe platform slug
         # OCI/GHCR/Docker Hub repository names must be lowercase; github.
-        # repository_owner preserves the account's display case. The slug
-        # (linux/amd64 -> linux-amd64) is used both as part of the temporary
-        # per-platform tag below and as an artifact name, neither of which
-        # can contain "/".
+        # repository_owner preserves the account's display case. GHCR's
+        # owner and Docker Hub's owner are computed separately -- they are
+        # NOT guaranteed to be the same account/namespace (a GitHub org or
+        # username has no required relationship to a Docker Hub username),
+        # so this doesn't assume DOCKERHUB_USERNAME matches
+        # github.repository_owner the way an earlier version of this
+        # workflow incorrectly did. The slug (linux/amd64 -> linux-amd64)
+        # is used both as part of the temporary per-platform tag below and
+        # as an artifact name, neither of which can contain "/".
         id: vars
         run: |
           echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_owner=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
           echo "platform_slug=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
@@ -119,7 +125,7 @@ jobs:
           set -euo pipefail
           LOCAL="local/${{ matrix.component.name }}:${{ steps.vars.outputs.platform_slug }}"
           GHCR="ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}-${{ steps.vars.outputs.platform_slug }}"
-          DOCKERHUB="docker.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}-${{ steps.vars.outputs.platform_slug }}"
+          DOCKERHUB="docker.io/${{ steps.vars.outputs.dockerhub_owner }}/${{ matrix.component.name }}:${{ github.ref_name }}-${{ steps.vars.outputs.platform_slug }}"
 
           # Digest is parsed from `docker push`'s own final "<tag>: digest:
           # sha256:... size: ..." line, NOT read back via `docker inspect
@@ -192,9 +198,13 @@ jobs:
       matrix:
         component: [sentinel5g-operator, sentinel5g-ai-engine]
     steps:
-      - name: Compute lowercase image owner
+      - name: Compute lowercase image owners
+        # See build-scan-push's identically named step: GHCR's owner and
+        # Docker Hub's owner are computed separately, not assumed equal.
         id: vars
-        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_owner=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -244,7 +254,7 @@ jobs:
         run: |
           set -euo pipefail
           GHCR_REPO="ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}"
-          DOCKERHUB_REPO="docker.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}"
+          DOCKERHUB_REPO="docker.io/${{ steps.vars.outputs.dockerhub_owner }}/${{ matrix.component }}"
 
           docker buildx imagetools create \
             -t "$GHCR_REPO:${{ github.ref_name }}" -t "$GHCR_REPO:latest" \
@@ -268,4 +278,4 @@ jobs:
         # separately.
         run: |
           cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.ghcr_manifest_digest }}"
-          cosign sign --yes "docker.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.dockerhub_manifest_digest }}"
+          cosign sign --yes "docker.io/${{ steps.vars.outputs.dockerhub_owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.dockerhub_manifest_digest }}"
