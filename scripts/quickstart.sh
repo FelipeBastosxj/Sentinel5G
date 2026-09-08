@@ -133,25 +133,45 @@ else
 fi
 kubectl config use-context "kind-${CLUSTER_NAME}" >/dev/null
 
-# --- 3. DNS fix, applied unconditionally -------------------------------------
+# --- 3. DNS fix, applied only where actually needed --------------------------
 # kind's node containers periodically come up unable to resolve any external
 # hostname at all -- symptom: every image pull fails with something like
-# "dial tcp: lookup ghcr.io on 172.x.x.1:53: ... i/o timeout". This has
-# nothing to do with Sentinel5G's images specifically (Docker Hub pulls fail
-# the exact same way) and nothing to do with any one hosting environment --
-# it's a known class of kind-on-Docker networking issue that shows up on
-# corporate VPNs, some WSL2 setups, some cloud VM network configs, and
-# GitHub Codespaces alike. Rather than trying to detect it (fragile: the
-# exact error text/timing varies), just point every node's resolver at a
-# known-good public DNS server unconditionally, every run -- a few
-# milliseconds of harmless work when DNS was already fine, and a real fix
-# when it wasn't. Applies to every node in the cluster, not just a
-# single-node assumption.
-step "Ensuring cluster nodes can resolve DNS (idempotent, safe if already fine)"
+# "dial tcp: lookup ghcr.io on 172.x.x.1:53: ... i/o timeout". This is a
+# known class of kind-on-Docker networking issue that shows up on corporate
+# VPNs, some WSL2 setups, and some cloud VM network configs.
+#
+# A previous version of this fix pointed every node's resolver at a public
+# DNS server (8.8.8.8/1.1.1.1) unconditionally, every run, reasoning that
+# doing so when DNS was already fine was harmless. That reasoning was wrong
+# on GitHub Codespaces specifically -- found the hard way running this
+# exact script there: each node already resolves DNS correctly by default
+# (via Docker's own per-container embedded resolver, which forwards to
+# whatever the host's real upstream DNS is), but Codespaces' network policy
+# blocks a container from querying a public resolver like 8.8.8.8 directly
+# over UDP/53 -- so the unconditional "fix" actively broke a node that
+# would otherwise have worked. Testing first, and only overriding when
+# resolution genuinely fails, is what makes this safe everywhere: it can't
+# break an environment where the default was already fine (Codespaces,
+# apparently most cloud VMs), and it still recovers the environments where
+# the default genuinely is broken (some WSL2 setups, some VPNs).
+step "Checking cluster nodes can resolve DNS"
+# `timeout` wraps the whole `docker exec`, run from the host -- not relying
+# on a `timeout` binary existing inside the node image itself -- because a
+# genuinely broken resolver makes `getent hosts` hang rather than fail
+# fast (found the hard way: an unbounded check here left the whole script
+# stuck instead of falling through to the public-resolver fallback).
 for node in $(docker ps --filter "label=io.x-k8s.kind.cluster=${CLUSTER_NAME}" --format '{{.Names}}'); do
+  if timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1; then
+    continue
+  fi
+  info "DNS inside node '$node' isn't working by default -- pointing it at a public resolver instead"
   docker exec "$node" sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf'
+  if ! timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1; then
+    echo "WARNING: node '$node' still can't resolve DNS after falling back to a" >&2
+    echo "public resolver. See docs/troubleshooting.md#dns-resolution-inside-kind." >&2
+  fi
 done
-ok "Node DNS resolvers set"
+ok "Node DNS resolvers checked"
 
 step "Waiting for the cluster's own node to be Ready"
 kubectl wait --for=condition=Ready node --all --timeout=120s

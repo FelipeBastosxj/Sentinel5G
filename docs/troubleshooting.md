@@ -44,17 +44,31 @@ retrying.
 host itself can resolve DNS fine.
 
 This is a known class of kind-on-Docker networking issue, unrelated to
-Sentinel5G specifically — it shows up on corporate VPNs, some WSL2 setups,
-some cloud VM network configs, and GitHub Codespaces alike. `quickstart.sh`
-already works around it unconditionally, every run (see the "DNS fix"
-section of the script itself for the full reasoning): it points every kind
-node's `/etc/resolv.conf` at a known-good public resolver, regardless of
-whether the symptom is actually present. If you're diagnosing a similar
-issue outside the quickstart script, the same fix applies:
+Sentinel5G specifically — it shows up on corporate VPNs and some WSL2
+setups.
+
+`quickstart.sh` handles this by testing each node's DNS first
+(`getent hosts ghcr.io`, bounded by a 5s `timeout` so a genuinely broken
+resolver fails fast instead of hanging the script) and only overriding
+`/etc/resolv.conf` with a public resolver (`8.8.8.8`/`1.1.1.1`) for a node
+where that test actually fails. An earlier version applied the override
+unconditionally, every run, reasoning that doing so when DNS was already
+fine was harmless — that reasoning broke on GitHub Codespaces specifically:
+each node already resolves DNS correctly by default there (via Docker's own
+per-container embedded resolver), but Codespaces' network policy blocks a
+container from querying a public resolver directly over UDP/53, so the
+unconditional override actively broke a node that would otherwise have
+worked. Test-first is what makes this safe everywhere: it can't break an
+environment where the default was already fine, and it still recovers the
+environments where the default genuinely is broken.
+
+If you're diagnosing a similar issue outside the quickstart script, the
+same test-then-fix applies:
 
 ```sh
 for node in $(docker ps --filter "label=io.x-k8s.kind.cluster=<cluster-name>" --format '{{.Names}}'); do
-  docker exec "$node" sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf'
+  timeout 5 docker exec "$node" getent hosts ghcr.io >/dev/null 2>&1 \
+    || docker exec "$node" sh -c 'printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf'
 done
 ```
 
@@ -149,6 +163,15 @@ project moved away from that approach — see `docs/architecture.md`).
   the codespace container (not a nested/emulated one), so `kind create
   cluster` works the same way it does on a real Linux host or WSL2 — no
   special handling needed for that part.
+- **Direct public-DNS queries from inside a container are blocked:**
+  confirmed by running the quickstart against a real Codespace — a kind
+  node's DNS works correctly by default there (via Docker's own
+  per-container embedded resolver), but a container querying a public
+  resolver (`8.8.8.8`/`1.1.1.1`) directly over UDP/53 gets no response.
+  This only matters if you're troubleshooting DNS manually; `quickstart.sh`
+  itself already only overrides a node's resolver when its default
+  actually fails (see [DNS resolution inside
+  kind](#dns-resolution-inside-kind)), so it isn't affected.
 
 ## Getting more diagnostic output
 
