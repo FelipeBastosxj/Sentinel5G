@@ -69,26 +69,34 @@ each never lets any single port's counter reach the threshold). Real,
 useful visibility into probe traffic aimed at a single unexpected port; not
 general port-scan detection.
 
-Builds against a generated `vmlinux.h` (`make -C bpf`; see `bpf/Makefile`)
-rather than plain UAPI kernel headers. Worth being precise about what this
-actually buys, since it's easy to overstate: `struct ethhdr`/`iphdr`/`udphdr`
-are wire-format structs whose layout is fixed by the Ethernet/IP/UDP
-protocols themselves, not by kernel build config — unlike kernel-internal
-structs such as `task_struct` or `sk_buff`, their field offsets can't drift
-between kernel builds. So CO-RE's actual portability mechanism (BTF
-relocations via `BPF_CORE_READ()`/`preserve_access_index`) has nothing to
-protect here, and `bpf/packet_filter.c` doesn't use it — every packet-header
-field read is a plain access, same as before. The real, concrete win is
-dropping the UAPI-header build dependency: `vmlinux.h` already declares
-these types itself, so the build no longer needs
-`linux-libc-dev`/`linux-headers-$(uname -r)` installed, or the
-`<asm/types.h>` multiarch include-path workaround the old UAPI approach
-carried. `vmlinux.h` itself is generated at build time from whichever
-machine is compiling it (gitignored, not committed — a 3.6MB/172k-line file
-generated from one specific host's kernel isn't obviously more portable
-committed than not), consistent with CO-RE's actual model: the compiled
-object's BTF relocation records — where they exist — get resolved against
-the real *target* kernel's BTF at load time, not the build machine's.
+Builds against `bpf/headers/vmlinux_min.h`, a small hand-maintained header
+(not `bpftool btf dump`-generated), rather than plain UAPI kernel headers.
+Worth being precise about what this actually buys, since it's easy to
+overstate: `struct ethhdr`/`iphdr`/`udphdr` are wire-format structs whose
+layout is fixed by the Ethernet/IP/UDP protocols themselves, not by kernel
+build config — unlike kernel-internal structs such as `task_struct` or
+`sk_buff`, their field offsets can't drift between kernel builds. So CO-RE's
+actual portability mechanism (BTF relocations via
+`BPF_CORE_READ()`/`preserve_access_index`) has nothing to protect here, and
+`bpf/packet_filter.c` doesn't use it — every packet-header field read is a
+plain access, same as before. The real, concrete win is dropping the
+UAPI-header build dependency: `vmlinux_min.h` already declares these types
+itself, so the build no longer needs `linux-libc-dev`/
+`linux-headers-$(uname -r)` installed, or the `<asm/types.h>` multiarch
+include-path workaround the old UAPI approach carried.
+
+An earlier version of this build generated `vmlinux.h` at build time via
+`bpftool btf dump file /sys/kernel/btf/vmlinux` on whichever machine was
+compiling it. That worked on a real Linux dev machine or CI runner, but not
+inside a `docker build` (BuildKit doesn't expose the host's
+`/sys/kernel/btf/vmlinux` by default) — which is exactly what stood between
+this project and baking the compiled `.o` into the published operator image
+(see the Dockerfile's `bpf-builder` stage, and
+`docs/troubleshooting.md#ebpf`). `vmlinux_min.h` vendors by hand just the
+handful of types `packet_filter.c` actually references (verified
+byte-for-byte against a real `bpftool btf dump` once — see that file's own
+top comment), removing the host-BTF dependency entirely: build machine, CI
+runner, and `docker build` now all build the same way.
 
 ### Layer 2 — Ingestion & pipeline (`pkg/events`, `pkg/ingestion`)
 

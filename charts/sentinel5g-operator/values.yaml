@@ -21,11 +21,17 @@ ebpf:
   enabled: false
   interface: eth0
   objectPath: /var/run/sentinel5g/packet_filter.o
+  # Linux capabilities added to securityContext when ebpf.enabled is true
+  # (see templates/deployment.yaml) -- CAP_BPF+CAP_NET_ADMIN cover attaching
+  # the XDP program on any kernel new enough to have CAP_BPF (5.8+);
+  # override to ["SYS_ADMIN", "NET_ADMIN"] on older kernels, per
+  # docs/integrations.md. Previously this had to be added by hand on top of
+  # ebpf.enabled: true -- easy to flip the feature "on" and still get a
+  # silent no-op from a missing capability.
+  capabilities: ["BPF", "NET_ADMIN"]
 
 securityContext:
   allowPrivilegeEscalation: false
-  capabilities:
-    drop: ["ALL"]
   runAsNonRoot: true
 
 resources:

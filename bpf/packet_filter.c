@@ -25,23 +25,25 @@
 // "high-volume telemetry, not a packet capture" design (see
 // docs/event-model.md).
 //
-// Builds against a generated vmlinux.h (bpf/headers/vmlinux.h, `make -C bpf`
-// -- see bpf/Makefile) instead of plain UAPI kernel headers. Worth being
-// precise about what this buys: `struct ethhdr`/`iphdr`/`udphdr` below are
-// wire-format structs whose layout is fixed by the Ethernet/IP/UDP
-// protocols themselves, not by the kernel's own build config -- unlike
-// e.g. `task_struct` or `sk_buff`, their field offsets can't drift between
-// kernel builds, so CO-RE's actual relocation mechanism (BPF_CORE_READ(),
-// __builtin_preserve_access_index) has nothing to protect here, and this
-// file doesn't use it: every `->` field access below is a plain read, same
-// as before. The real, concrete win is dropping the UAPI-header build
-// dependency -- vmlinux.h already declares these types itself, so this no
-// longer needs linux-libc-dev/linux-headers-$(uname -r) installed or the
-// <asm/types.h> multiarch include-path workaround bpf/Makefile used to
-// carry (see git history for both). Struct-layout portability isn't the
-// story here; a simpler, self-contained build is.
+// Builds against headers/vmlinux_min.h, a small hand-maintained stand-in for
+// a `bpftool btf dump`-generated vmlinux.h (see that file's own top comment
+// for why). Worth being precise about what this buys: `struct
+// ethhdr`/`iphdr`/`udphdr` below are wire-format structs whose layout is
+// fixed by the Ethernet/IP/UDP protocols themselves, not by the kernel's own
+// build config -- unlike e.g. `task_struct` or `sk_buff`, their field
+// offsets can't drift between kernel builds, so CO-RE's actual relocation
+// mechanism (BPF_CORE_READ(), __builtin_preserve_access_index) has nothing
+// to protect here, and this file doesn't use it: every `->` field access
+// below is a plain read, same as before. The real, concrete win is dropping
+// the UAPI-header build dependency (and, with vmlinux_min.h, the host-BTF
+// dependency too) -- this no longer needs linux-libc-dev/linux-headers-
+// $(uname -r) installed, the <asm/types.h> multiarch include-path
+// workaround bpf/Makefile used to carry, or a real Linux kernel's
+// /sys/kernel/btf/vmlinux available at build time (see git history).
+// Struct-layout portability isn't the story here; a simpler, self-contained
+// build is.
 
-#include "headers/vmlinux.h"
+#include "headers/vmlinux_min.h"
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 

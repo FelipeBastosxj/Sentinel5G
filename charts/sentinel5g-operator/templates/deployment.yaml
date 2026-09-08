@@ -61,6 +61,11 @@ spec:
             periodSeconds: 10
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+            capabilities:
+              drop: ["ALL"]
+              {{- if .Values.ebpf.enabled }}
+              add: {{ toYaml .Values.ebpf.capabilities | nindent 16 }}
+              {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
