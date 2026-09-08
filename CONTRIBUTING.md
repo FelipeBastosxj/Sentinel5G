@@ -62,3 +62,22 @@ docs(readme): update helm installation instructions
 
 Use [GitHub Issues](https://github.com/FelipeBastosxj/Sentinel5G/issues) with
 the provided bug report / feature request templates.
+
+## Maintainer setup: publishing releases
+
+`.github/workflows/release.yml` (triggered by pushing a `vX.Y.Z` tag) builds,
+scans, and publishes multi-arch (`linux/amd64`+`linux/arm64`) images to both
+GHCR and Docker Hub. GHCR only needs the repo's own `GITHUB_TOKEN` (already
+available to every workflow run), but Docker Hub needs two repository
+secrets that aren't set up automatically:
+
+1. Create a Docker Hub account/organization for the project, if there isn't
+   one already.
+2. Create an [Access
+   Token](https://docs.docker.com/security/for-developers/access-tokens/)
+   (not your account password) scoped to push to that account/org.
+3. Add it as two repository secrets under **Settings → Secrets and
+   variables → Actions**: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+
+Without these secrets, the release workflow's Docker Hub login step fails —
+nothing in the workflow itself can create the account or token for you.

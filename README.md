@@ -45,13 +45,25 @@ build required. Verified end to end against a real k3s cluster; see
 that runs every layer (real eBPF capture + the AI engine) instead of hand-
 publishing the AI engine's output like step 3 below does.
 
+Images are published to [GHCR](https://github.com/FelipeBastosxj?tab=packages)
+and, from the next tagged release on, also to [Docker
+Hub](https://hub.docker.com/u/felipebastosxj) — both as multi-arch
+(`linux/amd64`+`linux/arm64`) manifests. Pull whichever registry your
+network allows; pass `--set
+image.repository=docker.io/felipebastosxj/sentinel5g-operator` to the Helm
+install below to use Docker Hub instead of the GHCR default.
+
 **Prefer one command?** `./scripts/quickstart.sh` runs every step below
 automatically (installing `kind`/`helm` locally if you don't have them, and
 working around a real `kind`-on-Docker DNS-resolution failure mode found the
 hard way — not specific to any one machine or cloud sandbox). Needs `docker`
 and `kubectl` already available; everything else it handles. The steps below
 are what it's actually running, for anyone who wants to follow along or
-adapt them.
+adapt them. Hitting something environment-specific (a cloud VM, a
+Codespace, a corporate network)? Check
+[`docs/troubleshooting.md`](docs/troubleshooting.md) before assuming it's a
+Sentinel5G bug — most of what's been found there so far is generic
+kind/network/RBAC friction, not code.
 
 ### Prerequisites
 

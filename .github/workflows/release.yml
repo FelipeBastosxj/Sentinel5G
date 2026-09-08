@@ -11,10 +11,22 @@ permissions:
   id-token: write # required for cosign keyless signing
 
 jobs:
-  release:
-    name: Build, scan, sign
+  # One job per (component, platform): builds a single-platform image locally
+  # (buildx --load only supports one platform at a time -- a multi-arch
+  # manifest can't be assembled this way, hence the separate "manifest" job
+  # below), scans it, and -- only if that scan passes -- pushes the exact
+  # same local image (no rebuild) to both registries under a temporary,
+  # platform-specific tag. The final `docker buildx imagetools create` step
+  # (in the "manifest" job) stitches each component's two per-platform
+  # digests into one multi-arch manifest per registry, published under the
+  # real, human-facing tags. This preserves the guarantee the previous
+  # single-arch version of this workflow already established: the bytes
+  # Trivy scanned are exactly the bytes that get published, never a rebuild.
+  build-scan-push:
+    name: Build, scan, push
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         component:
           - name: sentinel5g-operator
@@ -23,14 +35,164 @@ jobs:
           - name: sentinel5g-ai-engine
             context: cmd/ai-engine
             dockerfile: cmd/ai-engine/Dockerfile
+        platform: [linux/amd64, linux/arm64]
     steps:
       - uses: actions/checkout@v4
 
+      - name: Compute lowercase image owner and a filesystem-safe platform slug
+        # OCI/GHCR/Docker Hub repository names must be lowercase; github.
+        # repository_owner preserves the account's display case. The slug
+        # (linux/amd64 -> linux-amd64) is used both as part of the temporary
+        # per-platform tag below and as an artifact name, neither of which
+        # can contain "/".
+        id: vars
+        run: |
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "platform_slug=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        # DOCKERHUB_USERNAME/DOCKERHUB_TOKEN are a manual prerequisite: create
+        # a Docker Hub account/org and an Access Token (not your password),
+        # then add both as repository secrets under these exact names --
+        # see CONTRIBUTING.md. Nothing in this workflow can do that part for
+        # you.
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # push: false, load: true -- build into the local Docker daemon only,
+      # single platform (matrix.platform), so it lands in the daemon at all
+      # (multi-platform --load isn't supported). SBOM generation and the
+      # Trivy scan below both work against this local image by the same tag
+      # reference; it's only pushed, further down, once the scan has
+      # actually passed -- see this job's own top comment.
+      - name: Build image (not pushed yet)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.component.context }}
+          file: ${{ matrix.component.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: local/${{ matrix.component.name }}:${{ steps.vars.outputs.platform_slug }}
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: local/${{ matrix.component.name }}:${{ steps.vars.outputs.platform_slug }}
+          format: cyclonedx-json
+          output-file: ${{ matrix.component.name }}-${{ steps.vars.outputs.platform_slug }}-sbom.json
+
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: local/${{ matrix.component.name }}:${{ steps.vars.outputs.platform_slug }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          # Base-OS CVEs with no upstream fix yet can't be acted on and would
+          # otherwise block every release forever; only fail on findings
+          # that actually have a fix available, so this stays a real gate
+          # instead of noise to ignore.
+          ignore-unfixed: true
+
+      # Only reached once Trivy has actually passed. Tags and pushes the
+      # SAME local image built above (`docker push` of an already-daemon-
+      # local image reuses its existing layers -- this is not a rebuild) to
+      # both registries under a temporary, platform-specific tag; the
+      # "manifest" job below references these by digest, then this tag is
+      # never seen by anyone pulling the real, human-facing tag.
+      - name: Push per-platform image to both registries (only after a clean scan)
+        id: push
+        run: |
+          set -euo pipefail
+          LOCAL="local/${{ matrix.component.name }}:${{ steps.vars.outputs.platform_slug }}"
+          GHCR="ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}-${{ steps.vars.outputs.platform_slug }}"
+          DOCKERHUB="docker.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}-${{ steps.vars.outputs.platform_slug }}"
+
+          # Digest is parsed from `docker push`'s own final "<tag>: digest:
+          # sha256:... size: ..." line, NOT read back via `docker inspect
+          # --format='{{index .RepoDigests 0}}'` -- verified the hard way
+          # against a real (local, throwaway) registry that this local image
+          # is tagged for *two* registries at once, so its RepoDigests list
+          # has one entry per registry, and index 0 is whichever happened to
+          # be pushed/pulled first, not necessarily the one just pushed here
+          # -- confirmed picking up a stale, wrong digest from an unrelated
+          # earlier pull. Parsing push's own reported digest has no such
+          # ambiguity: it's always the digest of what that exact command
+          # just pushed.
+          push_digest() {
+            local out
+            out="$(docker push "$1" 2>&1)"
+            echo "$out" >&2
+            grep -oE 'digest: sha256:[0-9a-f]{64}' <<<"$out" | grep -oE 'sha256:[0-9a-f]{64}' | tail -1
+          }
+
+          docker tag "$LOCAL" "$GHCR"
+          ghcr_digest=$(push_digest "$GHCR")
+          docker tag "$LOCAL" "$DOCKERHUB"
+          dockerhub_digest=$(push_digest "$DOCKERHUB")
+
+          [ -n "$ghcr_digest" ] || { echo "failed to parse a digest from the GHCR push output" >&2; exit 1; }
+          [ -n "$dockerhub_digest" ] || { echo "failed to parse a digest from the Docker Hub push output" >&2; exit 1; }
+
+          echo "ghcr_digest=$ghcr_digest" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_digest=$dockerhub_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Record digests for the manifest job
+        # Matrix job outputs don't aggregate across combinations -- the
+        # "manifest" job below reads these back via download-artifact
+        # instead of `needs.*.outputs`. Filename includes platform_slug
+        # because the manifest job downloads every platform's artifact for a
+        # component into one shared directory (merge-multiple: true) -- two
+        # artifacts both containing a file named "digest.json" would
+        # silently overwrite each other there.
+        run: |
+          mkdir -p /tmp/digests
+          cat > "/tmp/digests/digest-${{ steps.vars.outputs.platform_slug }}.json" <<EOF
+          {
+            "component": "${{ matrix.component.name }}",
+            "platform": "${{ matrix.platform }}",
+            "ghcr_digest": "${{ steps.push.outputs.ghcr_digest }}",
+            "dockerhub_digest": "${{ steps.push.outputs.dockerhub_digest }}"
+          }
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.component.name }}-${{ steps.vars.outputs.platform_slug }}
+          path: /tmp/digests/digest-${{ steps.vars.outputs.platform_slug }}.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.component.name }}-${{ steps.vars.outputs.platform_slug }}-sbom
+          path: ${{ matrix.component.name }}-${{ steps.vars.outputs.platform_slug }}-sbom.json
+
+  # Stitches each component's linux/amd64 + linux/arm64 digests (already
+  # published under temporary tags by build-scan-push above) into one
+  # multi-arch manifest per registry, under the real vX.Y.Z/latest tags, then
+  # signs each manifest. No rebuild and no re-scan here -- imagetools create
+  # only assembles a manifest list referencing already-published digests.
+  manifest:
+    name: Publish multi-arch manifest
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    strategy:
+      matrix:
+        component: [sentinel5g-operator, sentinel5g-ai-engine]
+    steps:
       - name: Compute lowercase image owner
-        # OCI/GHCR repository names must be lowercase; github.repository_owner
-        # preserves the account's display case (FelipeBastosxj), which
-        # buildx rejects outright ("repository name must be lowercase") --
-        # only surfaced now, on this project's first-ever tag push.
         id: vars
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
@@ -41,78 +203,69 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # push: false, load: true -- build into the local Docker daemon only.
-      # Previously this pushed straight to GHCR (:vX.Y.Z and :latest, both
-      # public immediately) *before* the Trivy scan below ran -- a failing
-      # scan couldn't un-publish an already-public, unscanned image. SBOM
-      # generation and the Trivy scan below both work against this local
-      # image by the same tag reference (no pull needed, Syft/Trivy resolve
-      # it from the local daemon); the image is only pushed, further down,
-      # once the scan has actually passed.
-      - name: Build image (not pushed yet)
-        id: build
-        uses: docker/build-push-action@v6
+      - uses: actions/download-artifact@v4
         with:
-          context: ${{ matrix.component.context }}
-          file: ${{ matrix.component.dockerfile }}
-          push: false
-          load: true
-          tags: |
-            ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
-            ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:latest
+          pattern: digests-${{ matrix.component }}-*
+          path: /tmp/digests
+          merge-multiple: true
 
-      - name: Generate SBOM (Syft)
-        uses: anchore/sbom-action@v0
-        with:
-          image: ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
-          format: cyclonedx-json
-          output-file: ${{ matrix.component.name }}-sbom.json
-
-      - name: Scan image (Trivy)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}:${{ github.ref_name }}
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          # Base-OS CVEs with no upstream fix yet (e.g. a handful of
-          # util-linux/ncurses/perl findings in python:3.11-slim as of
-          # 2026-09) can't be acted on and would otherwise block every
-          # release forever; only fail on findings that actually have a fix
-          # available, so this stays a real gate instead of noise to ignore.
-          ignore-unfixed: true
-
-      # Only reached once Trivy has actually passed -- this is the step that
-      # makes the image public. Pushes the same, already-scanned local image
-      # (built once, above) rather than rebuilding, so the bytes that were
-      # scanned are exactly the bytes that get signed and published. Reads
-      # the digest back via `docker inspect` after pushing, rather than
-      # trusting docker/build-push-action's own digest output with
-      # push:false (whether that's populated for a load-only build isn't
-      # something this project has verified) -- this queries the real,
-      # just-pushed state instead of a build-time value.
-      - name: Push image (only after a clean scan)
-        id: push
+      - name: Assemble digests from both platform jobs
+        id: digests
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}"
-          docker push "$IMAGE:${{ github.ref_name }}"
-          docker push "$IMAGE:latest"
-          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:${{ github.ref_name }}" | cut -d'@' -f2)
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          import pathlib
+
+          ghcr, dockerhub = [], []
+          for f in pathlib.Path("/tmp/digests").glob("*.json"):
+              d = json.loads(f.read_text())
+              ghcr.append(d["ghcr_digest"])
+              dockerhub.append(d["dockerhub_digest"])
+
+          if len(ghcr) != 2 or len(dockerhub) != 2:
+              raise SystemExit(f"expected 2 platform digests per registry, got ghcr={ghcr} dockerhub={dockerhub}")
+
+          print(f"ghcr_digests={' '.join(ghcr)}")
+          print(f"dockerhub_digests={' '.join(dockerhub)}")
+          EOF
+
+      - name: Create and push multi-arch manifests
+        id: manifests
+        run: |
+          set -euo pipefail
+          GHCR_REPO="ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}"
+          DOCKERHUB_REPO="docker.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}"
+
+          docker buildx imagetools create \
+            -t "$GHCR_REPO:${{ github.ref_name }}" -t "$GHCR_REPO:latest" \
+            $(for d in ${{ steps.digests.outputs.ghcr_digests }}; do echo "$GHCR_REPO@$d"; done)
+
+          docker buildx imagetools create \
+            -t "$DOCKERHUB_REPO:${{ github.ref_name }}" -t "$DOCKERHUB_REPO:latest" \
+            $(for d in ${{ steps.digests.outputs.dockerhub_digests }}; do echo "$DOCKERHUB_REPO@$d"; done)
+
+          ghcr_manifest_digest=$(docker buildx imagetools inspect "$GHCR_REPO:${{ github.ref_name }}" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          dockerhub_manifest_digest=$(docker buildx imagetools inspect "$DOCKERHUB_REPO:${{ github.ref_name }}" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          echo "ghcr_manifest_digest=$ghcr_manifest_digest" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_manifest_digest=$dockerhub_manifest_digest" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign image (keyless)
+      - name: Sign both multi-arch manifests (keyless)
+        # Signs the manifest list itself, which covers the platform-specific
+        # sub-images it references -- no need to sign each platform digest
+        # separately.
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component.name }}@${{ steps.push.outputs.digest }}
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.component.name }}-sbom
-          path: ${{ matrix.component.name }}-sbom.json
+          cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.ghcr_manifest_digest }}"
+          cosign sign --yes "docker.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.dockerhub_manifest_digest }}"
