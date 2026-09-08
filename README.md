@@ -39,7 +39,7 @@
 ## 🚀 Quick Start
 
 Go from zero to watching a real automated mitigation fire, using only the
-already-published `ghcr.io/felipebastosxj/*:v0.2.1` images — no local Go/Python
+already-published `ghcr.io/felipebastosxj/*:v0.2.2` images — no local Go/Python
 build required. Verified end to end against a real k3s cluster; see
 [`docs/getting-started.md`](docs/getting-started.md) for the deeper walkthrough
 that runs every layer (real eBPF capture + the AI engine) instead of hand-
