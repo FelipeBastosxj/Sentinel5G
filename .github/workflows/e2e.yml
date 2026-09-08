@@ -1,0 +1,71 @@
+name: E2E (kind)
+
+# Runs the exact script a user runs (scripts/quickstart.sh) against a real
+# kind cluster on the runner, using an image built from this ref's own code
+# (not the last published release) -- separate from ci.yml (lint/unit tests,
+# fast and required on every PR) because this spins up real infra and is
+# both slower and, being infra, inherently more prone to occasional
+# flakiness than a pure unit-test job. The whole point of this workflow: the
+# worst bug found in this project so far (the operator hanging in
+# Phase: Monitoring when Istio's CRD isn't installed -- see
+# cmd/operator/main.go's buildMeshAdapter) was only found by running this
+# exact script by hand against a real cluster, not by any existing CI job.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: quickstart.sh against a real kind cluster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the operator image from this ref's code
+        run: docker build -t sentinel5g-operator:e2e .
+
+      - name: Run scripts/quickstart.sh
+        # SENTINEL5G_OPERATOR_IMAGE/SENTINEL5G_KIND_LOAD_IMAGES point the
+        # script at the image just built above instead of pulling the last
+        # published release, and have it `kind load docker-image` that image
+        # into the cluster it creates rather than pulling from a registry --
+        # see scripts/quickstart.sh's own top-of-file comments on both
+        # variables. Everything else about the run is identical to what a
+        # real user's `./scripts/quickstart.sh` does.
+        env:
+          SENTINEL5G_OPERATOR_IMAGE: sentinel5g-operator:e2e
+          SENTINEL5G_KIND_LOAD_IMAGES: sentinel5g-operator:e2e
+        run: ./scripts/quickstart.sh
+
+      - name: Diagnostics (only runs if a prior step failed)
+        if: failure()
+        run: |
+          export KUBECONFIG="$PWD/.kube-quickstart.yaml"
+          echo "::group::kubectl get events -A"
+          kubectl get events -A --sort-by=.lastTimestamp || true
+          echo "::endgroup::"
+          echo "::group::kubectl get pods -A -o wide"
+          kubectl get pods -A -o wide || true
+          echo "::endgroup::"
+          echo "::group::operator logs"
+          kubectl logs -n sentinel5g-system deploy/sentinel5g-operator --tail=500 || true
+          echo "::endgroup::"
+          mkdir -p /tmp/kind-logs
+          kind export logs /tmp/kind-logs --name sentinel5g-quickstart || true
+
+      - name: Upload kind logs (only runs if a prior step failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-logs
+          path: /tmp/kind-logs
+          if-no-files-found: ignore
+
+      - name: Delete the kind cluster
+        if: always()
+        run: kind delete cluster --name sentinel5g-quickstart || true

@@ -12,14 +12,15 @@ Kubernetes cluster (e.g. [kind](https://kind.sigs.k8s.io/)).
 - Python 3.11+
 - Docker (or another OCI runtime) and Docker Compose
 - A local Kubernetes cluster (`kind`, `minikube`, or similar) and `kubectl`
-- `clang`/`llvm` + `libbpf-dev` + `bpftool`, only if you want to compile
-  `bpf/packet_filter.c` (Linux-only; see `bpf/Makefile`). The build generates
-  `bpf/headers/vmlinux.h` from your own kernel's BTF via `bpftool btf dump`
-  (CO-RE — see that file's top comment), so `linux-libc-dev`/
-  `linux-headers-$(uname -r)` are no longer needed. If your distro's
-  `bpftool` package is unreliable (Ubuntu's `linux-tools-generic` often
-  isn't — see `.github/workflows/ci.yml`'s eBPF job), install a static
-  release from https://github.com/libbpf/bpftool/releases instead.
+- `clang`/`llvm` + `libbpf-dev`, only if you want to compile
+  `bpf/packet_filter.c` yourself (Linux-only; see `bpf/Makefile`) — the
+  operator's Dockerfile already does this for you as part of `docker build`,
+  so this is only needed for local, outside-a-container iteration on
+  `bpf/packet_filter.c` itself. No `bpftool`, kernel headers, or access to
+  your own kernel's BTF required: the build uses
+  `bpf/headers/vmlinux_min.h`, a small hand-maintained header, instead — see
+  its top comment for why. See `docs/troubleshooting.md#ebpf` for what
+  enabling eBPF enforcement in a deployed cluster needs.
 
 ## 1. Bootstrap the Go module
 
@@ -160,5 +161,10 @@ just want to see it work rather than run it against your own cluster/NATS.
   tidy` needs network access to a Go module proxy to populate it the first
   time.
 - `bpf/packet_filter.c` only compiles on Linux — see the Prerequisites note
-  above for what that needs (`clang`/`llvm`/`libbpf-dev`/`bpftool`; no
-  kernel-headers packages required since the CO-RE migration).
+  above for what that needs.
+
+## Something not working?
+
+Network egress, DNS-inside-kind, RBAC, ARM64 image availability, and eBPF
+kernel/capability requirements are all covered in
+[`docs/troubleshooting.md`](troubleshooting.md), not repeated here.
