@@ -31,6 +31,17 @@ def test_unknown_protocol_sets_unknown_flag():
     assert features[:5] == [0.0, 0.0, 0.0, 0.0, 1.0]
 
 
+def test_port_scan_protocol_deliberately_falls_into_unknown_bucket():
+    # PORT_SCAN (pkg/events.ProtocolPortScan) is deliberately not its own
+    # one-hot dimension — see the _PROTOCOLS comment in features.py for why
+    # (avoids growing FEATURE_VECTOR_SIZE and breaking the shipped ONNX
+    # model's input shape). This locks that decision in as a test, not just
+    # a comment.
+    features = extract_features(_event(protocol="PORT_SCAN"))
+    assert features[:5] == [0.0, 0.0, 0.0, 0.0, 1.0]
+    assert len(features) == FEATURE_VECTOR_SIZE
+
+
 def test_malformed_flag_is_reflected():
     features = extract_features(_event(malformed=True))
     assert features[7] == 1.0

@@ -20,17 +20,20 @@
 //
 // It also emits a `signaling_events` ring buffer record for every
 // GTP-U/SIP packet observed, for UDP packets too short to have a complete
-// header (flagged malformed), and — since this file's `scan_rate`/
-// `track_scan_rate()` addition — once per second for a source sending a
+// header (flagged malformed), once per window for a source sending a
 // sustained burst of UDP to ports outside 2152/5060 (see
 // SCAN_EMIT_THRESHOLD in headers/common.h; a single stray off-port packet
-// does not emit). This is what pkg/ingestion turns into
-// `events.NormalizedEvent` and publishes to NATS_EVENTS_SUBJECT, bridging
-// this layer to Layer 2/3 (the AI engine). Still deliberately not full
-// packet capture: every signaling-port packet is emitted, but off-port UDP
-// only once a burst crosses the threshold, matching NormalizedEvent's
-// "high-volume telemetry, not a packet capture" design (see
-// docs/event-model.md).
+// does not emit — this catches a flood against ONE port), and once per
+// window for a source touching MULTIPORT_SCAN_THRESHOLD *distinct*
+// off-signaling ports (see port_scan/track_port_scan() below — this catches
+// classic low-and-slow scanning, which the flood check above cannot, since
+// the two are deliberately separate detectors keyed differently). This is
+// what pkg/ingestion turns into `events.NormalizedEvent` and publishes to
+// NATS_EVENTS_SUBJECT, bridging this layer to Layer 2/3 (the AI engine).
+// Still deliberately not full packet capture: every signaling-port packet
+// is emitted, but off-port UDP only once a burst/scan crosses its
+// respective threshold, matching NormalizedEvent's "high-volume telemetry,
+// not a packet capture" design (see docs/event-model.md).
 //
 // Builds against headers/vmlinux_min.h, a small hand-maintained stand-in for
 // a `bpftool btf dump`-generated vmlinux.h (see that file's own top comment
@@ -115,6 +118,32 @@ struct {
 	__type(key, struct scan_key);
 	__type(value, struct signal_rate_entry);
 } scan_rate SEC(".maps");
+
+// port_scan_entry tracks a bounded, deduplicated set of the distinct
+// destination ports a source has touched within MULTIPORT_SCAN_WINDOW_NS.
+// Deliberately separate from scan_key/scan_rate above (which is keyed by
+// (source, port) and only catches a flood against ONE port, see that
+// struct's comment) — this is a distinct-port-COUNT structure per source,
+// catching the shape scan_rate documents it cannot: low-and-slow probing
+// across many ports. `ports` is sized exactly MULTIPORT_SCAN_THRESHOLD: once
+// full, the threshold has already been crossed by definition, so there's
+// never a need for more slots or an eviction policy inside the array itself
+// (LRU at the map level already bounds total *sources* tracked, same as
+// signal_rate/scan_rate).
+struct port_scan_entry {
+	__u64 window_start_ns;
+	__u16 distinct_count;
+	__u8 emitted; // 1 once this window's event has fired; skip rescanning.
+	__u8 _pad;
+	__u16 ports[MULTIPORT_SCAN_THRESHOLD];
+} __attribute__((packed, aligned(8)));
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_RATE_ENTRIES);
+	__type(key, __u32); // saddr, same key shape as signal_rate.
+	__type(value, struct port_scan_entry);
+} port_scan SEC(".maps");
 
 // signaling_event is a coarse, per-packet observation of GTP-U/SIP traffic,
 // exported for Layer 2 normalization. Field layout is fixed and padded
@@ -212,6 +241,47 @@ static __always_inline __u32 track_scan_rate(__u32 saddr, __u16 dest_port)
 	return prior_count;
 }
 
+// track_port_scan returns 1 exactly once — the packet whose port is the
+// MULTIPORT_SCAN_THRESHOLD-th *new distinct* port this source has touched
+// within the current window. Complements (does not replace)
+// track_scan_rate(): the two catch different attack shapes (see
+// port_scan_entry's comment above).
+static __always_inline int track_port_scan(__u32 saddr, __u16 dest_port)
+{
+	struct port_scan_entry *entry = bpf_map_lookup_elem(&port_scan, &saddr);
+	__u64 now = bpf_ktime_get_ns();
+
+	if (!entry || now - entry->window_start_ns > MULTIPORT_SCAN_WINDOW_NS) {
+		struct port_scan_entry fresh = {.window_start_ns = now, .distinct_count = 1};
+		fresh.ports[0] = dest_port;
+		bpf_map_update_elem(&port_scan, &saddr, &fresh, BPF_ANY);
+		return 0;
+	}
+
+	if (entry->emitted)
+		return 0; // Already reported this window; avoid rescanning every packet.
+
+	#pragma unroll
+	for (int i = 0; i < MULTIPORT_SCAN_THRESHOLD; i++) {
+		if (i >= entry->distinct_count)
+			break;
+		if (entry->ports[i] == dest_port)
+			return 0; // Already-seen port: not a new distinct touch.
+	}
+
+	if (entry->distinct_count >= MULTIPORT_SCAN_THRESHOLD)
+		return 0; // Defensive; shouldn't happen once emitted is set.
+
+	entry->ports[entry->distinct_count] = dest_port;
+	entry->distinct_count += 1;
+
+	if (entry->distinct_count == MULTIPORT_SCAN_THRESHOLD) {
+		entry->emitted = 1;
+		return 1; // Edge trigger.
+	}
+	return 0;
+}
+
 SEC("xdp")
 int xdp_packet_filter(struct xdp_md *ctx)
 {
@@ -303,6 +373,16 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		if (prior_count + 1 == SCAN_EMIT_THRESHOLD)
 			emit_signaling_event(saddr, iph->daddr, dest_port, payload_size,
 					      SIGNAL_PROTO_UNKNOWN, 0, vlan_id);
+
+		// Distinct-port-count detector, separate from the flood check above
+		// — see track_port_scan()'s comment for what it catches that
+		// track_scan_rate() can't. payload_size is repurposed here to carry
+		// the distinct-port count (MULTIPORT_SCAN_THRESHOLD, by definition
+		// of the edge trigger), not a byte size — see
+		// pkg/ebpf/blocklist.go's SignalingEvent.PayloadSize doc.
+		if (track_port_scan(saddr, dest_port))
+			emit_signaling_event(saddr, iph->daddr, dest_port, MULTIPORT_SCAN_THRESHOLD,
+					      SIGNAL_PROTO_PORT_SCAN, 0, vlan_id);
 	}
 
 	return XDP_PASS;

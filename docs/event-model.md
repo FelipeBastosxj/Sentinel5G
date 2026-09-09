@@ -35,8 +35,8 @@ set of fields.
 | `sourceIp`        | string      | Source IPv4 address. |
 | `destIp`          | string      | Destination IPv4 address. |
 | `destPort`        | uint16      | Destination port. |
-| `protocol`        | enum        | One of `GTP-U`, `SIP`, `SMPP`, `HTTP2`, `UNKNOWN`. |
-| `payloadSize`     | uint32      | Signaling payload size in bytes. |
+| `protocol`        | enum        | One of `GTP-U`, `SIP`, `SMPP`, `HTTP2`, `PORT_SCAN`, `UNKNOWN`. `PORT_SCAN` is deliberately folded into the AI engine's `proto_unknown` one-hot feature (see `cmd/ai-engine/sentinel_ai/features.py`) rather than given its own feature dimension, to avoid changing `FEATURE_VECTOR_SIZE` and breaking the shipped ONNX model's input shape — it's still distinguishable from a genuinely unknown protocol via the other features (`payload_size_norm` in particular; see `payloadSize`'s note above). |
+| `payloadSize`     | uint32      | Signaling payload size in bytes, except for `protocol == "PORT_SCAN"`, where this instead carries the distinct-destination-port count that triggered the scan detection (see `bpf/packet_filter.c`'s `port_scan`/`track_port_scan()`). |
 | `ratePerSecond`   | float64     | eBPF-side rolling rate for this `(sourceIp, protocol)` tuple. |
 | `malformed`       | bool        | True when the eBPF parser could not validate protocol framing. |
 | `vlanId`          | uint16      | 802.1Q VLAN ID the packet was tagged with, or `0` for an untagged frame. Not yet a model feature (see `cmd/ai-engine/sentinel_ai/features.py`) — ingested but unused by scoring for now. |

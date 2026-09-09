@@ -28,9 +28,10 @@ type BlocklistUpdater interface {
 type SignalProtocol uint8
 
 const (
-	SignalProtoUnknown SignalProtocol = 0
-	SignalProtoGTPU    SignalProtocol = 1
-	SignalProtoSIP     SignalProtocol = 2
+	SignalProtoUnknown  SignalProtocol = 0
+	SignalProtoGTPU     SignalProtocol = 1
+	SignalProtoSIP      SignalProtocol = 2
+	SignalProtoPortScan SignalProtocol = 3
 )
 
 // gtpuPort/sipPort mirror bpf/headers/common.h's GTPU_PORT/SIP_PORT —
@@ -49,10 +50,15 @@ type SignalingEvent struct {
 	// ObservedAt is wall-clock time, already converted from the kernel's
 	// monotonic bpf_ktime_get_ns() reading (see loader_linux.go) — never a
 	// raw reading of it.
-	ObservedAt  time.Time
-	SourceIP    net.IP
-	DestIP      net.IP
-	DestPort    uint16
+	ObservedAt time.Time
+	SourceIP   net.IP
+	DestIP     net.IP
+	DestPort   uint16
+	// PayloadSize is the UDP payload size in bytes for every Protocol except
+	// SignalProtoPortScan, where bpf/packet_filter.c repurposes this field
+	// to carry the number of distinct destination ports that triggered the
+	// scan detection (always MULTIPORT_SCAN_THRESHOLD, by definition of the
+	// edge-triggered emit) instead of a byte size.
 	PayloadSize uint16
 	Protocol    SignalProtocol
 	Malformed   bool

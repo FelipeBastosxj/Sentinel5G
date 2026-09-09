@@ -63,5 +63,23 @@
 #define SIGNAL_PROTO_UNKNOWN 0
 #define SIGNAL_PROTO_GTPU 1
 #define SIGNAL_PROTO_SIP 2
+#define SIGNAL_PROTO_PORT_SCAN 3
+
+/* Distinct destination ports a source must touch within
+ * MULTIPORT_SCAN_WINDOW_NS before it's flagged as a port scan (see
+ * port_scan/track_port_scan() in packet_filter.c) — a separate detector
+ * from SCAN_EMIT_THRESHOLD/scan_rate above, which catches a flood against
+ * ONE port and deliberately can't catch classic low-and-slow scanning
+ * (many distinct ports, one or two packets each). Not yet empirically
+ * tuned against real off-protocol traffic — same caveat SCAN_EMIT_THRESHOLD
+ * carries. Also doubles as port_scan_entry's fixed `ports[]` array capacity
+ * (see packet_filter.c), so it's bounded map-value memory, not a runtime
+ * limit that could grow unbounded. */
+#define MULTIPORT_SCAN_THRESHOLD 15
+
+/* Window for multi-port scan tracking. Deliberately much longer than
+ * SIGNALING_RATE_WINDOW_NS's 1 second: "low-and-slow" scanning is exactly
+ * the pattern a 1-second window would miss. */
+#define MULTIPORT_SCAN_WINDOW_NS 30000000000ULL /* 30 seconds */
 
 #endif /* SENTINEL5G_BPF_COMMON_H */

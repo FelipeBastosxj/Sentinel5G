@@ -270,6 +270,26 @@ type signalRateEntry struct {
 	_             uint32
 }
 
+// portScanEntry is the Go mirror of bpf/packet_filter.c's
+// `struct port_scan_entry` — nothing in pkg/ebpf currently reads the
+// port_scan map directly (its results surface through the existing
+// signaling_events ringbuf as a SignalProtoPortScan record instead), so
+// this type isn't wired into Loader/Attach; it exists purely so
+// TestPortScanEntryMatchesKernelValueSize can guard, ahead of any real
+// reader ever being written, that this file's understanding of the C
+// struct's packed+aligned(8) layout (window_start_ns + distinct_count +
+// emitted + 1 byte pad + 15 ports, rounded up to a multiple of 8) stays
+// correct — the same class of size mismatch that silently broke
+// signalRateEntry once.
+type portScanEntry struct {
+	WindowStartNs uint64
+	DistinctCount uint16
+	Emitted       uint8
+	_             uint8
+	Ports         [15]uint16 // MULTIPORT_SCAN_THRESHOLD, bpf/headers/common.h.
+	_             [6]byte    // Trailing padding to the real 48-byte kernel size.
+}
+
 // scanRateKey is the byte-exact Go mirror of bpf/packet_filter.c's
 // `struct scan_key` — saddr (4 bytes) + dest_port (2 bytes, host byte order)
 // + 2 bytes of explicit padding, `packed, aligned(4)`. Field order and sizes

@@ -13,11 +13,12 @@ import "time"
 type Protocol string
 
 const (
-	ProtocolGTPU    Protocol = "GTP-U"
-	ProtocolSIP     Protocol = "SIP"
-	ProtocolSMPP    Protocol = "SMPP"
-	ProtocolHTTP2   Protocol = "HTTP2"
-	ProtocolUnknown Protocol = "UNKNOWN"
+	ProtocolGTPU     Protocol = "GTP-U"
+	ProtocolSIP      Protocol = "SIP"
+	ProtocolSMPP     Protocol = "SMPP"
+	ProtocolHTTP2    Protocol = "HTTP2"
+	ProtocolPortScan Protocol = "PORT_SCAN"
+	ProtocolUnknown  Protocol = "UNKNOWN"
 )
 
 // NormalizedEvent is the common representation of a single capture-layer
@@ -44,7 +45,11 @@ type NormalizedEvent struct {
 
 	Protocol Protocol `json:"protocol"`
 
-	// PayloadSize is the size in bytes of the signaling payload observed.
+	// PayloadSize is the size in bytes of the signaling payload observed,
+	// except for Protocol == ProtocolPortScan, where the eBPF layer
+	// repurposes this field to carry the distinct-destination-port count
+	// that triggered the scan detection instead of a byte size (see
+	// bpf/packet_filter.c's port_scan/track_port_scan()).
 	PayloadSize uint32 `json:"payloadSize"`
 
 	// RatePerSecond is the eBPF-side rolling rate of events with the same
