@@ -8,6 +8,25 @@ image:
 
 replicaCount: 1
 
+# Run the operator as a DaemonSet instead of a Deployment, for real
+# multi-node eBPF coverage: guarantees exactly one Pod per matching node
+# (see nodeSelector/tolerations below to scope which ones), rather than
+# however many *distinct* nodes replicaCount Pods happen to land on with
+# the podAntiAffinity workaround docs/integrations.md otherwise describes.
+# replicaCount is ignored when this is true (DaemonSets don't have one).
+#
+# Implies hostNetwork: true and dnsPolicy: ClusterFirstWithHostNet (see
+# templates/deployment.yaml) -- REQUIRED for ebpf.interface to actually
+# attach to the node's real network interface instead of this Pod's own
+# veth, which would only ever see this Pod's own traffic, never the
+# telecom workloads it's meant to protect. hostNetwork is a real security
+# trade-off (the Pod shares the host's network namespace instead of
+# getting its own -- it can see and bind any port on the host), which is
+# exactly why this isn't folded into ebpf.enabled itself and needs its own
+# explicit opt-in.
+daemonset:
+  enabled: false
+
 serviceAccount:
   create: true
   name: sentinel5g-operator

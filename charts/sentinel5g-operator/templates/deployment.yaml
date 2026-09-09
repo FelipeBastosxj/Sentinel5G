@@ -1,12 +1,17 @@
+# Renders as a DaemonSet instead of a Deployment when daemonset.enabled is
+# true -- see that value's comment for why (real multi-node eBPF coverage)
+# and its hostNetwork/dnsPolicy implications below.
 apiVersion: apps/v1
-kind: Deployment
+kind: {{ if .Values.daemonset.enabled }}DaemonSet{{ else }}Deployment{{ end }}
 metadata:
   name: {{ include "sentinel5g-operator.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "sentinel5g-operator.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.daemonset.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "sentinel5g-operator.name" . }}
@@ -22,6 +27,19 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "sentinel5g-operator.serviceAccountName" . }}
+      {{- if .Values.daemonset.enabled }}
+      # Required for --bpf-interface to actually attach to the NODE's real
+      # network interface instead of this Pod's own veth -- without it, the
+      # XDP program would only ever see traffic to/from this Pod itself,
+      # never the telecom workloads it's meant to protect. See
+      # daemonset.enabled's comment in values.yaml and docs/integrations.md.
+      hostNetwork: true
+      # Required whenever hostNetwork is true and cluster-internal DNS names
+      # (e.g. nats.url's default "sentinel5g-nats") still need to resolve --
+      # otherwise the Pod uses the *node's* DNS resolver instead of the
+      # cluster's, which won't know about any in-cluster Service name.
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       containers:
         - name: manager
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

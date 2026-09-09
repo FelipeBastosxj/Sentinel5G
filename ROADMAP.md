@@ -94,10 +94,15 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       (`*_v6`) and a second ring-buffer reader in `pkg/ebpf.Loader` — not a
       unified 128-bit-capable scheme — so IPv4 support is untouched. IPv6
       extension headers between the fixed header and UDP are not walked.
-- [ ] Real multi-node eBPF coverage: the operator is a `Deployment`, not a
-      `DaemonSet`, so `ebpf.enabled: true` only protects whichever node(s)
-      it lands on. `docs/integrations.md` documents a `podAntiAffinity`
-      workaround; a real `DaemonSet` option is still open.
+- [x] Real multi-node eBPF coverage: `daemonset.enabled` in the Helm chart
+      renders the operator as a `DaemonSet` (guaranteeing one Pod per node)
+      instead of a `Deployment`, with the `hostNetwork: true` +
+      `dnsPolicy: ClusterFirstWithHostNet` this needs for `--bpf-interface`
+      to actually see the node's real traffic rather than the Pod's own
+      veth. A real, explicit security trade-off — see
+      `docs/integrations.md` — so it's its own opt-in, not folded into
+      `ebpf.enabled`. The `podAntiAffinity` workaround remains documented
+      for anyone who can't accept `hostNetwork`.
 - [x] `NetworkPolicy` for the NATS bus (optional/opt-in via
       `networkPolicy.nats.enabled` in the Helm chart).
 - [x] `PodDisruptionBudget` and a `Service`/`ServiceMonitor` for the
