@@ -62,6 +62,27 @@ func TestRawSignalingEventMatchesKernelSize(t *testing.T) {
 	}
 }
 
+// Regression guard, same rationale as TestRawSignalingEventMatchesKernelSize:
+// rawSignalingEventV6 must stay byte-exact with bpf/packet_filter.c's
+// struct signaling_event_v6.
+func TestRawSignalingEventV6MatchesKernelSize(t *testing.T) {
+	const kernelEventSize = 48 // bpf/packet_filter.c's struct signaling_event_v6, packed+aligned(8).
+	if got := binary.Size(rawSignalingEventV6{}); got != kernelEventSize {
+		t.Fatalf("binary.Size(rawSignalingEventV6{}) = %d, want %d (must match bpf/packet_filter.c's "+
+			"struct signaling_event_v6 exactly)", got, kernelEventSize)
+	}
+}
+
+// Regression guard, same rationale as TestScanRateKeyMatchesKernelKeySize:
+// confirmed against a real `bpftool map list` of scan_rate_v6 (key 24B).
+func TestScanRateKeyV6MatchesKernelKeySize(t *testing.T) {
+	const kernelKeySize = 24 // bpf/packet_filter.c's struct scan_key_v6, confirmed via `bpftool map list` (key 24B)
+	if got := binary.Size(scanRateKeyV6{}); got != kernelKeySize {
+		t.Fatalf("binary.Size(scanRateKeyV6{}) = %d, want %d (must match bpf/packet_filter.c's "+
+			"struct scan_key_v6 exactly)", got, kernelKeySize)
+	}
+}
+
 // Regression guard for ClassifyAttachError's fs.ErrNotExist branch (see
 // errors.go): asserts against a real Attach() failure, not a synthetic one,
 // since what actually matters is whether cilium/ebpf's real error chain for

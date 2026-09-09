@@ -87,7 +87,10 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       is transparently unwrapped before inspection, with the VLAN ID
       carried through to `signaling_events`. QinQ (double-tagged) frames
       remain out of scope.
-- [ ] IPv6 support — `pkg/ebpf` and the XDP program are IPv4-only.
+- [x] IPv6 support. A parallel set of maps/ringbuf in `bpf/packet_filter.c`
+      (`*_v6`) and a second ring-buffer reader in `pkg/ebpf.Loader` — not a
+      unified 128-bit-capable scheme — so IPv4 support is untouched. IPv6
+      extension headers between the fixed header and UDP are not walked.
 - [ ] Real multi-node eBPF coverage: the operator is a `Deployment`, not a
       `DaemonSet`, so `ebpf.enabled: true` only protects whichever node(s)
       it lands on. `docs/integrations.md` documents a `podAntiAffinity`

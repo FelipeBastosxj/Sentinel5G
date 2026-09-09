@@ -89,6 +89,29 @@ struct vlan_hdr {
 	__be16 h_vlan_encapsulated_proto;
 };
 
+/* Fixed IPv6 header (RFC 8200), 40 bytes, no options in the base header
+ * (extension headers are separate, chained via nexthdr) -- layout is
+ * protocol-fixed, not kernel-build-dependent, same reasoning as iphdr
+ * above. saddr/daddr are plain 16-byte arrays here rather than the
+ * kernel's `struct in6_addr` union -- packet_filter.c only ever needs the
+ * raw bytes, never the union's other views.
+ *
+ * Bitfield order (priority before version) is the little-endian layout
+ * used by every real Sentinel5G target (x86_64, arm64) -- same caveat
+ * iphdr's comment above carries; the kernel's own <linux/ipv6.h> flips
+ * this under __BIG_ENDIAN_BITFIELD, which no supported target here uses.
+ */
+struct ipv6hdr {
+	__u8 priority : 4;
+	__u8 version : 4;
+	__u8 flow_lbl[3];
+	__be16 payload_len;
+	__u8 nexthdr;
+	__u8 hop_limit;
+	__u8 saddr[16];
+	__u8 daddr[16];
+};
+
 struct xdp_md {
 	__u32 data;
 	__u32 data_end;

@@ -9,7 +9,14 @@
 // detection, and drops packets whose source IP has been pushed into
 // `blocklist` — the only way in or out of that map is pkg/ebpf.Loader,
 // driven by pkg/controller.ThreatScoreWatcher in response to an AI-engine
-// threat score.
+// threat score. IPv6 traffic is inspected the same way through a parallel
+// set of maps/struct/ringbuf (the `*_v6` declarations below) rather than a
+// unified 128-bit-capable scheme, so none of the IPv4 behavior above is
+// touched by IPv6 support existing — see struct signaling_event_v6's
+// comment for why that extends to a separate ring buffer too. IPv6
+// extension headers between the fixed header and UDP are not walked; a
+// packet with one present falls through unobserved, a known, deliberate
+// gap (see ROADMAP.md).
 //
 // A single 802.1Q VLAN tag is transparently unwrapped before the EtherType
 // dispatch below: a tagged frame's real EtherType/IPv4 header is parsed the
@@ -145,6 +152,58 @@ struct {
 	__type(value, struct port_scan_entry);
 } port_scan SEC(".maps");
 
+// in6_key is the raw 16-byte IPv6 address key shared by the *_v6 maps
+// below — always network byte order, straight from struct ipv6hdr.saddr,
+// the same "opaque bytes, not an integer" treatment blocklist's comment
+// (and pkg/ebpf/blocklist.go's ipv4Key) documents for IPv4.
+struct in6_key {
+	__u8 addr[16];
+} __attribute__((packed, aligned(8)));
+
+// blocklist_v6 is blocklist's IPv6 counterpart. A separate map (not a
+// unified 128-bit-capable key scheme on the existing blocklist) so the
+// existing IPv4 map/keys/callers are untouched by IPv6 support existing —
+// see this file's top comment.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_BLOCKLIST_ENTRIES);
+	__type(key, struct in6_key);
+	__type(value, __u8);
+} blocklist_v6 SEC(".maps");
+
+// signal_rate_v6 is signal_rate's IPv6 counterpart; reuses
+// signal_rate_entry as-is (no IPv4-specific fields in that struct).
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_RATE_ENTRIES);
+	__type(key, struct in6_key);
+	__type(value, struct signal_rate_entry);
+} signal_rate_v6 SEC(".maps");
+
+// scan_key_v6 mirrors scan_key at 128 bits — same (source, port) keying
+// rationale, see scan_key's comment above.
+struct scan_key_v6 {
+	__u8 saddr[16];
+	__u16 dest_port; // host byte order, matches emit_signaling_event_v6's arg.
+	__u16 _pad;
+} __attribute__((packed, aligned(8)));
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_RATE_ENTRIES);
+	__type(key, struct scan_key_v6);
+	__type(value, struct signal_rate_entry);
+} scan_rate_v6 SEC(".maps");
+
+// port_scan_v6 is port_scan's IPv6 counterpart; reuses port_scan_entry
+// as-is, keyed by in6_key instead of a raw __u32 saddr.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_RATE_ENTRIES);
+	__type(key, struct in6_key);
+	__type(value, struct port_scan_entry);
+} port_scan_v6 SEC(".maps");
+
 // signaling_event is a coarse, per-packet observation of GTP-U/SIP traffic,
 // exported for Layer 2 normalization. Field layout is fixed and padded
 // explicitly (no reliance on compiler default padding) so pkg/ebpf can
@@ -180,6 +239,48 @@ static __always_inline void emit_signaling_event(__u32 saddr, __u32 daddr, __u16
 	evt->timestamp_ns = bpf_ktime_get_ns();
 	evt->saddr = saddr;
 	evt->daddr = daddr;
+	evt->dest_port = dest_port;
+	evt->payload_size = payload_size;
+	evt->protocol = protocol;
+	evt->malformed = malformed;
+	evt->vlan_id = vlan_id;
+	bpf_ringbuf_submit(evt, 0);
+}
+
+// signaling_event_v6 is signaling_event's IPv6 counterpart — a separate
+// wire struct (not a variant of signaling_event), 48 bytes fixed by 2×
+// 16-byte addresses replacing the 2× 4-byte ones. Kept on its own ringbuf
+// below rather than sharing signaling_events behind a discriminator tag,
+// so every existing IPv4 decode path in pkg/ebpf stays byte-for-byte
+// unchanged — see pkg/ebpf/loader_linux.go's rawSignalingEventV6 for the Go
+// mirror.
+struct signaling_event_v6 {
+	__u64 timestamp_ns;
+	__u8 saddr[16];
+	__u8 daddr[16];
+	__u16 dest_port;
+	__u16 payload_size;
+	__u8 protocol;
+	__u8 malformed;
+	__u16 vlan_id;
+} __attribute__((packed, aligned(8)));
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, SIGNALING_EVENTS_RINGBUF_BYTES);
+} signaling_events_v6 SEC(".maps");
+
+static __always_inline void emit_signaling_event_v6(const __u8 *saddr, const __u8 *daddr,
+						      __u16 dest_port, __u16 payload_size,
+						      __u8 protocol, __u8 malformed, __u16 vlan_id)
+{
+	struct signaling_event_v6 *evt = bpf_ringbuf_reserve(&signaling_events_v6, sizeof(*evt), 0);
+	if (!evt)
+		return; // Ring buffer full: drop the observation, never the packet.
+
+	evt->timestamp_ns = bpf_ktime_get_ns();
+	__builtin_memcpy(evt->saddr, saddr, 16);
+	__builtin_memcpy(evt->daddr, daddr, 16);
 	evt->dest_port = dest_port;
 	evt->payload_size = payload_size;
 	evt->protocol = protocol;
@@ -282,6 +383,91 @@ static __always_inline int track_port_scan(__u32 saddr, __u16 dest_port)
 	return 0;
 }
 
+// track_signal_rate_v6/track_scan_rate_v6/track_port_scan_v6 mirror
+// track_signal_rate/track_scan_rate/track_port_scan above at 128 bits.
+// Kept as near-duplicates rather than a shared generic-key helper —
+// obscuring the verifier-relevant pointer arithmetic for marginal LOC
+// savings isn't a good trade in a program the verifier has to prove safe.
+static __always_inline void track_signal_rate_v6(const struct in6_key *saddr6)
+{
+	struct signal_rate_entry *entry = bpf_map_lookup_elem(&signal_rate_v6, saddr6);
+	__u64 now = bpf_ktime_get_ns();
+
+	if (!entry) {
+		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
+		bpf_map_update_elem(&signal_rate_v6, saddr6, &fresh, BPF_ANY);
+		return;
+	}
+
+	if (now - entry->window_start_ns > SIGNALING_RATE_WINDOW_NS) {
+		entry->window_start_ns = now;
+		entry->count = 1;
+	} else {
+		entry->count += 1;
+	}
+}
+
+static __always_inline __u32 track_scan_rate_v6(const struct in6_key *saddr6, __u16 dest_port)
+{
+	struct scan_key_v6 key = {.dest_port = dest_port};
+	__builtin_memcpy(key.saddr, saddr6->addr, 16);
+
+	struct signal_rate_entry *entry = bpf_map_lookup_elem(&scan_rate_v6, &key);
+	__u64 now = bpf_ktime_get_ns();
+
+	if (!entry) {
+		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
+		bpf_map_update_elem(&scan_rate_v6, &key, &fresh, BPF_ANY);
+		return 0;
+	}
+
+	__u32 prior_count = entry->count;
+	if (now - entry->window_start_ns > SIGNALING_RATE_WINDOW_NS) {
+		prior_count = 0;
+		entry->window_start_ns = now;
+		entry->count = 1;
+	} else {
+		entry->count += 1;
+	}
+	return prior_count;
+}
+
+static __always_inline int track_port_scan_v6(const struct in6_key *saddr6, __u16 dest_port)
+{
+	struct port_scan_entry *entry = bpf_map_lookup_elem(&port_scan_v6, saddr6);
+	__u64 now = bpf_ktime_get_ns();
+
+	if (!entry || now - entry->window_start_ns > MULTIPORT_SCAN_WINDOW_NS) {
+		struct port_scan_entry fresh = {.window_start_ns = now, .distinct_count = 1};
+		fresh.ports[0] = dest_port;
+		bpf_map_update_elem(&port_scan_v6, saddr6, &fresh, BPF_ANY);
+		return 0;
+	}
+
+	if (entry->emitted)
+		return 0;
+
+	#pragma unroll
+	for (int i = 0; i < MULTIPORT_SCAN_THRESHOLD; i++) {
+		if (i >= entry->distinct_count)
+			break;
+		if (entry->ports[i] == dest_port)
+			return 0;
+	}
+
+	if (entry->distinct_count >= MULTIPORT_SCAN_THRESHOLD)
+		return 0;
+
+	entry->ports[entry->distinct_count] = dest_port;
+	entry->distinct_count += 1;
+
+	if (entry->distinct_count == MULTIPORT_SCAN_THRESHOLD) {
+		entry->emitted = 1;
+		return 1;
+	}
+	return 0;
+}
+
 SEC("xdp")
 int xdp_packet_filter(struct xdp_md *ctx)
 {
@@ -307,6 +493,55 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		vlan_id = bpf_ntohs(vlan->h_vlan_TCI) & VLAN_VID_MASK;
 		h_proto = vlan->h_vlan_encapsulated_proto;
 		l3 = (void *)(vlan + 1);
+	}
+
+	if (h_proto == bpf_htons(ETH_P_IPV6)) {
+		struct ipv6hdr *ip6h = l3;
+		if ((void *)(ip6h + 1) > data_end)
+			return XDP_PASS;
+
+		struct in6_key saddr6 = {};
+		__builtin_memcpy(saddr6.addr, ip6h->saddr, 16);
+
+		__u8 *blocked6 = bpf_map_lookup_elem(&blocklist_v6, &saddr6);
+		if (blocked6 && *blocked6)
+			return XDP_DROP;
+
+		// nexthdr must be UDP directly -- IPv6 extension headers between
+		// the fixed header and UDP are not walked in this first pass, see
+		// this file's top comment.
+		if (ip6h->nexthdr != IPPROTO_UDP)
+			return XDP_PASS;
+
+		struct udphdr *udph6 = (void *)(ip6h + 1);
+		if ((void *)(udph6 + 1) > data_end) {
+			emit_signaling_event_v6(saddr6.addr, ip6h->daddr, 0, 0,
+						 SIGNAL_PROTO_UNKNOWN, 1, vlan_id);
+			return XDP_PASS;
+		}
+
+		__u16 dest_port6 = bpf_ntohs(udph6->dest);
+		__u16 payload_size6 = (__u16)((void *)data_end - (void *)(udph6 + 1));
+
+		if (is_signaling_port(dest_port6)) {
+			track_signal_rate_v6(&saddr6);
+
+			__u8 protocol6 = (dest_port6 == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
+			emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
+						 protocol6, 0, vlan_id);
+		} else {
+			__u32 prior6 = track_scan_rate_v6(&saddr6, dest_port6);
+			if (prior6 + 1 == SCAN_EMIT_THRESHOLD)
+				emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
+							 SIGNAL_PROTO_UNKNOWN, 0, vlan_id);
+
+			if (track_port_scan_v6(&saddr6, dest_port6))
+				emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6,
+							 MULTIPORT_SCAN_THRESHOLD, SIGNAL_PROTO_PORT_SCAN,
+							 0, vlan_id);
+		}
+
+		return XDP_PASS;
 	}
 
 	if (h_proto != bpf_htons(ETH_P_IP))

@@ -9,6 +9,9 @@
  * that could vary by kernel build anyway. */
 #define ETH_P_IP 0x0800
 
+/* IPv6 EtherType. */
+#define ETH_P_IPV6 0x86DD
+
 /* 802.1Q VLAN tag TPID. A tagged frame's outer EtherType is this value, with
  * the real inner EtherType 4 bytes later (see struct vlan_hdr in
  * vmlinux_min.h). Single-tag only: 802.1ad/QinQ double-tagging (outer TPID

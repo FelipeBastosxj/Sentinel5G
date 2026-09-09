@@ -56,6 +56,17 @@ and fall through unparsed, same as any other unhandled EtherType. It maintains a
 by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
 at the kernel/NIC level.
 
+IPv6 traffic is inspected through a parallel set of maps (`blocklist_v6`,
+`signal_rate_v6`, `scan_rate_v6`, `port_scan_v6`) and a separate ring buffer
+(`signaling_events_v6`) rather than a unified 128-bit-capable scheme on the
+IPv4 ones — this keeps every IPv4 map/key/wire-struct byte-for-byte
+unchanged by IPv6 support existing, at the cost of near-duplicate
+tracking/emit functions in `bpf/packet_filter.c` and a second ring-buffer
+reader goroutine in `pkg/ebpf.Loader`. IPv6 extension headers between the
+fixed header and UDP are not walked; a packet with one present falls
+through unobserved (a known, deliberate gap, same conservative posture the
+IPv4 fragment-offset check already takes).
+
 It also tracks UDP traffic on ports *other* than 2152/5060, per
 (source IP, destination port), and escalates a source into a
 `signaling_events` observation once a sustained burst to one such port
