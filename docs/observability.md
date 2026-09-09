@@ -13,6 +13,18 @@ including out of the box:
 Health/readiness endpoints are served on `HEALTH_PROBE_BIND_ADDRESS`
 (`:8081` by default): `/healthz` and `/readyz`.
 
+The Helm chart exposes both ports through an always-on `Service`
+(`<release>-sentinel5g-operator`, ports named `metrics`/`health`) — reach
+`/metrics` at `http://<service>:8080/metrics` from inside the cluster
+regardless of how you scrape it. For clusters running
+[Prometheus Operator](https://prometheus-operator.dev/), set
+`serviceMonitor.enabled: true` to get a matching `ServiceMonitor` instead of
+wiring a `scrape_config` by hand (needs the `monitoring.coreos.com/v1`
+`ServiceMonitor` CRD already installed). `podDisruptionBudget.enabled: true`
+bounds how many replicas a node drain/cluster upgrade can evict at once —
+see `values.yaml`'s comment for why it defaults to `maxUnavailable: 1`
+rather than `minAvailable`.
+
 ## AI engine metrics
 
 `cmd/ai-engine`'s FastAPI app exposes `/healthz`. Request-level metrics

@@ -1,0 +1,22 @@
+# Always rendered (unlike the opt-in extras below it in values.yaml) --
+# gives the operator's metrics/health ports a stable in-cluster DNS name
+# regardless of whether anything consumes it via ServiceMonitor, a plain
+# Prometheus scrape_config, or manual `kubectl port-forward`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel5g-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sentinel5g-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "sentinel5g-operator.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+    - name: health
+      port: 8081
+      targetPort: health

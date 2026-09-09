@@ -120,3 +120,36 @@ podAnnotations: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Optional PodDisruptionBudget for the operator Deployment, so a node
+# drain/cluster upgrade doesn't evict every replica at once. maxUnavailable
+# (not minAvailable) is the safer default at replicaCount: 1 above --
+# minAvailable: 1 on a single-replica Deployment would block voluntary
+# eviction entirely (the drain hangs waiting for a replacement Pod that
+# will never come up while the only replica is required to stay), whereas
+# maxUnavailable: 1 permits exactly that at replicaCount: 1 while still
+# bounding disruption once scaled up. Set minAvailable instead if you'd
+# rather express the budget that way -- the two are mutually exclusive per
+# the PodDisruptionBudget API; when minAvailable is set, maxUnavailable is
+# ignored by this chart's template.
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+  minAvailable: null
+
+# ServiceMonitor for Prometheus Operator (https://prometheus-operator.dev/)
+# to auto-discover the operator's /metrics endpoint (exposed via the
+# always-on Service this chart renders regardless of this setting) --
+# requires the monitoring.coreos.com/v1 ServiceMonitor CRD to already exist
+# on the cluster; enabling this without it installed fails to apply. Off by
+# default since not every cluster runs Prometheus Operator -- a plain
+# Prometheus using scrape_configs, or a different tool entirely, can still
+# reach the metrics Service either way.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  # Extra labels merged onto the ServiceMonitor object itself -- some
+  # Prometheus Operator installs only select ServiceMonitors carrying a
+  # specific label (check `kubectl get prometheus -o yaml`'s
+  # serviceMonitorSelector), e.g. {release: prometheus}.
+  additionalLabels: {}
