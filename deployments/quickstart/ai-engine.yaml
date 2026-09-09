@@ -51,6 +51,9 @@ spec:
               value: "sentinel5g.threats.scored"
             - name: MODEL_PATH
               value: "/app/models/autoencoder.onnx"
+          ports:
+            - name: metrics
+              containerPort: 9090
           volumeMounts:
             - name: model
               mountPath: /app/models

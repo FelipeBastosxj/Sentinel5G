@@ -82,7 +82,10 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       alternative to standalone XDP.
 - [ ] Falco output bridging into `NormalizedEvent`.
 - [ ] Additional `pkg/mesh.Adapter` implementations (Linkerd, Cilium mesh).
-- [ ] Prometheus instrumentation for the AI engine.
+- [x] Prometheus instrumentation for the AI engine. HTTP mode gets
+      `/metrics` via `prometheus-fastapi-instrumentator` on its existing
+      app; NATS worker mode (no app of its own) gets a dedicated
+      `prometheus_client` server on `AI_ENGINE_METRICS_ADDR`.
 - [x] VLAN (802.1Q) support in `bpf/packet_filter.c` — a single 802.1Q tag
       is transparently unwrapped before inspection, with the VLAN ID
       carried through to `signaling_events`. QinQ (double-tagged) frames

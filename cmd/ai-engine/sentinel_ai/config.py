@@ -30,6 +30,12 @@ class Settings:
     nats_tls_cert_file: str
     nats_tls_key_file: str
 
+    # Where the NATS-worker mode's dedicated Prometheus /metrics server
+    # binds (see server.py's main()) -- HTTP mode doesn't use this, it
+    # exposes /metrics on http_addr instead via
+    # prometheus_fastapi_instrumentator, since it already has an app.
+    metrics_addr: str
+
 
 def load_settings() -> Settings:
     return Settings(
@@ -47,4 +53,5 @@ def load_settings() -> Settings:
         nats_tls_ca_file=os.getenv("NATS_TLS_CA_FILE", ""),
         nats_tls_cert_file=os.getenv("NATS_TLS_CERT_FILE", ""),
         nats_tls_key_file=os.getenv("NATS_TLS_KEY_FILE", ""),
+        metrics_addr=os.getenv("AI_ENGINE_METRICS_ADDR", "0.0.0.0:9090"),
     )
