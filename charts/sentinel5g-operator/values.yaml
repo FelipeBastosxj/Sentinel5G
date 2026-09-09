@@ -80,6 +80,42 @@ nats:
 crds:
   install: true
 
+# Optional NetworkPolicy restricting who can reach the NATS bus this chart
+# is configured to talk to (nats.url above). NATS itself isn't deployed by
+# this chart (see nats.url's comment), so this targets it by label selector
+# rather than by owning it -- off by default, since a wrong/empty selector
+# is dangerous (an empty podSelector matches EVERY Pod in the target
+# namespace; rendering refuses with a `fail` message if enabled without one
+# rather than risk silently locking down unrelated workloads). See
+# docs/integrations.md's "Securing the NATS message bus" section for why
+# this matters even with NATS auth configured: defense in depth against
+# anything on the pod network reaching an unauthenticated or
+# credential-leaked NATS_URL and forging a ThreatScoreEvent.
+networkPolicy:
+  nats:
+    enabled: false
+    # Label selector matching the NATS server Pods to protect -- e.g.
+    # {app.kubernetes.io/name: nats} for the official NATS Helm chart, or
+    # {app: sentinel5g-nats} for deployments/quickstart/nats.yaml. Required
+    # when enabled: true.
+    podSelector: {}
+    # Namespace NATS runs in. Defaults to this release's namespace (NATS
+    # colocated with the operator, the common case per nats.url's default
+    # "nats://sentinel5g-nats:4222").
+    namespace: ""
+    # NATS client port to allow -- must match the port nats.url actually
+    # connects to.
+    port: 4222
+    # Additional NetworkPolicyPeer entries (e.g. the AI engine, deployed
+    # separately -- see deployments/quickstart/ai-engine.yaml) allowed to
+    # reach NATS alongside this chart's own operator Pods. Each entry is a
+    # full peer (podSelector and/or namespaceSelector), for example:
+    #   additionalClients:
+    #     - podSelector:
+    #         matchLabels:
+    #           app: sentinel5g-ai-engine
+    additionalClients: []
+
 podAnnotations: {}
 nodeSelector: {}
 tolerations: []

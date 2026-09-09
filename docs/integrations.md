@@ -119,7 +119,16 @@ Both sides support the same optional auth/TLS knobs, documented in
 
 At minimum outside of local dev, restrict who can reach the NATS port with a
 NetworkPolicy even if you don't configure the above — the operator and the AI
-engine are the only two clients that should ever be able to.
+engine are the only two clients that should ever be able to. The Helm chart
+has an opt-in one built in: `networkPolicy.nats.enabled: true` plus
+`networkPolicy.nats.podSelector` (matching NATS's actual Pods — this chart
+doesn't deploy NATS itself, see `nats.url`'s comment in `values.yaml`) renders
+a `NetworkPolicy` allowing ingress on `networkPolicy.nats.port` only from the
+operator's own Pods and whatever's listed in
+`networkPolicy.nats.additionalClients` (e.g. the AI engine's selector).
+Rendering refuses with an explicit error if `enabled: true` is set without a
+`podSelector` — an empty one would match every Pod in NATS's namespace, not
+just NATS.
 
 ## Observability
 

@@ -1,0 +1,40 @@
+{{- if .Values.networkPolicy.nats.enabled }}
+{{- if not .Values.networkPolicy.nats.podSelector }}
+{{- fail "networkPolicy.nats.enabled is true but networkPolicy.nats.podSelector is empty -- this would apply an ingress-restricting NetworkPolicy to EVERY Pod in the target namespace. Set networkPolicy.nats.podSelector to match only your NATS server Pods." }}
+{{- end }}
+{{- $natsNamespace := .Values.networkPolicy.nats.namespace | default .Release.Namespace }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sentinel5g-operator.fullname" . }}-nats
+  namespace: {{ $natsNamespace }}
+  labels:
+    {{- include "sentinel5g-operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    {{- toYaml .Values.networkPolicy.nats.podSelector | nindent 4 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "sentinel5g-operator.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+          {{- if ne $natsNamespace .Release.Namespace }}
+          # NATS lives in a different namespace than the operator -- a bare
+          # podSelector in a NetworkPolicy `from` entry only ever matches
+          # Pods in the SAME namespace as the policy itself, so the operator's
+          # namespace needs to be named explicitly too. Every Namespace object
+          # carries this label automatically since Kubernetes 1.21.
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          {{- end }}
+        {{- range .Values.networkPolicy.nats.additionalClients }}
+        - {{- toYaml . | nindent 10 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.nats.port }}
+{{- end }}
