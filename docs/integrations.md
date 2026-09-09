@@ -72,21 +72,35 @@ chart's `values.yaml`) drops all Linux capabilities, so:
   degrades to mesh-only isolation instead of crash-looping the operator, and
   the cause shows up in the log instead of a bare error string.
 
-**Scaling `replicaCount` with eBPF enabled — two things to know:**
+**Real multi-node coverage: `daemonset.enabled` (recommended with eBPF
+enabled).** The Helm chart can render the operator as a `DaemonSet` instead
+of a `Deployment` — this guarantees exactly one Pod per matching node (no
+`podAntiAffinity` needed, `replicaCount` is ignored), so `pkg/ingestion.
+Publisher` (the per-node ring-buffer reader, which deliberately runs on
+*every* Pod, not just the leader — `--bpf-interface` is attached per-pod, so
+each Pod only ever sees its own node's traffic) actually covers the whole
+cluster instead of however many *distinct* nodes `replicaCount` Pods happen
+to land on.
 
-- `pkg/ingestion.Publisher` (the per-node ring-buffer reader) deliberately
-  runs on *every* replica, not just the leader — `--bpf-interface` is
-  attached per-pod, so each replica only ever sees its own node's traffic,
-  and the operator needs every replica publishing for full coverage. This
-  also means a plain `Deployment` gives you coverage on however many
-  *distinct* nodes your replicas happen to land on — not the whole cluster
-  the way a `DaemonSet` would guarantee (tracked as a real gap in
-  `ROADMAP.md`, not yet implemented).
-- `pkg/ebpf.Loader`'s `AttachXDP` has no guard against a second attach on
-  the same interface: if two replicas land on the *same* node, the second
-  pod's XDP attach silently replaces the first's, breaking that node's
-  event stream. Use `podAntiAffinity` to keep replicas on distinct nodes,
-  e.g. in the Helm chart's `values.yaml`:
+This also implies `hostNetwork: true` (and `dnsPolicy:
+ClusterFirstWithHostNet`, required for cluster-internal DNS names to keep
+resolving under it) — **and this part isn't optional if you want XDP to see
+real node traffic**: without a Pod's own network namespace sharing the
+node's, `--bpf-interface` attaches to that Pod's own veth interface instead
+of the node's real one, which only ever carries that Pod's own traffic, never
+the telecom workloads eBPF is meant to protect. `hostNetwork: true` is a real
+security trade-off (the Pod can see and bind any port on the host, not just
+its own), which is exactly why `daemonset.enabled` is its own explicit
+opt-in rather than folded into `ebpf.enabled`.
+
+**Without `daemonset.enabled`** (plain `Deployment`, e.g. if the
+`hostNetwork` trade-off above isn't acceptable for your cluster): scaling
+`replicaCount` only gives you coverage on however many distinct nodes those
+replicas land on, not the whole cluster — and `pkg/ebpf.Loader`'s
+`AttachXDP` has no guard against a second attach on the same interface, so
+if two replicas land on the *same* node, the second Pod's XDP attach
+silently replaces the first's, breaking that node's event stream. Use
+`podAntiAffinity` to keep replicas on distinct nodes in this case:
   ```yaml
   affinity:
     podAntiAffinity:
