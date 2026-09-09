@@ -97,8 +97,9 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       workaround; a real `DaemonSet` option is still open.
 - [x] `NetworkPolicy` for the NATS bus (optional/opt-in via
       `networkPolicy.nats.enabled` in the Helm chart).
-- [ ] `PodDisruptionBudget` and a `Service`/`ServiceMonitor` for the
-      operator's metrics port.
+- [x] `PodDisruptionBudget` and a `Service`/`ServiceMonitor` for the
+      operator's metrics port. The `Service` is always rendered;
+      `podDisruptionBudget.enabled`/`serviceMonitor.enabled` are opt-in.
 - [x] `pkg/controller.PodIPIndex` grows unbounded — needs eviction on Pod
       deletion. Fixed via a reverse index (`byPod`) so `Remove` can find a
       deleted Pod's last known IP from a bare `NotFound` response, which
