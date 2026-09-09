@@ -20,10 +20,12 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 
 from .config import Settings, load_settings
 from .features import NormalizedEvent, extract_features
+from .metrics import NATS_EVENTS_TOTAL, SCORE_LATENCY_SECONDS
 
 logger = logging.getLogger("sentinel_ai.server")
 
@@ -57,7 +59,8 @@ class ScoringEngine:
         return max(0.0, min(1.0, normalized))
 
     def score_event(self, event: NormalizedEvent) -> float:
-        return self.score_features(extract_features(event))
+        with SCORE_LATENCY_SECONDS.time():
+            return self.score_features(extract_features(event))
 
 
 class ScoreRequest(BaseModel):
@@ -75,6 +78,12 @@ class ScoreResponse(BaseModel):
 
 def create_app(engine: ScoringEngine) -> FastAPI:
     app = FastAPI(title="Sentinel5G AI Engine", version="0.1.0")
+
+    # Adds automatic per-endpoint request count/latency metrics AND exposes
+    # GET /metrics on this same app -- prometheus_client's default registry
+    # is process-global, so SCORE_LATENCY_SECONDS (metrics.py) shows up
+    # there too without any extra wiring.
+    Instrumentator().instrument(app).expose(app)
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -170,6 +179,7 @@ async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
             # Malformed payload will never parse on redelivery either; term
             # (not nak) drops it instead of retrying forever.
             logger.warning("dropping malformed event on %s", settings.nats_events_subject)
+            NATS_EVENTS_TOTAL.labels(outcome="malformed").inc()
             await msg.term()
             return
 
@@ -187,8 +197,10 @@ async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
             }
             await js.publish(settings.nats_threats_subject, json.dumps(result).encode())
             await msg.ack()
+            NATS_EVENTS_TOTAL.labels(outcome="scored").inc()
         except Exception:
             logger.exception("failed to score/publish event, will retry")
+            NATS_EVENTS_TOTAL.labels(outcome="publish_failed").inc()
             await msg.nak()
 
     await js.subscribe(
@@ -215,6 +227,18 @@ def main() -> None:
     engine = ScoringEngine(settings.model_path)
 
     if settings.mode == "nats":
+        # No FastAPI app in this mode (see run_nats_worker), so /metrics
+        # needs its own tiny HTTP server rather than piggybacking on an
+        # app's Instrumentator like create_app does for HTTP mode. Started
+        # here, not inside run_nats_worker, so tests exercising that
+        # function directly (tests/test_server.py) don't also bind a real
+        # socket.
+        import prometheus_client
+
+        metrics_host, _, metrics_port = settings.metrics_addr.partition(":")
+        metrics_bind_addr = metrics_host or "0.0.0.0"  # nosec B104
+        prometheus_client.start_http_server(int(metrics_port or 9090), addr=metrics_bind_addr)
+
         asyncio.run(run_nats_worker(settings, engine))
         return
 

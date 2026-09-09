@@ -27,9 +27,28 @@ rather than `minAvailable`.
 
 ## AI engine metrics
 
-`cmd/ai-engine`'s FastAPI app exposes `/healthz`. Request-level metrics
-(latency, in-flight count) are not yet instrumented — tracked in
-`ROADMAP.md` as a `prometheus-fastapi-instrumentator` integration.
+`cmd/ai-engine` exposes Prometheus metrics in both run modes
+(`AI_ENGINE_MODE`), sharing the same metric definitions
+(`sentinel_ai/metrics.py`) regardless of which one is running:
+
+- `sentinel5g_ai_score_latency_seconds` — time spent in
+  `ScoringEngine.score_event`, recorded synchronously around every scoring
+  call from either mode.
+- `sentinel5g_ai_nats_events_total{outcome="scored"|"malformed"|"publish_failed"}`
+  — NATS-worker-mode only: how `run_nats_worker`'s handler resolved each
+  event (mirrors its three `msg.ack()`/`msg.term()`/`msg.nak()` branches
+  1:1).
+
+**HTTP mode** (`AI_ENGINE_MODE=http`, the default): `/metrics` is exposed on
+the same port as `/v1/score`/`/healthz` (`AI_ENGINE_HTTP_ADDR`) via
+[`prometheus-fastapi-instrumentator`](https://github.com/trallnag/prometheus-fastapi-instrumentator),
+which also adds automatic per-endpoint request count/latency/size metrics
+(`http_requests_total`, `http_request_duration_seconds`, ...).
+
+**NATS worker mode** (`AI_ENGINE_MODE=nats`): there's no HTTP app in this
+mode at all, so `/metrics` is served by a small dedicated
+`prometheus_client` HTTP server on `AI_ENGINE_METRICS_ADDR` (`:9090` by
+default) instead.
 
 ## Target SLOs
 
