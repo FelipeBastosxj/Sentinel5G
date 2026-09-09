@@ -95,7 +95,8 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       `DaemonSet`, so `ebpf.enabled: true` only protects whichever node(s)
       it lands on. `docs/integrations.md` documents a `podAntiAffinity`
       workaround; a real `DaemonSet` option is still open.
-- [ ] `NetworkPolicy` for the NATS bus (optional/opt-in).
+- [x] `NetworkPolicy` for the NATS bus (optional/opt-in via
+      `networkPolicy.nats.enabled` in the Helm chart).
 - [ ] `PodDisruptionBudget` and a `Service`/`ServiceMonitor` for the
       operator's metrics port.
 - [x] `pkg/controller.PodIPIndex` grows unbounded — needs eviction on Pod
