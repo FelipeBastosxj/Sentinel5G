@@ -37,6 +37,19 @@ func TestScanRateKeyMatchesKernelKeySize(t *testing.T) {
 	}
 }
 
+// Regression guard, same rationale as TestSignalRateEntryMatchesKernelValueSize:
+// rawSignalingEvent must stay byte-exact with bpf/packet_filter.c's struct
+// signaling_event, including after VLAN support repurposed its trailing
+// 2-byte pad into VlanID — the struct's total size (and therefore the
+// ringbuf record size cilium/ebpf decodes) must not change.
+func TestRawSignalingEventMatchesKernelSize(t *testing.T) {
+	const kernelEventSize = 24 // bpf/packet_filter.c's struct signaling_event, packed+aligned(8).
+	if got := binary.Size(rawSignalingEvent{}); got != kernelEventSize {
+		t.Fatalf("binary.Size(rawSignalingEvent{}) = %d, want %d (must match bpf/packet_filter.c's "+
+			"struct signaling_event exactly)", got, kernelEventSize)
+	}
+}
+
 // Regression guard for ClassifyAttachError's fs.ErrNotExist branch (see
 // errors.go): asserts against a real Attach() failure, not a synthetic one,
 // since what actually matters is whether cilium/ebpf's real error chain for

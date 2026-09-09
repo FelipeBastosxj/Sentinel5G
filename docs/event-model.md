@@ -39,6 +39,7 @@ set of fields.
 | `payloadSize`     | uint32      | Signaling payload size in bytes. |
 | `ratePerSecond`   | float64     | eBPF-side rolling rate for this `(sourceIp, protocol)` tuple. |
 | `malformed`       | bool        | True when the eBPF parser could not validate protocol framing. |
+| `vlanId`          | uint16      | 802.1Q VLAN ID the packet was tagged with, or `0` for an untagged frame. Not yet a model feature (see `cmd/ai-engine/sentinel_ai/features.py`) — ingested but unused by scoring for now. |
 
 ## `ThreatScoreEvent`
 

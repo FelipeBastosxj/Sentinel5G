@@ -184,7 +184,7 @@ type rawSignalingEvent struct {
 	PayloadSize uint16
 	Protocol    uint8
 	Malformed   uint8
-	_           [2]byte
+	VlanID      uint16
 }
 
 // SignalingEvents implements EventSource: starts a background goroutine
@@ -233,6 +233,7 @@ func (l *Loader) SignalingEvents(ctx context.Context) (<-chan SignalingEvent, er
 				PayloadSize: raw.PayloadSize,
 				Protocol:    SignalProtocol(raw.Protocol),
 				Malformed:   raw.Malformed != 0,
+				VLANID:      raw.VlanID,
 			}
 
 			select {

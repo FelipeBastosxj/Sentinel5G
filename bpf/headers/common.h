@@ -9,6 +9,17 @@
  * that could vary by kernel build anyway. */
 #define ETH_P_IP 0x0800
 
+/* 802.1Q VLAN tag TPID. A tagged frame's outer EtherType is this value, with
+ * the real inner EtherType 4 bytes later (see struct vlan_hdr in
+ * vmlinux_min.h). Single-tag only: 802.1ad/QinQ double-tagging (outer TPID
+ * 0x88a8) is deliberately out of scope for this parser and falls through to
+ * XDP_PASS unrecognized, same as any other unhandled EtherType. */
+#define ETH_P_8021Q 0x8100
+
+/* Low 12 bits of a VLAN tag's TCI (Tag Control Info) field are the VLAN ID;
+ * the top 4 bits are priority/DEI, not part of the ID. */
+#define VLAN_VID_MASK 0x0FFF
+
 /* 3GPP GTP-U (user plane tunneling, e.g. N3/N9 interfaces). */
 #define GTPU_PORT 2152
 

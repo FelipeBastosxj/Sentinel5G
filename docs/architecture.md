@@ -47,7 +47,11 @@ while the architecture scales to real telecom deployments.
 `bpf/packet_filter.c` is an XDP program attached at a telecom-facing pod's
 host network interface. It inspects Ethernet/IPv4/UDP headers looking for
 GTP-U (port 2152) and SIP (port 5060) traffic without requiring a sidecar in
-every pod. It maintains a coarse per-source-IP signaling-rate counter
+every pod. A single 802.1Q VLAN tag is transparently unwrapped before this
+inspection (the tagged frame's real EtherType/IPv4 header is parsed the same
+as an untagged one), with the VLAN ID carried through to
+`signaling_events` — QinQ (double-tagged, `0x88a8`) frames are not unwrapped
+and fall through unparsed, same as any other unhandled EtherType. It maintains a coarse per-source-IP signaling-rate counter
 (storm detection) and consults a `blocklist` BPF map populated exclusively
 by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
 at the kernel/NIC level.

@@ -56,6 +56,9 @@ type SignalingEvent struct {
 	PayloadSize uint16
 	Protocol    SignalProtocol
 	Malformed   bool
+	// VLANID is the 802.1Q VLAN ID the packet was tagged with, or 0 for an
+	// untagged frame (see bpf/packet_filter.c's VLAN-unwrap comment).
+	VLANID uint16
 }
 
 // EventSource is implemented by BlocklistUpdaters that can also stream

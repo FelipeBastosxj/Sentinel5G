@@ -41,7 +41,13 @@ _MAX_RATE_PER_SECOND = 5000.0
 
 @dataclass(frozen=True)
 class NormalizedEvent:
-    """Python mirror of pkg/events/types.go's NormalizedEvent."""
+    """Python mirror of pkg/events/types.go's NormalizedEvent.
+
+    Only carries the fields extract_features() actually consumes, not every
+    wire field — e.g. vlanId (see docs/event-model.md) is ingested by the Go
+    side but deliberately not yet a model feature here, so it's omitted
+    rather than mirrored-and-unused.
+    """
 
     protocol: str
     dest_port: int

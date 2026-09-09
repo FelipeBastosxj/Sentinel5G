@@ -33,6 +33,7 @@ func TestFromSignalingEvent_ResolvesKnownPod(t *testing.T) {
 		PayloadSize: 128,
 		Protocol:    ebpf.SignalProtoGTPU,
 		Malformed:   false,
+		VLANID:      100,
 	}
 	rate := func(net.IP, uint16) (uint32, bool) { return 42, true }
 
@@ -58,6 +59,9 @@ func TestFromSignalingEvent_ResolvesKnownPod(t *testing.T) {
 	}
 	if got.EventID == "" {
 		t.Fatal("expected a non-empty generated eventId")
+	}
+	if got.VLANID != 100 {
+		t.Fatalf("expected vlanId 100 to pass through, got %d", got.VLANID)
 	}
 }
 
