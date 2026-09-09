@@ -78,6 +78,17 @@ struct udphdr {
 	__sum16 check;
 };
 
+/* Only the 4 bytes after the shared 12-byte dest/src MAC fields that
+ * struct ethhdr already accounts for -- its h_proto field doubles as the
+ * outer TPID (0x8100) when a tag is present, so this covers exactly what's
+ * left: the tag control info and the inner encapsulated EtherType. Fixed
+ * 802.1Q wire layout (IEEE 802.1Q), not kernel-build-dependent, same
+ * reasoning as the structs above. */
+struct vlan_hdr {
+	__be16 h_vlan_TCI;
+	__be16 h_vlan_encapsulated_proto;
+};
+
 struct xdp_md {
 	__u32 data;
 	__u32 data_end;

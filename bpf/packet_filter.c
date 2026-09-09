@@ -11,6 +11,13 @@
 // driven by pkg/controller.ThreatScoreWatcher in response to an AI-engine
 // threat score.
 //
+// A single 802.1Q VLAN tag is transparently unwrapped before the EtherType
+// dispatch below: a tagged frame's real EtherType/IPv4 header is parsed the
+// same as an untagged one, and the tag's VLAN ID is carried through to
+// `signaling_events` (see struct signaling_event's vlan_id field). QinQ
+// double-tagging is not unwrapped — see ETH_P_8021Q's comment in
+// headers/common.h.
+//
 // It also emits a `signaling_events` ring buffer record for every
 // GTP-U/SIP packet observed, for UDP packets too short to have a complete
 // header (flagged malformed), and — since this file's `scan_rate`/
@@ -123,7 +130,9 @@ struct signaling_event {
 	__u16 payload_size;  // UDP payload size (bytes after the UDP header).
 	__u8 protocol;       // SIGNAL_PROTO_* from headers/common.h.
 	__u8 malformed;
-	__u8 _pad[2];
+	__u16 vlan_id;        // 0 == untagged. Was two bytes of alignment
+	                       // padding (struct size is unchanged at 24 bytes)
+	                       // before VLAN support existed.
 } __attribute__((packed, aligned(8)));
 
 struct {
@@ -132,7 +141,8 @@ struct {
 } signaling_events SEC(".maps");
 
 static __always_inline void emit_signaling_event(__u32 saddr, __u32 daddr, __u16 dest_port,
-						  __u16 payload_size, __u8 protocol, __u8 malformed)
+						  __u16 payload_size, __u8 protocol, __u8 malformed,
+						  __u16 vlan_id)
 {
 	struct signaling_event *evt = bpf_ringbuf_reserve(&signaling_events, sizeof(*evt), 0);
 	if (!evt)
@@ -145,6 +155,7 @@ static __always_inline void emit_signaling_event(__u32 saddr, __u32 daddr, __u16
 	evt->payload_size = payload_size;
 	evt->protocol = protocol;
 	evt->malformed = malformed;
+	evt->vlan_id = vlan_id;
 	bpf_ringbuf_submit(evt, 0);
 }
 
@@ -211,10 +222,27 @@ int xdp_packet_filter(struct xdp_md *ctx)
 	if ((void *)(eth + 1) > data_end)
 		return XDP_PASS;
 
-	if (eth->h_proto != bpf_htons(ETH_P_IP))
+	__u16 h_proto = eth->h_proto;
+	void *l3 = (void *)(eth + 1);
+	__u16 vlan_id = 0; // 0 == untagged; VLAN ID 0 is reserved (priority-tag
+			    // only) in 802.1Q, so this doubles safely as the
+			    // "no tag" sentinel.
+
+	// Single 802.1Q tag only — see ETH_P_8021Q's comment in
+	// headers/common.h for why QinQ isn't unwrapped here.
+	if (h_proto == bpf_htons(ETH_P_8021Q)) {
+		struct vlan_hdr *vlan = l3;
+		if ((void *)(vlan + 1) > data_end)
+			return XDP_PASS;
+		vlan_id = bpf_ntohs(vlan->h_vlan_TCI) & VLAN_VID_MASK;
+		h_proto = vlan->h_vlan_encapsulated_proto;
+		l3 = (void *)(vlan + 1);
+	}
+
+	if (h_proto != bpf_htons(ETH_P_IP))
 		return XDP_PASS;
 
-	struct iphdr *iph = (void *)(eth + 1);
+	struct iphdr *iph = l3;
 	if ((void *)(iph + 1) > data_end)
 		return XDP_PASS;
 
@@ -252,7 +280,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		// Too short to have a complete UDP header on an otherwise
 		// plausible signaling flow — a strong anomaly signal on its own,
 		// worth reporting even though we can't safely read dest_port.
-		emit_signaling_event(saddr, iph->daddr, 0, 0, SIGNAL_PROTO_UNKNOWN, 1);
+		emit_signaling_event(saddr, iph->daddr, 0, 0, SIGNAL_PROTO_UNKNOWN, 1, vlan_id);
 		return XDP_PASS;
 	}
 
@@ -263,7 +291,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		track_signal_rate(saddr);
 
 		__u8 protocol = (dest_port == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
-		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol, 0);
+		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol, 0, vlan_id);
 	} else {
 		// Off-signaling-port UDP: previously invisible here no matter its
 		// volume (is_signaling_port() gated all observation, not just
@@ -274,7 +302,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		__u32 prior_count = track_scan_rate(saddr, dest_port);
 		if (prior_count + 1 == SCAN_EMIT_THRESHOLD)
 			emit_signaling_event(saddr, iph->daddr, dest_port, payload_size,
-					      SIGNAL_PROTO_UNKNOWN, 0);
+					      SIGNAL_PROTO_UNKNOWN, 0, vlan_id);
 	}
 
 	return XDP_PASS;

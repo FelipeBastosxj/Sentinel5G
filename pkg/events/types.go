@@ -54,6 +54,10 @@ type NormalizedEvent struct {
 	// Malformed is true when the eBPF parser could not fully validate the
 	// protocol framing (a strong anomaly signal on its own).
 	Malformed bool `json:"malformed"`
+
+	// VLANID is the 802.1Q VLAN ID the packet was tagged with, or 0 for an
+	// untagged frame.
+	VLANID uint16 `json:"vlanId"`
 }
 
 // ThreatScoreEvent is produced by the AI engine after scoring one or more

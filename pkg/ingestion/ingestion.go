@@ -65,6 +65,7 @@ func FromSignalingEvent(evt ebpf.SignalingEvent, podIndex *controller.PodIPIndex
 		PayloadSize:   uint32(evt.PayloadSize),
 		RatePerSecond: ratePerSecond,
 		Malformed:     evt.Malformed,
+		VLANID:        evt.VLANID,
 	}
 }
 

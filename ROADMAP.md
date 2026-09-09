@@ -82,8 +82,10 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
 - [ ] Falco output bridging into `NormalizedEvent`.
 - [ ] Additional `pkg/mesh.Adapter` implementations (Linkerd, Cilium mesh).
 - [ ] Prometheus instrumentation for the AI engine.
-- [ ] VLAN (802.1Q) support in `bpf/packet_filter.c` — tagged frames
-      bypass inspection entirely today.
+- [x] VLAN (802.1Q) support in `bpf/packet_filter.c` — a single 802.1Q tag
+      is transparently unwrapped before inspection, with the VLAN ID
+      carried through to `signaling_events`. QinQ (double-tagged) frames
+      remain out of scope.
 - [ ] IPv6 support — `pkg/ebpf` and the XDP program are IPv4-only.
 - [ ] Real multi-node eBPF coverage: the operator is a `Deployment`, not a
       `DaemonSet`, so `ebpf.enabled: true` only protects whichever node(s)
