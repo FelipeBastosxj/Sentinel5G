@@ -32,6 +32,16 @@ FEATURE_VECTOR_SIZE = len(FEATURE_NAMES)
 _PROTOCOLS = ("GTP-U", "SIP", "SMPP", "HTTP2")
 _SIGNALING_PORTS = {2152, 5060}
 
+# "PORT_SCAN" (pkg/events.ProtocolPortScan, see docs/event-model.md) is
+# deliberately NOT in _PROTOCOLS: any protocol not listed here already falls
+# into the proto_unknown one-hot bucket below, and adding a 5th protocol
+# dimension would grow FEATURE_VECTOR_SIZE, changing the shipped ONNX
+# model's input shape and requiring a retrain. A port-scan event is still
+# distinguishable from a genuinely unknown protocol via the other features
+# (payload_size_norm in particular carries the distinct-port count for this
+# protocol, not a byte size — see NormalizedEvent.payload_size's docstring
+# reference in docs/event-model.md).
+
 # Clipping bounds keep raw counters in a well-behaved range before they reach
 # the autoencoder. Chosen generously relative to
 # scripts/generate_synthetic_dataset.py's generation parameters.

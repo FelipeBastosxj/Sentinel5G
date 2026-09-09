@@ -74,9 +74,10 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
 
 ## Phase 2 — Deeper integrations
 
-- [ ] General multi-port scan detection. `scan_rate` only catches a flood
-      against *one* port; needs a distinct-port-count structure per source
-      to catch classic low-and-slow scanning.
+- [x] General multi-port scan detection. A second detector (`port_scan`/
+      `track_port_scan()` in `bpf/packet_filter.c`) tracks a bounded,
+      deduplicated set of distinct destination ports per source over a
+      30s window, separate from `scan_rate`'s single-port flood check.
 - [ ] Cilium-native capture path (Hubble or a custom BPF program) as an
       alternative to standalone XDP.
 - [ ] Falco output bridging into `NormalizedEvent`.

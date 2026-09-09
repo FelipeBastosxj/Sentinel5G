@@ -75,6 +75,8 @@ func protocolFromSignal(p ebpf.SignalProtocol) events.Protocol {
 		return events.ProtocolGTPU
 	case ebpf.SignalProtoSIP:
 		return events.ProtocolSIP
+	case ebpf.SignalProtoPortScan:
+		return events.ProtocolPortScan
 	default:
 		return events.ProtocolUnknown
 	}

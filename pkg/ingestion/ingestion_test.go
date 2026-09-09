@@ -111,3 +111,30 @@ func TestFromSignalingEvent_MalformedAndUnknownProtocol(t *testing.T) {
 		t.Fatalf("expected protocol %q, got %q", events.ProtocolUnknown, got.Protocol)
 	}
 }
+
+// Documents the repurposed-field contract at the test level (not just in a
+// comment): for a port-scan detection, PayloadSize carries the
+// distinct-port count bpf/packet_filter.c's track_port_scan() computed, and
+// FromSignalingEvent must pass it through unchanged, not treat it as a byte
+// size.
+func TestFromSignalingEvent_PortScanPayloadSizeCarriesDistinctPortCount(t *testing.T) {
+	podIndex := controller.NewPodIPIndex()
+	raw := ebpf.SignalingEvent{
+		ObservedAt:  time.Now().UTC(),
+		SourceIP:    net.ParseIP("203.0.113.7"),
+		DestIP:      net.ParseIP("10.42.0.9"),
+		DestPort:    41337,
+		PayloadSize: 15, // MULTIPORT_SCAN_THRESHOLD, not a byte size.
+		Protocol:    ebpf.SignalProtoPortScan,
+	}
+	rate := func(net.IP, uint16) (uint32, bool) { return 0, false }
+
+	got := FromSignalingEvent(raw, podIndex, rate, "node-1")
+
+	if got.Protocol != events.ProtocolPortScan {
+		t.Fatalf("expected protocol %q, got %q", events.ProtocolPortScan, got.Protocol)
+	}
+	if got.PayloadSize != 15 {
+		t.Fatalf("expected PayloadSize to pass through unchanged as the distinct-port count, got %d", got.PayloadSize)
+	}
+}

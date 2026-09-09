@@ -38,6 +38,18 @@ func TestScanRateKeyMatchesKernelKeySize(t *testing.T) {
 }
 
 // Regression guard, same rationale as TestSignalRateEntryMatchesKernelValueSize:
+// confirmed against a real `bpftool prog load` + `bpftool map list` of
+// port_scan (key 4B, value 48B) — see portScanEntry's doc comment for why
+// this type exists despite having no real reader yet.
+func TestPortScanEntryMatchesKernelValueSize(t *testing.T) {
+	const kernelValueSize = 48 // bpf/packet_filter.c's struct port_scan_entry, confirmed via `bpftool map list` (value 48B)
+	if got := binary.Size(portScanEntry{}); got != kernelValueSize {
+		t.Fatalf("binary.Size(portScanEntry{}) = %d, want %d (must match bpf/packet_filter.c's "+
+			"struct port_scan_entry exactly)", got, kernelValueSize)
+	}
+}
+
+// Regression guard, same rationale as TestSignalRateEntryMatchesKernelValueSize:
 // rawSignalingEvent must stay byte-exact with bpf/packet_filter.c's struct
 // signaling_event, including after VLAN support repurposed its trailing
 // 2-byte pad into VlanID — the struct's total size (and therefore the

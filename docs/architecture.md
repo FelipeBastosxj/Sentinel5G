@@ -73,6 +73,16 @@ each never lets any single port's counter reach the threshold). Real,
 useful visibility into probe traffic aimed at a single unexpected port; not
 general port-scan detection.
 
+A second, separate detector (`port_scan`/`track_port_scan()`) closes exactly
+that gap: it tracks a bounded, deduplicated set of the *distinct*
+destination ports each source has touched within a longer 30-second window
+(`MULTIPORT_SCAN_WINDOW_NS`), and emits once a source crosses
+`MULTIPORT_SCAN_THRESHOLD` distinct ports — a classic low-and-slow scan
+signature, deliberately not collapsed into `scan_rate` above since the two
+key differently and catch different attack shapes: `scan_rate` answers "is
+this source flooding one port," `port_scan` answers "is this source probing
+many ports." A source can trip either, both, or neither independently.
+
 Builds against `bpf/headers/vmlinux_min.h`, a small hand-maintained header
 (not `bpftool btf dump`-generated), rather than plain UAPI kernel headers.
 Worth being precise about what this actually buys, since it's easy to
