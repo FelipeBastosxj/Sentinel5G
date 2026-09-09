@@ -25,9 +25,10 @@ func (r *PodIPIndexer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
 	var pod corev1.Pod
 	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		if apierrors.IsNotFound(err) {
-			// See PodIPIndex's doc comment: we don't know the deleted Pod's
-			// last IP from a NotFound response alone, so stale entries are
-			// left to be overwritten rather than actively removed here.
+			// PodIPIndex.Remove uses its own reverse index to find the
+			// deleted Pod's last known IP -- a NotFound response alone
+			// carries no IP to key off directly.
+			r.Index.Remove(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("get pod %s: %w", req.NamespacedName, err)

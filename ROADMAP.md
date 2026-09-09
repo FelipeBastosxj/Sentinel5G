@@ -98,8 +98,10 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
 - [ ] `NetworkPolicy` for the NATS bus (optional/opt-in).
 - [ ] `PodDisruptionBudget` and a `Service`/`ServiceMonitor` for the
       operator's metrics port.
-- [ ] `pkg/controller.PodIPIndex` grows unbounded — needs eviction on Pod
-      deletion.
+- [x] `pkg/controller.PodIPIndex` grows unbounded — needs eviction on Pod
+      deletion. Fixed via a reverse index (`byPod`) so `Remove` can find a
+      deleted Pod's last known IP from a bare `NotFound` response, which
+      carries none.
 - [ ] `k8s.io/*`/`controller-runtime` dependency bump — currently pinned
       to the Kubernetes 1.30 line, needs its own regression pass.
 - [ ] Path-based CI job filtering (skip unrelated jobs on single-toolchain
