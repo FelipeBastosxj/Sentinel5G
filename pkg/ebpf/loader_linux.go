@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -18,16 +19,22 @@ import (
 )
 
 const (
-	blocklistMapName       = "blocklist"
-	signalRateMapName      = "signal_rate"
-	scanRateMapName        = "scan_rate"
-	signalingEventsMapName = "signaling_events"
-	xdpProgramName         = "xdp_packet_filter"
-	blockedValue           = uint8(1)
+	blocklistMapName         = "blocklist"
+	signalRateMapName        = "signal_rate"
+	scanRateMapName          = "scan_rate"
+	signalingEventsMapName   = "signaling_events"
+	blocklistV6MapName       = "blocklist_v6"
+	signalRateV6MapName      = "signal_rate_v6"
+	scanRateV6MapName        = "scan_rate_v6"
+	signalingEventsV6MapName = "signaling_events_v6"
+	xdpProgramName           = "xdp_packet_filter"
+	blockedValue             = uint8(1)
 )
 
 // Loader attaches bpf/packet_filter.c (compiled to objPath by bpf/Makefile)
-// as an XDP program on iface and exposes its blocklist map.
+// as an XDP program on iface and exposes its blocklist maps. IPv6 is a
+// parallel set of maps (the *V6 fields), not a unified 128-bit-capable
+// scheme on the IPv4 ones — see bpf/packet_filter.c's top comment for why.
 type Loader struct {
 	collection      *ebpf.Collection
 	link            link.Link
@@ -35,6 +42,11 @@ type Loader struct {
 	signalRate      *ebpf.Map
 	scanRate        *ebpf.Map
 	signalingEvents *ebpf.Map
+
+	blocklistV6       *ebpf.Map
+	signalRateV6      *ebpf.Map
+	scanRateV6        *ebpf.Map
+	signalingEventsV6 *ebpf.Map
 
 	// bootTime is wall-clock "now" minus CLOCK_MONOTONIC "now", read once at
 	// attach time, so SignalingEvents can convert the kernel's monotonic
@@ -87,6 +99,30 @@ func Attach(objPath, iface string) (*Loader, error) {
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, signalingEventsMapName)
 	}
 
+	blocklistV6, ok := coll.Maps[blocklistV6MapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, blocklistV6MapName)
+	}
+
+	signalRateV6, ok := coll.Maps[signalRateV6MapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, signalRateV6MapName)
+	}
+
+	scanRateV6, ok := coll.Maps[scanRateV6MapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, scanRateV6MapName)
+	}
+
+	signalingEventsV6, ok := coll.Maps[signalingEventsV6MapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, signalingEventsV6MapName)
+	}
+
 	ifi, err := net.InterfaceByName(iface)
 	if err != nil {
 		coll.Close()
@@ -110,13 +146,17 @@ func Attach(objPath, iface string) (*Loader, error) {
 	}
 
 	return &Loader{
-		collection:      coll,
-		link:            xdpLink,
-		blocklist:       blocklist,
-		signalRate:      signalRate,
-		scanRate:        scanRate,
-		signalingEvents: signalingEvents,
-		bootTime:        bootTime,
+		collection:        coll,
+		link:              xdpLink,
+		blocklist:         blocklist,
+		signalRate:        signalRate,
+		scanRate:          scanRate,
+		signalingEvents:   signalingEvents,
+		blocklistV6:       blocklistV6,
+		signalRateV6:      signalRateV6,
+		scanRateV6:        scanRateV6,
+		signalingEventsV6: signalingEventsV6,
+		bootTime:          bootTime,
 	}, nil
 }
 
@@ -135,11 +175,11 @@ func monotonicToWallClockOffset() (time.Time, error) {
 
 // Block implements BlocklistUpdater.
 func (l *Loader) Block(ip net.IP) error {
-	key, err := ipv4Key(ip)
+	m, key, err := l.blocklistMapAndKey(ip)
 	if err != nil {
 		return err
 	}
-	if err := l.blocklist.Put(key, blockedValue); err != nil {
+	if err := m.Put(key, blockedValue); err != nil {
 		return fmt.Errorf("insert %s into blocklist map: %w", ip, err)
 	}
 	return nil
@@ -147,14 +187,25 @@ func (l *Loader) Block(ip net.IP) error {
 
 // Unblock implements BlocklistUpdater.
 func (l *Loader) Unblock(ip net.IP) error {
-	key, err := ipv4Key(ip)
+	m, key, err := l.blocklistMapAndKey(ip)
 	if err != nil {
 		return err
 	}
-	if err := l.blocklist.Delete(key); err != nil {
+	if err := m.Delete(key); err != nil {
 		return fmt.Errorf("remove %s from blocklist map: %w", ip, err)
 	}
 	return nil
+}
+
+// blocklistMapAndKey picks blocklist vs blocklist_v6 and the matching key
+// encoding based on ip's address family (see ipv4Key/ipv6Key).
+func (l *Loader) blocklistMapAndKey(ip net.IP) (*ebpf.Map, []byte, error) {
+	if ip.To4() != nil {
+		key, err := ipv4Key(ip)
+		return l.blocklist, key, err
+	}
+	key, err := ipv6Key(ip)
+	return l.blocklistV6, key, err
 }
 
 // Close implements BlocklistUpdater.
@@ -187,64 +238,138 @@ type rawSignalingEvent struct {
 	VlanID      uint16
 }
 
-// SignalingEvents implements EventSource: starts a background goroutine
-// reading bpf/packet_filter.c's signaling_events ring buffer and decoding
-// each record, until ctx is done. The returned channel closes when the
-// reader stops (context cancellation or a fatal read error, e.g. the ring
-// buffer being closed by Close()).
+// rawSignalingEventV6 is the byte-exact Go mirror of bpf/packet_filter.c's
+// `struct signaling_event_v6` — same hand-kept-in-sync convention as
+// rawSignalingEvent above.
+type rawSignalingEventV6 struct {
+	TimestampNs uint64
+	Saddr       [16]byte
+	Daddr       [16]byte
+	DestPort    uint16
+	PayloadSize uint16
+	Protocol    uint8
+	Malformed   uint8
+	VlanID      uint16
+}
+
+// SignalingEvents implements EventSource: starts two background goroutines
+// — one reading bpf/packet_filter.c's signaling_events ring buffer, one
+// reading signaling_events_v6 — decoding each record and merging both onto
+// one channel, until ctx is done. Two separate ringbufs (not one shared,
+// discriminator-tagged buffer) keep the IPv4 wire format and decode path
+// above byte-for-byte unchanged; see struct signaling_event_v6's comment in
+// packet_filter.c. The returned channel closes once both readers have
+// stopped (context cancellation or a fatal read error, e.g. the ring
+// buffers being closed by Close()).
 func (l *Loader) SignalingEvents(ctx context.Context) (<-chan SignalingEvent, error) {
 	reader, err := ringbuf.NewReader(l.signalingEvents)
 	if err != nil {
 		return nil, fmt.Errorf("open signaling_events ring buffer: %w", err)
 	}
 
+	readerV6, err := ringbuf.NewReader(l.signalingEventsV6)
+	if err != nil {
+		reader.Close()
+		return nil, fmt.Errorf("open signaling_events_v6 ring buffer: %w", err)
+	}
+
 	out := make(chan SignalingEvent)
 
 	go func() {
-		defer close(out)
-		defer reader.Close()
+		<-ctx.Done()
+		reader.Close() // Unblocks both readers' Read() calls below.
+		readerV6.Close()
+	}()
 
-		go func() {
-			<-ctx.Done()
-			reader.Close() // Unblocks the Read() below.
-		}()
-
-		for {
-			record, err := reader.Read()
-			if err != nil {
-				if errors.Is(err, ringbuf.ErrClosed) || ctx.Err() != nil {
-					return
-				}
-				continue // Transient read error: skip this record, keep reading.
-			}
-
-			var raw rawSignalingEvent
-			if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
-				continue // Short/corrupt record: skip rather than crash the reader.
-			}
-
-			evt := SignalingEvent{
-				// raw.TimestampNs is nanoseconds since boot (bpf_ktime_get_ns());
-				// converting to int64 only overflows past ~292 years of uptime.
-				ObservedAt:  l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
-				SourceIP:    ipv4FromU32(raw.Saddr),
-				DestIP:      ipv4FromU32(raw.Daddr),
-				DestPort:    raw.DestPort,
-				PayloadSize: raw.PayloadSize,
-				Protocol:    SignalProtocol(raw.Protocol),
-				Malformed:   raw.Malformed != 0,
-				VLANID:      raw.VlanID,
-			}
-
-			select {
-			case out <- evt:
-			case <-ctx.Done():
-				return
-			}
-		}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go l.readSignalingEvents(ctx, reader, out, &wg)
+	go l.readSignalingEventsV6(ctx, readerV6, out, &wg)
+	go func() {
+		wg.Wait()
+		close(out)
 	}()
 
 	return out, nil
+}
+
+func (l *Loader) readSignalingEvents(ctx context.Context, reader *ringbuf.Reader, out chan<- SignalingEvent, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer reader.Close()
+
+	for {
+		record, err := reader.Read()
+		if err != nil {
+			if errors.Is(err, ringbuf.ErrClosed) || ctx.Err() != nil {
+				return
+			}
+			continue // Transient read error: skip this record, keep reading.
+		}
+
+		var raw rawSignalingEvent
+		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
+			continue // Short/corrupt record: skip rather than crash the reader.
+		}
+
+		evt := SignalingEvent{
+			// raw.TimestampNs is nanoseconds since boot (bpf_ktime_get_ns());
+			// converting to int64 only overflows past ~292 years of uptime.
+			ObservedAt:  l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
+			SourceIP:    ipv4FromU32(raw.Saddr),
+			DestIP:      ipv4FromU32(raw.Daddr),
+			DestPort:    raw.DestPort,
+			PayloadSize: raw.PayloadSize,
+			Protocol:    SignalProtocol(raw.Protocol),
+			Malformed:   raw.Malformed != 0,
+			VLANID:      raw.VlanID,
+		}
+
+		select {
+		case out <- evt:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (l *Loader) readSignalingEventsV6(ctx context.Context, reader *ringbuf.Reader, out chan<- SignalingEvent, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer reader.Close()
+
+	for {
+		record, err := reader.Read()
+		if err != nil {
+			if errors.Is(err, ringbuf.ErrClosed) || ctx.Err() != nil {
+				return
+			}
+			continue // Transient read error: skip this record, keep reading.
+		}
+
+		var raw rawSignalingEventV6
+		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
+			continue // Short/corrupt record: skip rather than crash the reader.
+		}
+
+		evt := SignalingEvent{
+			ObservedAt: l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
+			// raw.Saddr/Daddr are already the raw 16 address bytes (not a
+			// uint32 register value like rawSignalingEvent.Saddr), so no
+			// byte-order round trip is needed the way ipv4FromU32 does one.
+			SourceIP:    net.IP(raw.Saddr[:]),
+			DestIP:      net.IP(raw.Daddr[:]),
+			DestPort:    raw.DestPort,
+			PayloadSize: raw.PayloadSize,
+			Protocol:    SignalProtocol(raw.Protocol),
+			Malformed:   raw.Malformed != 0,
+			VLANID:      raw.VlanID,
+		}
+
+		select {
+		case out <- evt:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // signalRateEntry is the Go mirror of bpf/packet_filter.c's
@@ -301,6 +426,21 @@ type scanRateKey struct {
 	_        uint16
 }
 
+// scanRateKeyV6 is the byte-exact Go mirror of bpf/packet_filter.c's
+// `struct scan_key_v6` — 16-byte saddr + dest_port (2 bytes, host byte
+// order) + 2 bytes of the C struct's own explicit padding, then 4 more
+// trailing bytes so binary.Size (what cilium/ebpf's marshaling actually
+// uses) reaches the real 24-byte `packed, aligned(8)` kernel size
+// confirmed via `bpftool map list` — the same class of mismatch
+// signalRateEntry's doc comment explains in detail; a naive 20-byte
+// {[16]byte; uint16; uint16} version fails every real Lookup.
+type scanRateKeyV6 struct {
+	Saddr    [16]byte
+	DestPort uint16
+	_        uint16
+	_        [4]byte
+}
+
 // SignalRate returns the current window's packet count for (ip, destPort),
 // and false if there's no entry this window. destPort selects which kernel
 // map to consult: GTPU_PORT/SIP_PORT traffic is tracked in signal_rate
@@ -311,24 +451,46 @@ type scanRateKey struct {
 // populate NormalizedEvent.RatePerSecond.
 func (l *Loader) SignalRate(ip net.IP, destPort uint16) (count uint32, ok bool) {
 	var entry signalRateEntry
+	signaling := destPort == gtpuPort || destPort == sipPort
 
-	if destPort == gtpuPort || destPort == sipPort {
-		key, err := ipv4Key(ip)
+	if ip.To4() != nil {
+		if signaling {
+			key, err := ipv4Key(ip)
+			if err != nil {
+				return 0, false
+			}
+			if err := l.signalRate.Lookup(key, &entry); err != nil {
+				return 0, false
+			}
+			return entry.Count, true
+		}
+
+		v4, err := ipv4Key(ip)
 		if err != nil {
 			return 0, false
 		}
-		if err := l.signalRate.Lookup(key, &entry); err != nil {
+		key := scanRateKey{Saddr: binary.LittleEndian.Uint32(v4), DestPort: destPort}
+		if err := l.scanRate.Lookup(&key, &entry); err != nil {
 			return 0, false
 		}
 		return entry.Count, true
 	}
 
-	v4 := ip.To4()
-	if v4 == nil {
+	v6, err := ipv6Key(ip)
+	if err != nil {
 		return 0, false
 	}
-	key := scanRateKey{Saddr: binary.LittleEndian.Uint32(v4), DestPort: destPort}
-	if err := l.scanRate.Lookup(&key, &entry); err != nil {
+
+	if signaling {
+		if err := l.signalRateV6.Lookup(v6, &entry); err != nil {
+			return 0, false
+		}
+		return entry.Count, true
+	}
+
+	key := scanRateKeyV6{DestPort: destPort}
+	copy(key.Saddr[:], v6)
+	if err := l.scanRateV6.Lookup(&key, &entry); err != nil {
 		return 0, false
 	}
 	return entry.Count, true

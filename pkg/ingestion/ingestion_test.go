@@ -112,6 +112,34 @@ func TestFromSignalingEvent_MalformedAndUnknownProtocol(t *testing.T) {
 	}
 }
 
+// Confirms IPv6 SignalingEvents round-trip through FromSignalingEvent
+// unchanged — pkg/events.NormalizedEvent's SourceIP/DestIP are already
+// strings populated via net.IP.String(), which renders IPv6 correctly, so
+// this package needs no IPv6-specific code; this test locks in that it
+// actually works rather than just assuming it from the types lining up.
+func TestFromSignalingEvent_IPv6SourceRoundTrips(t *testing.T) {
+	podIndex := controller.NewPodIPIndex()
+	podIndex.Put("2001:db8::1", controller.PodRef{Namespace: "telecom-core", Name: "amf-0"})
+
+	raw := ebpf.SignalingEvent{
+		ObservedAt: time.Now().UTC(),
+		SourceIP:   net.ParseIP("2001:db8::1"),
+		DestIP:     net.ParseIP("2001:db8::2"),
+		DestPort:   2152,
+		Protocol:   ebpf.SignalProtoGTPU,
+	}
+	rate := func(net.IP, uint16) (uint32, bool) { return 0, false }
+
+	got := FromSignalingEvent(raw, podIndex, rate, "node-1")
+
+	if got.Namespace != "telecom-core" || got.PodName != "amf-0" {
+		t.Fatalf("expected resolved namespace/podName for an IPv6 source, got %q/%q", got.Namespace, got.PodName)
+	}
+	if got.SourceIP != "2001:db8::1" || got.DestIP != "2001:db8::2" {
+		t.Fatalf("expected IPv6 source/dest to round-trip, got %q/%q", got.SourceIP, got.DestIP)
+	}
+}
+
 // Documents the repurposed-field contract at the test level (not just in a
 // comment): for a port-scan detection, PayloadSize carries the
 // distinct-port count bpf/packet_filter.c's track_port_scan() computed, and

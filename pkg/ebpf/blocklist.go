@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
-// BlocklistUpdater pushes/removes IPv4 addresses from the "blocklist" BPF map
-// that bpf/packet_filter.c consults before making its XDP verdict.
+// BlocklistUpdater pushes/removes IPv4 or IPv6 addresses from the
+// "blocklist"/"blocklist_v6" BPF maps that bpf/packet_filter.c consults
+// before making its XDP verdict — the implementation picks the map matching
+// ip's address family (see ipv4Key/ipv6Key).
 type BlocklistUpdater interface {
 	// Block causes packets sourced from ip to be dropped at the XDP layer.
 	Block(ip net.IP) error
@@ -102,4 +104,26 @@ func ipv4Key(ip net.IP) ([]byte, error) {
 		return nil, fmt.Errorf("blocklist only supports IPv4 addresses, got %q", ip.String())
 	}
 	return []byte(v4), nil
+}
+
+// ipv6Key returns the raw 16-byte representation of ip, passed to the
+// blocklist_v6/signal_rate_v6/scan_rate_v6 BPF maps as an opaque byte key —
+// the same "opaque bytes, not an integer" treatment ipv4Key documents.
+//
+// ip.To4() != nil (true for both real IPv4 addresses and v4-mapped IPv6
+// addresses like ::ffff:10.0.0.1, since Go's net.IP treats those as
+// equivalent) is rejected here deliberately: callers route those into the
+// IPv4 maps instead (see Loader.blocklistMapAndKey/SignalRate in
+// loader_linux.go). A v4-mapped address really is an IPv4 endpoint on the
+// wire — bpf/packet_filter.c's IPv4 path is what will actually observe its
+// traffic, so that's the map whose state should reflect it.
+func ipv6Key(ip net.IP) ([]byte, error) {
+	if ip.To4() != nil {
+		return nil, fmt.Errorf("blocklist_v6 only supports IPv6 addresses, got %q", ip.String())
+	}
+	v6 := ip.To16()
+	if v6 == nil {
+		return nil, fmt.Errorf("blocklist_v6 only supports IPv6 addresses, got %q", ip.String())
+	}
+	return []byte(v6), nil
 }
