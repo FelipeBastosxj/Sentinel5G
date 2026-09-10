@@ -117,8 +117,16 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
 - [x] Path-based CI job filtering (skip unrelated jobs on single-toolchain
       PRs). A `changes` job (`dorny/paths-filter`) gates `ci.yml`'s four
       jobs; editing the workflow file itself always runs all of them.
-- [ ] Dockerfile hardening: pin base images to a digest, add
-      `HEALTHCHECK`.
+- [x] Dockerfile hardening: base images pinned to their multi-arch
+      manifest-list digest (`.github/dependabot.yml` keeps them current).
+      `HEALTHCHECK` added to both images — the operator's distroless final
+      stage has no shell, so `manager healthcheck` is a real subcommand
+      hitting its own `/healthz` over HTTP; the AI engine's
+      `sentinel_ai.healthcheck` module picks `/healthz` or the metrics
+      server's `/metrics` depending on `AI_ENGINE_MODE`, since NATS-worker
+      mode has no HTTP app of its own. Verified end-to-end with real
+      `docker build`/`docker run` against the live k3s+NATS environment —
+      both images report `"Status":"healthy"`.
 
 ## Phase 3 — Scale & multi-cluster
 

@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Dockerfile and cmd/ai-engine/Dockerfile pin their base images to a
+  # digest (see ROADMAP.md's Dockerfile hardening item and each FROM
+  # line's own comment) -- that trades away automatically picking up a
+  # same-tag upstream security rebuild on the next `docker build`. These
+  # entries are what re-resolves and bumps those digests on a schedule
+  # instead of them going stale forever.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/cmd/ai-engine"
+    schedule:
+      interval: "weekly"
