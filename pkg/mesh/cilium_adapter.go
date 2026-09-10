@@ -2,12 +2,9 @@ package mesh
 
 import (
 	"context"
-	"fmt"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -53,38 +50,13 @@ func NewCiliumAdapter(deps AdapterDeps) *CiliumAdapter {
 // Quarantine creates (or updates) a deny-all CiliumNetworkPolicy for
 // namespace/selector.
 func (a *CiliumAdapter) Quarantine(ctx context.Context, namespace string, selector map[string]string) error {
-	policy := newCiliumNetworkPolicy(namespace, selector)
-
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(ciliumNetworkPolicyGVK)
-	err := a.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: policy.GetName()}, existing)
-	if apierrors.IsNotFound(err) {
-		if createErr := a.client.Create(ctx, policy); createErr != nil {
-			return fmt.Errorf("create quarantine CiliumNetworkPolicy %s/%s: %w", namespace, policy.GetName(), createErr)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("get existing CiliumNetworkPolicy %s/%s: %w", namespace, policy.GetName(), err)
-	}
-
-	policy.SetResourceVersion(existing.GetResourceVersion())
-	if err := a.client.Update(ctx, policy); err != nil {
-		return fmt.Errorf("update quarantine CiliumNetworkPolicy %s/%s: %w", namespace, policy.GetName(), err)
-	}
-	return nil
+	return createOrUpdateUnstructured(ctx, a.client, newCiliumNetworkPolicy(namespace, selector))
 }
 
 // Release deletes the quarantine CiliumNetworkPolicy for namespace/selector,
 // if one exists.
 func (a *CiliumAdapter) Release(ctx context.Context, namespace string, selector map[string]string) error {
-	policy := newCiliumNetworkPolicy(namespace, selector)
-
-	err := a.client.Delete(ctx, policy)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete quarantine CiliumNetworkPolicy %s/%s: %w", namespace, policy.GetName(), err)
-	}
-	return nil
+	return deleteUnstructuredIfExists(ctx, a.client, newCiliumNetworkPolicy(namespace, selector))
 }
 
 func newCiliumNetworkPolicy(namespace string, selector map[string]string) *unstructured.Unstructured {

@@ -22,6 +22,12 @@ var ciliumNetworkPolicyGVK = schema.GroupVersionKind{
 	Kind:    "CiliumNetworkPolicy",
 }
 
+var linkerdServerGVK = schema.GroupVersionKind{
+	Group:   "policy.linkerd.io",
+	Version: "v1beta3",
+	Kind:    "Server",
+}
+
 // TestBuildMeshAdapter_IstioFallsBackToNoopWithoutTheCRD is a regression
 // guard for a real bug found by running the quickstart flow against a real
 // kind cluster with no Istio installed: MESH_ADAPTER=istio (the default)
@@ -74,6 +80,31 @@ func TestBuildMeshAdapter_CiliumUsesRealAdapterWhenCRDExists(t *testing.T) {
 
 	if _, ok := adapter.(*mesh.CiliumAdapter); !ok {
 		t.Fatalf("expected a real *mesh.CiliumAdapter when the CiliumNetworkPolicy CRD is registered, got %T", adapter)
+	}
+}
+
+// Regression guard mirroring TestBuildMeshAdapter_IstioFallsBackToNoopWithoutTheCRD:
+// the same degrade-gracefully rule now also covers MESH_ADAPTER=linkerd.
+func TestBuildMeshAdapter_LinkerdFallsBackToNoopWithoutTheCRD(t *testing.T) {
+	restMapper := meta.NewDefaultRESTMapper(nil) // no GVKs registered -- CRD doesn't exist
+	log := testr.New(t)
+
+	adapter := buildMeshAdapter(log, "linkerd", mesh.AdapterDeps{}, restMapper)
+
+	if _, ok := adapter.(mesh.NoopAdapter); !ok {
+		t.Fatalf("expected a NoopAdapter fallback when the Linkerd Server CRD isn't registered, got %T", adapter)
+	}
+}
+
+func TestBuildMeshAdapter_LinkerdUsesRealAdapterWhenCRDExists(t *testing.T) {
+	restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{linkerdServerGVK.GroupVersion()})
+	restMapper.Add(linkerdServerGVK, meta.RESTScopeNamespace)
+	log := testr.New(t)
+
+	adapter := buildMeshAdapter(log, "linkerd", mesh.AdapterDeps{}, restMapper)
+
+	if _, ok := adapter.(*mesh.LinkerdAdapter); !ok {
+		t.Fatalf("expected a real *mesh.LinkerdAdapter when the Linkerd Server CRD is registered, got %T", adapter)
 	}
 }
 
