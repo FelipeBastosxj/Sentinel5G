@@ -129,7 +129,7 @@ func TestObserver_StreamFlows_PublishesMatchingFlowsOverBufconn(t *testing.T) {
 
 	o := &Observer{
 		Addr:          "passthrough:///bufnet",
-		Bus:           bus,
+		Bus:           events.NewConnectedConnector(bus),
 		Subject:       cfg.EventsSubject,
 		Log:           logr.Discard(),
 		extraDialOpts: []grpc.DialOption{grpc.WithContextDialer(dialer), grpc.WithTransportCredentials(insecure.NewCredentials())},

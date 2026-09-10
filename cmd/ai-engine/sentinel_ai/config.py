@@ -30,6 +30,12 @@ class Settings:
     nats_tls_cert_file: str
     nats_tls_key_file: str
 
+    # Must be explicitly true to run mode="nats" against a NATS bus with none
+    # of the fields above set. Mirrors pkg/config.OperatorConfig's
+    # NATSAllowUnauthenticated on the Go side -- both processes talk to the
+    # same bus, so one can't be locked down while the other stays open.
+    nats_allow_unauthenticated: bool
+
     # Where the NATS-worker mode's dedicated Prometheus /metrics server
     # binds (see server.py's main()) -- HTTP mode doesn't use this, it
     # exposes /metrics on http_addr instead via
@@ -53,5 +59,38 @@ def load_settings() -> Settings:
         nats_tls_ca_file=os.getenv("NATS_TLS_CA_FILE", ""),
         nats_tls_cert_file=os.getenv("NATS_TLS_CERT_FILE", ""),
         nats_tls_key_file=os.getenv("NATS_TLS_KEY_FILE", ""),
+        nats_allow_unauthenticated=_getenv_bool("NATS_ALLOW_UNAUTHENTICATED", False),
         metrics_addr=os.getenv("AI_ENGINE_METRICS_ADDR", "0.0.0.0:9090"),
     )
+
+
+def _getenv_bool(key: str, fallback: bool) -> bool:
+    value = os.getenv(key)
+    if not value:
+        return fallback
+    return value.strip().lower() in ("1", "t", "true", "yes")
+
+
+def require_nats_credentials_if_unauthenticated_disallowed(settings: Settings) -> None:
+    """Refuses to proceed if mode="nats" would connect to NATS with no
+    credentials/TLS configured and nats_allow_unauthenticated wasn't set --
+    anything able to reach an unauthenticated NATS_URL can forge a
+    NormalizedEvent/ThreatScoreEvent (see docs/integrations.md's "Securing
+    the NATS message bus"). Raises RuntimeError; HTTP mode never calls
+    nats.connect at all, so it isn't checked here."""
+    if settings.mode != "nats" or settings.nats_allow_unauthenticated:
+        return
+
+    has_credentials = bool(
+        settings.nats_creds_file
+        or settings.nats_username
+        or settings.nats_tls_cert_file
+        or settings.nats_tls_ca_file
+    )
+    if not has_credentials:
+        raise RuntimeError(
+            "refusing to start AI_ENGINE_MODE=nats with an unauthenticated NATS connection: "
+            "set NATS_CREDENTIALS_FILE, NATS_USERNAME+NATS_PASSWORD, or "
+            "NATS_TLS_CERT_FILE+NATS_TLS_KEY_FILE, or set NATS_ALLOW_UNAUTHENTICATED=true "
+            'to opt into it explicitly (see docs/integrations.md\'s "Securing the NATS message bus")'
+        )

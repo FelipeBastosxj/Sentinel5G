@@ -97,13 +97,18 @@ curl -X POST localhost:8090/v1/score -H 'content-type: application/json' \
 
 Needs step 2's NATS instance already running (`docker compose up` in
 `deployments/`, or at minimum a bare `docker run -p 4222:4222 nats:2.10-alpine
--js`) — the operator exits immediately if it can't reach `NATS_URL`.
+-js`) — the operator degrades to not-ready and keeps retrying if it can't
+reach `NATS_URL` (see `docs/production-install.md`), rather than blocking on
+it here.
 
 ```sh
 kubectl apply -f config/crd/bases/security.sentinel5g.io_telecomsecuritypolicies.yaml
 kubectl apply -f config/samples/security_v1alpha1_telecomsecuritypolicy.yaml -n telecom-core
 
 export NATS_URL=nats://localhost:4222
+# The local NATS instance above has no auth configured -- opt into that
+# explicitly (see docs/integrations.md's "Securing the NATS message bus").
+export NATS_ALLOW_UNAUTHENTICATED=true
 go run ./cmd/operator
 ```
 
@@ -146,7 +151,8 @@ create it fresh.
 ```sh
 helm lint charts/sentinel5g-operator
 helm install sentinel5g charts/sentinel5g-operator --namespace sentinel5g-system --create-namespace \
-  --set nats.url=nats://<your-nats-service>:4222
+  --set nats.url=nats://<your-nats-service>:4222 \
+  --set nats.allowUnauthenticated=true  # only if that NATS instance genuinely has no auth -- see below
 ```
 
 See `charts/sentinel5g-operator/values.yaml` for the `ebpf.enabled` toggle

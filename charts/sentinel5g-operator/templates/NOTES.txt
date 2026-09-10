@@ -16,3 +16,11 @@ mesh-layer isolation, but source-IP drops at the XDP layer are no-ops until
 you set ebpf.enabled=true and grant the manager container CAP_BPF/CAP_NET_ADMIN.
 See docs/integrations.md.
 {{- end }}
+
+{{- if and .Values.serviceMonitor.enabled (not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1")) }}
+
+WARNING: serviceMonitor.enabled=true but the monitoring.coreos.com/v1 CRD
+(Prometheus Operator) isn't installed on this cluster, so no ServiceMonitor
+was rendered. Install Prometheus Operator first, or scrape the metrics
+Service (always rendered) directly with a plain Prometheus scrape_config.
+{{- end }}

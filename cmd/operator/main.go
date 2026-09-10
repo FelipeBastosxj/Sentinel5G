@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 
 	"github.com/go-logr/logr"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	clientgoevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -84,6 +86,12 @@ func main() {
 		log.Info("invalid LOG_LEVEL, defaulting to info", "value", cfg.LogLevel, "error", logLevelErr.Error())
 	}
 
+	// Captured once, here, rather than inlined into mgr.Start below: the NATS
+	// connector goroutine started right after this needs the same
+	// cancel-on-SIGTERM/SIGINT context the manager itself eventually runs
+	// under, so both shut down together.
+	ctx := ctrl.SetupSignalHandler()
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: cfg.MetricsBindAddress},
@@ -96,7 +104,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	bus, err := events.Connect(events.Config{
+	// Connects in the background with retry/backoff rather than blocking (or
+	// failing) startup here: reconciling TelecomSecurityPolicy status
+	// doesn't itself need the bus, only ThreatScoreWatcher/Publisher/
+	// Observer below do, and each of those already tolerates NATS not being
+	// connected yet (see events.Connector's doc comment). A chart's default
+	// nats.url pointing at a JetStream that isn't there yet -- the common
+	// case right after a fresh `helm install` -- now surfaces as a
+	// not-yet-ready Pod that self-heals, not a CrashLoopBackOff.
+	busConnector := events.NewConnector(events.Config{
 		URL:            cfg.NATSURL,
 		StreamName:     cfg.NATSStreamName,
 		EventsSubject:  cfg.NATSEventsSubject,
@@ -109,14 +125,15 @@ func main() {
 		TLSCAFile:       cfg.NATSTLSCAFile,
 		TLSCertFile:     cfg.NATSTLSCertFile,
 		TLSKeyFile:      cfg.NATSTLSKeyFile,
-	})
-	if err != nil {
-		log.Error(err, "unable to connect to NATS JetStream")
-		os.Exit(1)
-	}
-	defer bus.Close()
+	}, log.WithName("nats"))
+	go busConnector.Run(ctx)
+	defer func() {
+		if bus, connected := busConnector.Bus(); connected {
+			bus.Close()
+		}
+	}()
 
-	blocklist := attachBlocklist(log, bpfObjectPath, bpfInterface)
+	blocklist := attachBlocklist(log, mgr.GetEventRecorder("sentinel5g-operator"), operatorPodRef(), bpfObjectPath, bpfInterface)
 	defer blocklist.Close()
 
 	podIndex := sentinelcontroller.NewPodIPIndex()
@@ -138,7 +155,7 @@ func main() {
 		publisher := &ingestion.Publisher{
 			Source:   source,
 			PodIndex: podIndex,
-			Bus:      bus,
+			Bus:      busConnector,
 			Subject:  cfg.NATSEventsSubject,
 			NodeName: nodeName,
 			Log:      log.WithName("ingestion-publisher"),
@@ -161,7 +178,7 @@ func main() {
 		observer := &hubble.Observer{
 			Addr:      cfg.HubbleAddr,
 			TLSConfig: hubbleTLSConfig(log, cfg),
-			Bus:       bus,
+			Bus:       busConnector,
 			Subject:   cfg.NATSEventsSubject,
 			Log:       log.WithName("hubble-observer"),
 		}
@@ -192,7 +209,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		Log:           log.WithName("threat-score-watcher"),
 		Index:         index,
-		Bus:           bus,
+		Bus:           busConnector,
 		Subject:       cfg.NATSThreatsSubject,
 		Blocklist:     blocklist,
 		Mesh:          meshAdapter,
@@ -211,26 +228,74 @@ func main() {
 		log.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+	// Surfaces "connected to NATS at least once" on /readyz, so a Pod stuck
+	// waiting on busConnector (e.g. NATS not deployed yet, or a wrong
+	// nats.url) shows as 0/1 Ready with a legible condition instead of the
+	// CrashLoopBackOff this replaced.
+	if err := mgr.AddReadyzCheck("nats", natsReadyzCheck(busConnector)); err != nil {
+		log.Error(err, "unable to set up NATS ready check")
+		os.Exit(1)
+	}
 
 	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell, "logLevel", logLevel)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager exited with an error")
 		os.Exit(1)
 	}
 }
 
+// natsReadyzCheck reports not-ready until busConnector has connected to
+// NATS at least once.
+func natsReadyzCheck(busConnector *events.Connector) healthz.Checker {
+	return func(_ *http.Request) error {
+		if !busConnector.Connected() {
+			return fmt.Errorf("not yet connected to NATS JetStream")
+		}
+		return nil
+	}
+}
+
 // attachBlocklist attempts to load and attach bpf/packet_filter.c. Failure
 // to attach (missing object file, non-Linux dev machine, insufficient
-// privileges) is logged but non-fatal: the operator still reconciles
-// TelecomSecurityPolicy status and can still drive mesh-layer isolation.
-func attachBlocklist(log logr.Logger, objectPath, iface string) sentinelebpf.BlocklistUpdater {
+// privileges, wrong --bpf-interface) is logged AND recorded as a Kubernetes
+// Event on ref (when ref is non-nil -- see operatorPodRef) but non-fatal:
+// the operator still reconciles TelecomSecurityPolicy status and can still
+// drive mesh-layer isolation. The Event is what makes this a "Pod condition
+// or event," not just a log line, per docs/integrations.md's eBPF preflight
+// section: `kubectl describe pod`/`kubectl get events` surface it directly.
+func attachBlocklist(log logr.Logger, recorder clientgoevents.EventRecorder, ref runtime.Object, objectPath, iface string) sentinelebpf.BlocklistUpdater {
 	loader, err := sentinelebpf.Attach(objectPath, iface)
 	if err != nil {
+		cause := sentinelebpf.ClassifyAttachError(err)
 		log.Info("eBPF blocklist not attached; EbpfBlock actions will be no-ops",
-			"cause", sentinelebpf.ClassifyAttachError(err), "reason", err.Error())
+			"cause", cause, "reason", err.Error())
+		if ref != nil {
+			recorder.Eventf(ref, nil, corev1.EventTypeWarning, "EBPFAttachFailed", "AttachXDP", "%s: %s", cause, err.Error())
+		}
 		return noopBlocklist{}
 	}
 	return loader
+}
+
+// operatorPodRef builds an object reference to the operator's own Pod from
+// the POD_NAME/POD_NAMESPACE Downward API env vars (see
+// charts/sentinel5g-operator/templates/deployment.yaml and
+// config/manager/manager.yaml), for attachBlocklist's Event above. Returns
+// nil when either is unset -- e.g. `go run ./cmd/operator` against a local
+// cluster per docs/getting-started.md, which isn't running as a Pod at all
+// -- so attachBlocklist just skips recording an Event rather than emitting
+// one against a nonexistent object.
+func operatorPodRef() runtime.Object {
+	name, namespace := os.Getenv("POD_NAME"), os.Getenv("POD_NAMESPACE")
+	if name == "" || namespace == "" {
+		return nil
+	}
+	return &corev1.ObjectReference{
+		APIVersion: "v1",
+		Kind:       "Pod",
+		Name:       name,
+		Namespace:  namespace,
+	}
 }
 
 // buildMeshAdapter builds the configured mesh.Adapter, but for "istio"

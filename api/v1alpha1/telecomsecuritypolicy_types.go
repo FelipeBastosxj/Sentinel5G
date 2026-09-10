@@ -71,12 +71,20 @@ type TelecomSecurityPolicySpec struct {
 }
 
 // PolicyPhase is a coarse-grained summary of a TelecomSecurityPolicy's state.
-// +kubebuilder:validation:Enum=Pending;Monitoring;Mitigating;Degraded
+// +kubebuilder:validation:Enum=Pending;Monitoring;Alerting;Mitigating;Degraded
 type PolicyPhase string
 
 const (
 	PolicyPhasePending    PolicyPhase = "Pending"
 	PolicyPhaseMonitoring PolicyPhase = "Monitoring"
+	// PolicyPhaseAlerting means the effective threat score threshold was
+	// crossed but ThreatDetection.AutoMitigate is false, so the controller
+	// withheld Actions by policy rather than by failure -- the detection-
+	// only "shadow mode" pkg/controller.ThreatScoreWatcher.applyPolicy sets
+	// this in, deliberately distinct from PolicyPhaseDegraded (an operator-
+	// side failure), so a pilot rollout's false-positive rate reads as
+	// "working as configured," not "broken."
+	PolicyPhaseAlerting   PolicyPhase = "Alerting"
 	PolicyPhaseMitigating PolicyPhase = "Mitigating"
 	PolicyPhaseDegraded   PolicyPhase = "Degraded"
 )

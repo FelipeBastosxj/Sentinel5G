@@ -23,7 +23,7 @@ from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 
-from .config import Settings, load_settings
+from .config import Settings, load_settings, require_nats_credentials_if_unauthenticated_disallowed
 from .features import NormalizedEvent, extract_features
 from .metrics import NATS_EVENTS_TOTAL, SCORE_LATENCY_SECONDS
 
@@ -224,6 +224,7 @@ async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = load_settings()
+    require_nats_credentials_if_unauthenticated_disallowed(settings)
     engine = ScoringEngine(settings.model_path)
 
     if settings.mode == "nats":

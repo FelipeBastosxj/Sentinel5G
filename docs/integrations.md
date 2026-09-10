@@ -213,7 +213,14 @@ chart's `values.yaml`) drops all Linux capabilities, so:
   interface, or unrecognized) via `pkg/ebpf.ClassifyAttachError` — see
   `docs/troubleshooting.md#ebpf` — so a misconfigured capability set
   degrades to mesh-only isolation instead of crash-looping the operator, and
-  the cause shows up in the log instead of a bare error string.
+  the cause shows up in the log instead of a bare error string. It's also
+  recorded as an `EBPFAttachFailed` Kubernetes Event against the operator's
+  own Pod (via the `POD_NAME`/`POD_NAMESPACE` Downward API env vars the
+  chart sets), so `kubectl describe pod`/`kubectl get events` surface it
+  directly instead of only the log. `pkg/ebpf.Attach` also checks
+  `--bpf-interface` resolves to a real interface *before* loading anything
+  into the kernel, so a typo'd interface name fails fast with that same
+  classification rather than after a full (wasted) collection load.
 
 **Real multi-node coverage: `daemonset.enabled` (recommended with eBPF
 enabled).** The Helm chart can render the operator as a `DaemonSet` instead
@@ -256,14 +263,20 @@ silently replaces the first's, breaking that node's event stream. Use
 
 ## Securing the NATS message bus
 
-`pkg/events.Connect` (Go) and `sentinel_ai/server.py`'s NATS worker (Python)
-default to a plain, unauthenticated `nats://` connection — fine for local dev,
-but anything that can reach that URL can publish a forged `NormalizedEvent`
+Anything that can reach the NATS URL can publish a forged `NormalizedEvent`
 or `ThreatScoreEvent` on it. Since `ThreatScoreWatcher.handle` trusts every
 message on `NATS_THREATS_SUBJECT` unconditionally, an unauthenticated bus
 reachable from outside the cluster is a real way to trigger a live mitigation
 (`EbpfBlock`/`IsolatePod`) against any workload a policy protects, by
 publishing a few lines of forged JSON.
+
+`pkg/config.Load()` (the operator) and `sentinel_ai/config.py`'s
+`require_nats_credentials_if_unauthenticated_disallowed` (the AI engine,
+checked in `AI_ENGINE_MODE=nats` before connecting) both refuse to start
+against a NATS bus with none of the auth/TLS knobs below set, unless
+`NATS_ALLOW_UNAUTHENTICATED=true` is set explicitly — that flag exists for
+`scripts/quickstart.sh`'s throwaway demo cluster, not for a real install;
+see `docs/production-install.md`.
 
 Both sides support the same optional auth/TLS knobs, documented in
 `.env.example`:

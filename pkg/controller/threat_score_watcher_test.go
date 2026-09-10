@@ -126,7 +126,7 @@ func TestApplyPolicy_BelowThresholdOnlyUpdatesScore(t *testing.T) {
 	}
 }
 
-func TestApplyPolicy_AboveThresholdWithoutAutoMitigateOnlyDegrades(t *testing.T) {
+func TestApplyPolicy_AboveThresholdWithoutAutoMitigateOnlyAlerts(t *testing.T) {
 	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, false, true, true)
 	pod := newTestPod(policy.Namespace, "amf-0")
 	w, blocklist, meshAdapter := newWatcherFixture(t, policy, pod)
@@ -150,8 +150,8 @@ func TestApplyPolicy_AboveThresholdWithoutAutoMitigateOnlyDegrades(t *testing.T)
 	if err := w.Get(context.Background(), nnFor(policy), &got); err != nil {
 		t.Fatalf("get after applyPolicy: %v", err)
 	}
-	if got.Status.Phase != securityv1alpha1.PolicyPhaseDegraded {
-		t.Fatalf("expected phase Degraded, got %q", got.Status.Phase)
+	if got.Status.Phase != securityv1alpha1.PolicyPhaseAlerting {
+		t.Fatalf("expected phase Alerting, got %q", got.Status.Phase)
 	}
 }
 

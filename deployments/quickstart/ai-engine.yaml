@@ -51,6 +51,12 @@ spec:
               value: "sentinel5g.threats.scored"
             - name: MODEL_PATH
               value: "/app/models/autoencoder.onnx"
+            # deployments/quickstart/nats.yaml has no auth configured -- opt
+            # into that explicitly. Do not carry this into a production
+            # deployment; see docs/integrations.md's "Securing the NATS
+            # message bus" and docs/production-install.md.
+            - name: NATS_ALLOW_UNAUTHENTICATED
+              value: "true"
           ports:
             - name: metrics
               containerPort: 9090

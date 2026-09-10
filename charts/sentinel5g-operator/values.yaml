@@ -96,8 +96,25 @@ nats:
   tlsCertFile: ""
   tlsKeyFile: ""
 
+  # The operator refuses to start against a NATS bus with none of the
+  # fields above set, unless this is explicitly true. Anything that can
+  # reach an unauthenticated NATS_URL can forge a ThreatScoreEvent and
+  # trigger a real mitigation -- set to true only for a demo/local cluster
+  # you control end to end (see scripts/quickstart.sh), never for a
+  # production install (see docs/production-install.md).
+  allowUnauthenticated: false
+
 crds:
   install: true
+  # Annotate the CRD with helm.sh/resource-policy: keep, so `helm uninstall`
+  # leaves the CRD -- and therefore every TelecomSecurityPolicy CR -- in
+  # place instead of deleting them along with the release. Defaults to true
+  # because losing every policy on an accidental/routine uninstall is the
+  # more dangerous default; set to false to restore Helm's normal
+  # CRD-follows-release-lifecycle behavior (see docs/getting-started.md).
+  # When true, a real "delete everything including the CRD" needs an
+  # explicit follow-up: kubectl delete crd telecomsecuritypolicies.security.sentinel5g.io
+  keep: true
 
 # Optional NetworkPolicy restricting who can reach the NATS bus this chart
 # is configured to talk to (nats.url above). NATS itself isn't deployed by
@@ -160,10 +177,12 @@ podDisruptionBudget:
 # to auto-discover the operator's /metrics endpoint (exposed via the
 # always-on Service this chart renders regardless of this setting) --
 # requires the monitoring.coreos.com/v1 ServiceMonitor CRD to already exist
-# on the cluster; enabling this without it installed fails to apply. Off by
-# default since not every cluster runs Prometheus Operator -- a plain
-# Prometheus using scrape_configs, or a different tool entirely, can still
-# reach the metrics Service either way.
+# on the cluster; if it doesn't, the template guards on
+# Capabilities.APIVersions.Has and simply renders nothing (with a warning in
+# the post-install NOTES) instead of failing the apply. Off by default since
+# not every cluster runs Prometheus Operator -- a plain Prometheus using
+# scrape_configs, or a different tool entirely, can still reach the metrics
+# Service either way.
 serviceMonitor:
   enabled: false
   interval: 30s

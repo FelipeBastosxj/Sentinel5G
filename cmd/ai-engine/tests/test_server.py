@@ -104,6 +104,7 @@ def _settings(**overrides) -> Settings:
         nats_tls_ca_file="",
         nats_tls_cert_file="",
         nats_tls_key_file="",
+        nats_allow_unauthenticated=True,
         metrics_addr="0.0.0.0:9090",
     )
     base.update(overrides)

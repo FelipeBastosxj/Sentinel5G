@@ -21,13 +21,17 @@ import (
 type Publisher struct {
 	Source   ebpf.EventSource
 	PodIndex *controller.PodIPIndex
-	Bus      *events.Bus
+	Bus      *events.Connector
 	Subject  string
 	NodeName string
 	Log      logr.Logger
 }
 
-// Start implements manager.Runnable.
+// Start implements manager.Runnable. The eBPF ring buffer is drained
+// regardless of whether NATS is connected yet -- SignalingEvents starts
+// immediately, not after Bus.Wait -- since a bounded kernel-side ring
+// buffer left undrained during a NATS outage is worse than dropping events
+// for that window (see Bus.Connected's doc comment).
 func (p *Publisher) Start(ctx context.Context) error {
 	stream, err := p.Source.SignalingEvents(ctx)
 	if err != nil {
@@ -40,8 +44,14 @@ func (p *Publisher) Start(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
+			bus, connected := p.Bus.Bus()
+			if !connected {
+				p.Log.V(1).Info("dropping normalized event: NATS not yet connected",
+					"sourceIp", evt.SourceIP.String(), "destPort", evt.DestPort)
+				continue
+			}
 			normalized := FromSignalingEvent(evt, p.PodIndex, p.Source.SignalRate, p.NodeName)
-			if err := p.Bus.PublishNormalizedEvent(p.Subject, normalized); err != nil {
+			if err := bus.PublishNormalizedEvent(p.Subject, normalized); err != nil {
 				p.Log.Error(err, "failed to publish normalized event",
 					"sourceIp", normalized.SourceIP, "destPort", normalized.DestPort)
 			}

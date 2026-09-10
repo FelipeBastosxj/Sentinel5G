@@ -32,6 +32,19 @@ spec:
           envFrom:
             - configMapRef:
                 name: sentinel5g-operator-config
+          env:
+            # Downward API, not user-tunable config: lets the manager attach
+            # a Kubernetes Event (e.g. "EBPFAttachFailed") to its own Pod
+            # object -- see charts/sentinel5g-operator/templates/deployment.yaml's
+            # matching comment.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: metrics
               containerPort: 8080

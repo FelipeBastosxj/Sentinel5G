@@ -10,6 +10,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
+    {{- if .Values.crds.keep }}
+    # Tells Helm not to delete this CRD (and therefore every
+    # TelecomSecurityPolicy CR riding on it) on `helm uninstall`. Set
+    # crds.keep: false to restore the old behavior; see the warning in
+    # docs/getting-started.md before doing that on a cluster with real
+    # policies applied.
+    helm.sh/resource-policy: keep
+    {{- end }}
   name: telecomsecuritypolicies.security.sentinel5g.io
 spec:
   group: security.sentinel5g.io
@@ -213,6 +221,7 @@ spec:
                 enum:
                 - Pending
                 - Monitoring
+                - Alerting
                 - Mitigating
                 - Degraded
                 type: string
