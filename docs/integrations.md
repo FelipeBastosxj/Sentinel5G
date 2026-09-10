@@ -27,57 +27,74 @@ today since Falco alerts and Sentinel5G's `ThreatScoreEvent`s use different
 schemas. Bridging them (e.g. a Falco gRPC output plugin that emits
 `NormalizedEvent`s) is a natural roadmap item.
 
-## Mesh isolation: Istio, Cilium
+## Mesh isolation: Istio, Cilium, Linkerd
 
-Both adapters share the same pattern: no vendored mesh-specific Go client
-(`istio.io/client-go`, `github.com/cilium/cilium`'s API module) is required,
-since each talks to its CRD via an unstructured `controller-runtime` client
-— the operator works against any cluster running the relevant CRD,
-regardless of that mesh's own Go client version. Both are idempotent: the
-same selector always maps to the same policy object name (see
-`pkg/mesh.quarantineName`, shared by both adapters), so repeated
-`Quarantine` calls update in place rather than accumulating stale objects.
+All three adapters share the same pattern: no vendored mesh-specific Go
+client (`istio.io/client-go`, `github.com/cilium/cilium`'s API module,
+Linkerd's) is required, since each talks to its CRD via an unstructured
+`controller-runtime` client — the operator works against any cluster
+running the relevant CRD, regardless of that mesh's own Go client version.
 `buildMeshAdapter` (`cmd/operator/main.go`) checks the relevant CRD is
-actually registered before building either adapter, falling back to
+actually registered before building any of them, falling back to
 `mesh.NoopAdapter` (with a log line explaining why) if it isn't — the same
 "degrade gracefully" rule `EbpfBlock` already follows when eBPF isn't
-attached.
+attached. Clusters without any of the three should leave `MESH_ADAPTER`
+unset or set it to `noop` (`mesh.adapter=noop` in `.env.example`, or the
+Helm chart's `config.meshAdapter`), which makes `IsolatePod` actions no-ops.
 
-**`pkg/mesh.IstioAdapter`** quarantines a workload by creating a deny-all
-`security.istio.io/v1` `AuthorizationPolicy` scoped to the policy's
-`targetWorkloads` selector (`spec.action: DENY` with a single empty rule —
-see that file's own comment for why an empty `rules: []` doesn't work,
-found by testing against a real cluster).
+**`pkg/mesh.IstioAdapter`** and **`pkg/mesh.CiliumAdapter`**
+(`MESH_ADAPTER=cilium`) give an equivalent, full guarantee: one object
+denies **all** traffic to/from the target workload, regardless of port.
+Both are idempotent via `pkg/mesh.quarantineName` (a deterministic name
+derived from the selector, shared by every adapter — the same selector
+always maps to the same object name, so repeated `Quarantine` calls update
+in place rather than accumulating stale objects) and the shared
+`createOrUpdateUnstructured`/`deleteUnstructuredIfExists` helpers in
+`pkg/mesh/adapter.go`.
 
-**`pkg/mesh.CiliumAdapter`** (`MESH_ADAPTER=cilium`) quarantines a workload
-by creating a `cilium.io/v2` `CiliumNetworkPolicy` with `ingressDeny`/
-`egressDeny` rules using the `"all"` reserved entity — deliberately not an
-empty `endpointSelector`/`ingress`/`egress` ("allow nothing"): Cilium's own
-docs are explicit that "deny policies take precedence over allow policies,"
-but merely adding no allow rules doesn't override an *existing* allow policy
-for the same pod from elsewhere (e.g. a baseline "allow same-namespace"
-policy many clusters run) — only an explicit deny does. `"all"` is used
-rather than an empty selector for the same reason: an empty
-`fromEndpoints`/`toEndpoints` only covers Cilium-managed endpoints inside
-the cluster, while `"all"` is documented as covering the cluster **and**
-`world` (external) traffic, matching `IstioAdapter`'s full deny-all scope
-rather than a narrower intra-cluster-only one.
+- **Istio**: a deny-all `security.istio.io/v1` `AuthorizationPolicy` scoped
+  to the policy's `targetWorkloads` selector (`spec.action: DENY` with a
+  single empty rule — see that file's own comment for why an empty
+  `rules: []` doesn't work, found by testing against a real cluster).
+- **Cilium**: a `cilium.io/v2` `CiliumNetworkPolicy` with `ingressDeny`/
+  `egressDeny` rules using the `"all"` reserved entity — deliberately not
+  an empty `endpointSelector`/`ingress`/`egress` ("allow nothing"): Cilium's
+  own docs are explicit that "deny policies take precedence over allow
+  policies," but merely adding no allow rules doesn't override an
+  *existing* allow policy for the same pod from elsewhere (e.g. a baseline
+  "allow same-namespace" policy many clusters run) — only an explicit deny
+  does. `"all"` is used rather than an empty selector for the same reason:
+  an empty `fromEndpoints`/`toEndpoints` only covers Cilium-managed
+  endpoints inside the cluster, while `"all"` is documented as covering the
+  cluster **and** `world` (external) traffic.
 
-Clusters without either mesh should leave `MESH_ADAPTER` unset or set it to
-`noop` (`mesh.adapter=noop` in `.env.example`, or the Helm chart's
-`config.meshAdapter`), which makes `IsolatePod` actions no-ops.
+**`pkg/mesh.LinkerdAdapter`** (`MESH_ADAPTER=linkerd`) gives a materially
+**weaker** guarantee — read this before choosing it. Linkerd's
+`policy.linkerd.io/v1beta3` `Server` resource (the current storage
+version; `v1beta1`/`v1beta2` are deprecated in Linkerd's own CRD in favor
+of it, confirmed directly from `linkerd2`'s CRD source rather than assumed
+from docs) is scoped to one specific port — `spec.port` is required, no
+wildcard, unlike Istio's/Cilium's workload-wide deny. `Quarantine`
+compensates by listing the target Pods and creating one deny-by-default
+`Server` (`spec.accessPolicy: deny`, and no accompanying
+`AuthorizationPolicy` — Linkerd denies everything to a `Server`'d port with
+none) per **declared** `containerPort` found across them. This is a
+best-effort quarantine, not a complete one: a container's declared
+`ports:` in its Pod spec is documentation, not enforcement — a port the
+workload actually listens on but never declared in its spec stays
+reachable after `Quarantine`. `Quarantine` returns an error (rather than
+silently "succeeding" with zero effect) if it discovers no ports at all.
+`Release` deletes every `Server` it finds labeled for that selector's
+quarantine, not by re-discovering the Pods' current ports (which may have
+already changed, or the Pods may already be gone by the time `Release`
+runs) — so nothing it creates can leak past cleanup.
 
-Linkerd is not implemented — its policy model (`policy.linkerd.io`
-`Server`/`AuthorizationPolicy`) is scoped per-port (`Server.spec.port` is
-required, no wildcard), unlike Istio's and Cilium's workload-wide deny,
-and `pkg/mesh.Adapter.Quarantine`'s signature carries no port information to
-scope a `Server` by. A real implementation needs either extending `Adapter`
-to be port-aware, or discovering the target Pods' declared container ports
-at `Quarantine`-call time (itself an incomplete guarantee — a container's
-declared `ports:` in its spec is documentation only, not enforced, so a
-port the workload actually listens on but didn't declare would stay
-reachable). `pkg/mesh.Adapter` is the extension point for this or any other
-mesh — implement it and register it in `pkg/mesh.NewAdapter`.
+Prefer Istio or Cilium when the mesh choice is yours to make; use Linkerd's
+adapter when Linkerd is the only mesh available and a declared-ports-only
+best-effort quarantine is an acceptable trade-off for your workloads. A
+stronger Linkerd guarantee would need extending `pkg/mesh.Adapter.
+Quarantine`'s signature to carry port information explicitly, a larger
+change affecting every adapter and every call site in `pkg/controller`.
 
 ## eBPF blocklist enforcement
 

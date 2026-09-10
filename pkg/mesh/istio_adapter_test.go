@@ -6,6 +6,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -21,6 +22,11 @@ func newMeshTestScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(s)
 	s.AddKnownTypeWithName(authorizationPolicyGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(ciliumNetworkPolicyGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(serverGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(
+		schema.GroupVersionKind{Group: serverGVK.Group, Version: serverGVK.Version, Kind: serverGVK.Kind + "List"},
+		&unstructured.UnstructuredList{},
+	)
 	return s
 }
 

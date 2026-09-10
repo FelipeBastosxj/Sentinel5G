@@ -81,15 +81,19 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
 - [ ] Cilium-native capture path (Hubble or a custom BPF program) as an
       alternative to standalone XDP.
 - [ ] Falco output bridging into `NormalizedEvent`.
-- [ ] Additional `pkg/mesh.Adapter` implementations. `CiliumAdapter` done
+- [x] Additional `pkg/mesh.Adapter` implementations: `CiliumAdapter`
       (`MESH_ADAPTER=cilium`, `cilium.io/v2` `CiliumNetworkPolicy` with
-      `ingressDeny`/`egressDeny: [{from,to}Entities: ["all"]]`, verified
-      against a real API server with the real CRD schema installed).
-      Linkerd is not — its `policy.linkerd.io` `Server` resource is
-      port-scoped (no wildcard), unlike Istio's/Cilium's workload-wide
-      deny, and `Adapter.Quarantine`'s signature carries no port to scope
-      one by; see `docs/integrations.md` for the real options this opens
-      up (port-aware `Adapter`, or best-effort Pod-spec port discovery).
+      `ingressDeny`/`egressDeny: [{from,to}Entities: ["all"]]`) and
+      `LinkerdAdapter` (`MESH_ADAPTER=linkerd`, `policy.linkerd.io/v1beta3`
+      `Server` per declared container port, `accessPolicy: deny`) — both
+      verified against a real API server with the real CRD schema
+      installed. Linkerd's guarantee is deliberately weaker than the other
+      two (port-scoped, declared-ports-only best-effort, not a true
+      workload-wide deny) since `Server` has no wildcard-all-ports form and
+      `Adapter.Quarantine`'s signature carries no port information — see
+      `docs/integrations.md` for the full trade-off and what a stronger
+      guarantee would need (a port-aware `Adapter` signature, affecting
+      every adapter and call site).
 - [x] Prometheus instrumentation for the AI engine. HTTP mode gets
       `/metrics` via `prometheus-fastapi-instrumentator` on its existing
       app; NATS worker mode (no app of its own) gets a dedicated

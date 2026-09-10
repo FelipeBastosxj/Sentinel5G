@@ -240,6 +240,12 @@ func buildMeshAdapter(log logr.Logger, kind string, deps mesh.AdapterDeps, restM
 			log.Info("Cilium CiliumNetworkPolicy CRD not found on this cluster; IsolatePod actions will be no-ops", "reason", err.Error())
 			return mesh.NoopAdapter{}
 		}
+	case "linkerd":
+		gvk := schema.GroupVersionKind{Group: "policy.linkerd.io", Version: "v1beta3", Kind: "Server"}
+		if _, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+			log.Info("Linkerd Server CRD (policy.linkerd.io/v1beta3) not found on this cluster; IsolatePod actions will be no-ops", "reason", err.Error())
+			return mesh.NoopAdapter{}
+		}
 	}
 
 	adapter, err := mesh.NewAdapter(kind, deps)
