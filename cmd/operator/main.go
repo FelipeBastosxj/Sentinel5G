@@ -148,7 +148,7 @@ func main() {
 		log.Info("eBPF not attached; Layer 1 -> Layer 2 event publishing disabled")
 	}
 
-	meshAdapter := buildMeshAdapter(log, cfg.MeshAdapter, mesh.IstioAdapterDeps{Client: mgr.GetClient()}, mgr.GetRESTMapper())
+	meshAdapter := buildMeshAdapter(log, cfg.MeshAdapter, mesh.AdapterDeps{Client: mgr.GetClient()}, mgr.GetRESTMapper())
 
 	index := sentinelcontroller.NewPolicyIndex()
 
@@ -226,11 +226,18 @@ func attachBlocklist(log logr.Logger, objectPath, iface string) sentinelebpf.Blo
 // MESH_ADAPTER defaults to "istio", so this is the default experience for
 // anyone following docs/getting-started.md or README.md without Istio,
 // not an edge case.
-func buildMeshAdapter(log logr.Logger, kind string, deps mesh.IstioAdapterDeps, restMapper meta.RESTMapper) mesh.Adapter {
-	if kind == "istio" {
+func buildMeshAdapter(log logr.Logger, kind string, deps mesh.AdapterDeps, restMapper meta.RESTMapper) mesh.Adapter {
+	switch kind {
+	case "istio":
 		gvk := schema.GroupVersionKind{Group: "security.istio.io", Version: "v1", Kind: "AuthorizationPolicy"}
 		if _, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
 			log.Info("Istio AuthorizationPolicy CRD not found on this cluster; IsolatePod actions will be no-ops", "reason", err.Error())
+			return mesh.NoopAdapter{}
+		}
+	case "cilium":
+		gvk := schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
+		if _, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+			log.Info("Cilium CiliumNetworkPolicy CRD not found on this cluster; IsolatePod actions will be no-ops", "reason", err.Error())
 			return mesh.NoopAdapter{}
 		}
 	}

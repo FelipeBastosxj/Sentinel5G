@@ -81,7 +81,15 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
 - [ ] Cilium-native capture path (Hubble or a custom BPF program) as an
       alternative to standalone XDP.
 - [ ] Falco output bridging into `NormalizedEvent`.
-- [ ] Additional `pkg/mesh.Adapter` implementations (Linkerd, Cilium mesh).
+- [ ] Additional `pkg/mesh.Adapter` implementations. `CiliumAdapter` done
+      (`MESH_ADAPTER=cilium`, `cilium.io/v2` `CiliumNetworkPolicy` with
+      `ingressDeny`/`egressDeny: [{from,to}Entities: ["all"]]`, verified
+      against a real API server with the real CRD schema installed).
+      Linkerd is not — its `policy.linkerd.io` `Server` resource is
+      port-scoped (no wildcard), unlike Istio's/Cilium's workload-wide
+      deny, and `Adapter.Quarantine`'s signature carries no port to scope
+      one by; see `docs/integrations.md` for the real options this opens
+      up (port-aware `Adapter`, or best-effort Pod-spec port discovery).
 - [x] Prometheus instrumentation for the AI engine. HTTP mode gets
       `/metrics` via `prometheus-fastapi-instrumentator` on its existing
       app; NATS worker mode (no app of its own) gets a dedicated

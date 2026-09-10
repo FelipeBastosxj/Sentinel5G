@@ -16,6 +16,12 @@ var authorizationPolicyGVK = schema.GroupVersionKind{
 	Kind:    "AuthorizationPolicy",
 }
 
+var ciliumNetworkPolicyGVK = schema.GroupVersionKind{
+	Group:   "cilium.io",
+	Version: "v2",
+	Kind:    "CiliumNetworkPolicy",
+}
+
 // TestBuildMeshAdapter_IstioFallsBackToNoopWithoutTheCRD is a regression
 // guard for a real bug found by running the quickstart flow against a real
 // kind cluster with no Istio installed: MESH_ADAPTER=istio (the default)
@@ -27,7 +33,7 @@ func TestBuildMeshAdapter_IstioFallsBackToNoopWithoutTheCRD(t *testing.T) {
 	restMapper := meta.NewDefaultRESTMapper(nil) // no GVKs registered -- CRD doesn't exist
 	log := testr.New(t)
 
-	adapter := buildMeshAdapter(log, "istio", mesh.IstioAdapterDeps{}, restMapper)
+	adapter := buildMeshAdapter(log, "istio", mesh.AdapterDeps{}, restMapper)
 
 	if _, ok := adapter.(mesh.NoopAdapter); !ok {
 		t.Fatalf("expected a NoopAdapter fallback when the AuthorizationPolicy CRD isn't registered, got %T", adapter)
@@ -39,10 +45,35 @@ func TestBuildMeshAdapter_IstioUsesRealAdapterWhenCRDExists(t *testing.T) {
 	restMapper.Add(authorizationPolicyGVK, meta.RESTScopeNamespace)
 	log := testr.New(t)
 
-	adapter := buildMeshAdapter(log, "istio", mesh.IstioAdapterDeps{}, restMapper)
+	adapter := buildMeshAdapter(log, "istio", mesh.AdapterDeps{}, restMapper)
 
 	if _, ok := adapter.(*mesh.IstioAdapter); !ok {
 		t.Fatalf("expected a real *mesh.IstioAdapter when the AuthorizationPolicy CRD is registered, got %T", adapter)
+	}
+}
+
+// Regression guard mirroring TestBuildMeshAdapter_IstioFallsBackToNoopWithoutTheCRD:
+// the same degrade-gracefully rule now also covers MESH_ADAPTER=cilium.
+func TestBuildMeshAdapter_CiliumFallsBackToNoopWithoutTheCRD(t *testing.T) {
+	restMapper := meta.NewDefaultRESTMapper(nil) // no GVKs registered -- CRD doesn't exist
+	log := testr.New(t)
+
+	adapter := buildMeshAdapter(log, "cilium", mesh.AdapterDeps{}, restMapper)
+
+	if _, ok := adapter.(mesh.NoopAdapter); !ok {
+		t.Fatalf("expected a NoopAdapter fallback when the CiliumNetworkPolicy CRD isn't registered, got %T", adapter)
+	}
+}
+
+func TestBuildMeshAdapter_CiliumUsesRealAdapterWhenCRDExists(t *testing.T) {
+	restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{ciliumNetworkPolicyGVK.GroupVersion()})
+	restMapper.Add(ciliumNetworkPolicyGVK, meta.RESTScopeNamespace)
+	log := testr.New(t)
+
+	adapter := buildMeshAdapter(log, "cilium", mesh.AdapterDeps{}, restMapper)
+
+	if _, ok := adapter.(*mesh.CiliumAdapter); !ok {
+		t.Fatalf("expected a real *mesh.CiliumAdapter when the CiliumNetworkPolicy CRD is registered, got %T", adapter)
 	}
 }
 
@@ -52,7 +83,7 @@ func TestBuildMeshAdapter_NoopKindNeverConsultsTheRESTMapper(t *testing.T) {
 	// other configured kind.
 	log := testr.New(t)
 
-	adapter := buildMeshAdapter(log, "noop", mesh.IstioAdapterDeps{}, nil)
+	adapter := buildMeshAdapter(log, "noop", mesh.AdapterDeps{}, nil)
 
 	if _, ok := adapter.(mesh.NoopAdapter); !ok {
 		t.Fatalf("expected NoopAdapter for kind=noop, got %T", adapter)

@@ -28,12 +28,6 @@ var authorizationPolicyGVK = schema.GroupVersionKind{
 // reconciliation never touches policies created by anything else.
 const quarantineNamePrefix = "sentinel5g-quarantine-"
 
-// IstioAdapterDeps are the adapter's external dependencies, injected so it
-// can be unit-tested against a fake controller-runtime client.
-type IstioAdapterDeps struct {
-	Client client.Client
-}
-
 // IstioAdapter implements Adapter by creating/deleting a deny-all
 // AuthorizationPolicy scoped to the target workload's selector, which Istio's
 // sidecars enforce at the mesh (L7) layer.
@@ -42,7 +36,7 @@ type IstioAdapter struct {
 }
 
 // NewIstioAdapter builds an IstioAdapter from deps.
-func NewIstioAdapter(deps IstioAdapterDeps) *IstioAdapter {
+func NewIstioAdapter(deps AdapterDeps) *IstioAdapter {
 	return &IstioAdapter{client: deps.Client}
 }
 

@@ -11,20 +11,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// newMeshTestScheme registers the AuthorizationPolicy GVK as an unstructured
-// type so the fake client can Get/Create/Update/Delete it without vendoring
-// Istio's own typed client-go — mirroring how IstioAdapter itself talks to
-// the real API server (see istio_adapter.go's package doc comment).
+// newMeshTestScheme registers every mesh adapter's CRD GVK as an
+// unstructured type so the fake client can Get/Create/Update/Delete them
+// without vendoring each mesh's own typed client-go — mirroring how
+// IstioAdapter/CiliumAdapter themselves talk to the real API server (see
+// istio_adapter.go's package doc comment).
 func newMeshTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	s.AddKnownTypeWithName(authorizationPolicyGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(ciliumNetworkPolicyGVK, &unstructured.Unstructured{})
 	return s
 }
 
 func TestIstioAdapter_QuarantineCreatesThenUpdatesIdempotently(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newMeshTestScheme()).Build()
-	adapter := NewIstioAdapter(IstioAdapterDeps{Client: fakeClient})
+	adapter := NewIstioAdapter(AdapterDeps{Client: fakeClient})
 	ctx := context.Background()
 
 	selector := map[string]string{"app": "amf-service"}
@@ -64,7 +66,7 @@ func TestIstioAdapter_QuarantineCreatesThenUpdatesIdempotently(t *testing.T) {
 // unconditionally, even for a workload that was never quarantined.
 func TestIstioAdapter_ReleaseIsIdempotentWhenNeverQuarantined(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newMeshTestScheme()).Build()
-	adapter := NewIstioAdapter(IstioAdapterDeps{Client: fakeClient})
+	adapter := NewIstioAdapter(AdapterDeps{Client: fakeClient})
 
 	if err := adapter.Release(context.Background(), "telecom-core", map[string]string{"app": "never-quarantined"}); err != nil {
 		t.Fatalf("expected Release on a never-quarantined workload to be a no-op, got error: %v", err)
@@ -73,7 +75,7 @@ func TestIstioAdapter_ReleaseIsIdempotentWhenNeverQuarantined(t *testing.T) {
 
 func TestIstioAdapter_ReleaseDeletesExistingQuarantine(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newMeshTestScheme()).Build()
-	adapter := NewIstioAdapter(IstioAdapterDeps{Client: fakeClient})
+	adapter := NewIstioAdapter(AdapterDeps{Client: fakeClient})
 	ctx := context.Background()
 
 	selector := map[string]string{"app": "amf-service"}
