@@ -92,6 +92,19 @@ type EventSource interface {
 	SignalRate(ip net.IP, destPort uint16) (count uint32, ok bool)
 }
 
+// isIPv4 reports whether ip should be treated as an IPv4 address for the
+// purpose of choosing between the IPv4 and IPv6 map families (blocklist vs
+// blocklist_v6, signal_rate vs signal_rate_v6, scan_rate vs scan_rate_v6) —
+// the single, shared classifier for that routing decision, used by both
+// Loader.blocklistMapAndKey and Loader.SignalRate in loader_linux.go so the
+// two can't independently drift on how a v4-mapped IPv6 address
+// (::ffff:a.b.c.d, which net.IP.To4() already treats as IPv4) is handled;
+// see ipv6Key's doc comment below for why that specific case is routed to
+// IPv4.
+func isIPv4(ip net.IP) bool {
+	return ip.To4() != nil
+}
+
 // ipv4Key returns the raw 4-byte representation of ip, passed to the BPF map
 // as an opaque byte key. This matches the byte layout the kernel side reads
 // directly out of `struct iphdr.saddr` / `.daddr` (network byte order, no
@@ -118,7 +131,7 @@ func ipv4Key(ip net.IP) ([]byte, error) {
 // wire — bpf/packet_filter.c's IPv4 path is what will actually observe its
 // traffic, so that's the map whose state should reflect it.
 func ipv6Key(ip net.IP) ([]byte, error) {
-	if ip.To4() != nil {
+	if isIPv4(ip) {
 		return nil, fmt.Errorf("blocklist_v6 only supports IPv6 addresses, got %q", ip.String())
 	}
 	v6 := ip.To16()

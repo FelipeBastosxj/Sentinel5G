@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+func TestIsIPv4(t *testing.T) {
+	cases := map[string]bool{
+		"10.42.0.7":       true,
+		"::ffff:10.0.0.1": true, // v4-mapped: treated as IPv4, see ipv6Key's doc comment.
+		"2001:db8::1":     false,
+	}
+	for addr, want := range cases {
+		if got := isIPv4(net.ParseIP(addr)); got != want {
+			t.Errorf("isIPv4(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
 func TestIpv4Key(t *testing.T) {
 	key, err := ipv4Key(net.ParseIP("10.42.0.7"))
 	if err != nil {
