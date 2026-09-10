@@ -106,7 +106,7 @@ jobs:
         # drifting from api/v1alpha1's Go types (see that file's docstring).
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-          echo "KUBEBUILDER_ASSETS=$($(go env GOPATH)/bin/setup-envtest use 1.30.3 -p path)" >> "$GITHUB_ENV"
+          echo "KUBEBUILDER_ASSETS=$($(go env GOPATH)/bin/setup-envtest use 1.36.2 -p path)" >> "$GITHUB_ENV"
       - name: go test
         run: go test ./pkg/... ./api/... -v -cover
 
