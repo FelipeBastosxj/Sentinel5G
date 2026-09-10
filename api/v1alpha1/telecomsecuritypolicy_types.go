@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // Sensitivity controls how aggressively the AI engine's threat score is
@@ -141,5 +142,22 @@ type TelecomSecurityPolicyList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&TelecomSecurityPolicy{}, &TelecomSecurityPolicyList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &TelecomSecurityPolicy{}, &TelecomSecurityPolicyList{})
+		// Required alongside AddKnownTypes, not optional boilerplate:
+		// registers the common meta/v1 types (CreateOptions, UpdateOptions,
+		// ListOptions, WatchEvent, ...) for THIS GroupVersion specifically —
+		// client-go's REST client needs them to encode/decode requests
+		// against the CRD. controller-runtime's now-deprecated
+		// pkg/scheme.Builder did this call automatically; migrating off it
+		// means doing it by hand (see that package's Register, and its own
+		// doc comment for the exact replacement pattern this follows).
+		// Missing this doesn't fail to compile -- it fails at runtime on
+		// the first real Create/Update/List/Watch call against a real API
+		// server, with "CreateOptions is not suitable for converting to
+		// ...scheme" -- caught by pkg/controller/envtest_test.go, not by
+		// the fake-client-backed unit tests.
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

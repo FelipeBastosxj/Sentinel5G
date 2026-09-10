@@ -112,8 +112,20 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       deletion. Fixed via a reverse index (`byPod`) so `Remove` can find a
       deleted Pod's last known IP from a bare `NotFound` response, which
       carries none.
-- [ ] `k8s.io/*`/`controller-runtime` dependency bump — currently pinned
-      to the Kubernetes 1.30 line, needs its own regression pass.
+- [x] `k8s.io/*`/`controller-runtime` dependency bump — from the
+      Kubernetes 1.30 line to 1.37 (`k8s.io/api`/`apimachinery`/`client-go`
+      v0.37.0, `controller-runtime` v0.25.0 — the exact pairing
+      `controller-runtime` v0.25.0 itself declares). Found and fixed a real
+      regression along the way: `api/v1alpha1/groupversion_info.go`'s
+      `scheme.Builder` is now deprecated in favor of plain
+      `runtime.SchemeBuilder`, but the replacement needs an explicit
+      `metav1.AddToGroupVersion` call `scheme.Builder` used to do
+      automatically — missing it doesn't fail to compile, only at runtime
+      against a real API server (`CreateOptions is not suitable for
+      converting...`), caught by `pkg/controller/envtest_test.go`, not the
+      fake-client unit tests. `setup-envtest`'s pinned version bumped to
+      1.36.2 (`envtest` binaries lag client-library releases slightly; this
+      is the newest one available) to match.
 - [x] Path-based CI job filtering (skip unrelated jobs on single-toolchain
       PRs). A `changes` job (`dorny/paths-filter`) gates `ci.yml`'s four
       jobs; editing the workflow file itself always runs all of them.
