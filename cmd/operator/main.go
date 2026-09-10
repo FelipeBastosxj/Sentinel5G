@@ -4,6 +4,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"net"
@@ -27,6 +29,7 @@ import (
 	sentinelcontroller "github.com/FelipeBastosxj/Sentinel5G/pkg/controller"
 	sentinelebpf "github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/hubble"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/ingestion"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/mesh"
 )
@@ -148,6 +151,26 @@ func main() {
 		log.Info("eBPF not attached; Layer 1 -> Layer 2 event publishing disabled")
 	}
 
+	// Cilium-native capture path (pkg/hubble.Observer): an alternative to
+	// eBPF's own standalone XDP attach above, not additive to it -- see
+	// docs/integrations.md's "Capture layer" section for why a cluster
+	// picks one or the other. Opt-in via HUBBLE_ADDR; empty (the default)
+	// leaves this disabled entirely, same "degrade gracefully" posture
+	// buildMeshAdapter and attachBlocklist already follow.
+	if cfg.HubbleAddr != "" {
+		observer := &hubble.Observer{
+			Addr:      cfg.HubbleAddr,
+			TLSConfig: hubbleTLSConfig(log, cfg),
+			Bus:       bus,
+			Subject:   cfg.NATSEventsSubject,
+			Log:       log.WithName("hubble-observer"),
+		}
+		if addErr := mgr.Add(observer); addErr != nil {
+			log.Error(addErr, "unable to register hubble observer")
+			os.Exit(1)
+		}
+	}
+
 	meshAdapter := buildMeshAdapter(log, cfg.MeshAdapter, mesh.AdapterDeps{Client: mgr.GetClient()}, mgr.GetRESTMapper())
 
 	index := sentinelcontroller.NewPolicyIndex()
@@ -254,6 +277,45 @@ func buildMeshAdapter(log logr.Logger, kind string, deps mesh.AdapterDeps, restM
 		os.Exit(1)
 	}
 	return adapter
+}
+
+// hubbleTLSConfig builds the *tls.Config pkg/hubble.Observer dials with, or
+// nil for a plaintext connection when none of HUBBLE_TLS_* are set --
+// mirroring events.Config's own optional-TLS posture for the NATS
+// connection above. A cert/key pair without a CA file is valid (mTLS to a
+// Relay whose server cert chains to a well-known root); a CA file alone,
+// with no client cert, is also valid (TLS without client auth).
+func hubbleTLSConfig(log logr.Logger, cfg config.OperatorConfig) *tls.Config {
+	if cfg.HubbleTLSCAFile == "" && cfg.HubbleTLSCertFile == "" && cfg.HubbleTLSKeyFile == "" {
+		return nil
+	}
+
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	if cfg.HubbleTLSCAFile != "" {
+		caCert, err := os.ReadFile(cfg.HubbleTLSCAFile)
+		if err != nil {
+			log.Error(err, "unable to read HUBBLE_TLS_CA_FILE")
+			os.Exit(1)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			log.Error(fmt.Errorf("no certificates found in %q", cfg.HubbleTLSCAFile), "invalid HUBBLE_TLS_CA_FILE")
+			os.Exit(1)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	if cfg.HubbleTLSCertFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.HubbleTLSCertFile, cfg.HubbleTLSKeyFile)
+		if err != nil {
+			log.Error(err, "unable to load HUBBLE_TLS_CERT_FILE/HUBBLE_TLS_KEY_FILE")
+			os.Exit(1)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig
 }
 
 type noopBlocklist struct{}

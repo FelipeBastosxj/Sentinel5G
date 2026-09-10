@@ -214,6 +214,7 @@ func TestBridge_Handle_PublishesToNATS(t *testing.T) {
 	cfg := events.DefaultConfig()
 	cfg.StreamName = "SENTINEL5G_TEST_" + t.Name()
 	cfg.EventsSubject = "sentinel5g.test.events." + t.Name()
+	cfg.ThreatsSubject = "sentinel5g.test.threats." + t.Name()
 	cfg.ConnectTimeout = 2 * time.Second
 
 	bus, err := events.Connect(cfg)

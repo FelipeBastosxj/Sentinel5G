@@ -33,6 +33,23 @@ type OperatorConfig struct {
 	ThreatScoreThreshold float64
 	MeshAdapter          string
 
+	// HubbleAddr is the Hubble Observer gRPC endpoint (typically Hubble
+	// Relay, e.g. "hubble-relay.kube-system.svc.cluster.local:80"). Empty
+	// (the default) disables pkg/hubble.Observer entirely -- this is an
+	// opt-in alternative capture path for clusters already running Cilium
+	// as their CNI, not something to enable alongside eBPF's own XDP attach
+	// on the same interface (see docs/integrations.md's "Capture layer"
+	// section for why those two don't compose).
+	HubbleAddr string
+	// Hubble Relay is commonly deployed with mTLS -- see
+	// https://docs.cilium.io/en/stable/observability/hubble/configuration/#tls-configuration.
+	// All optional and empty by default, matching HubbleAddr's own
+	// disabled-by-default posture; a plaintext connection is used when
+	// HubbleAddr is set but none of these are.
+	HubbleTLSCAFile   string
+	HubbleTLSCertFile string
+	HubbleTLSKeyFile  string
+
 	// LogLevel is passed through as-is (zap vocabulary: debug/info/warn/
 	// error/...) for cmd/operator/main.go to parse — validated there, not
 	// here, since a bad value should log a warning through the very logger
@@ -84,6 +101,11 @@ func Load() (OperatorConfig, error) {
 		ThreatScoreThreshold: threshold,
 		MeshAdapter:          getEnv("MESH_ADAPTER", "istio"),
 		LogLevel:             getEnv("LOG_LEVEL", "info"),
+
+		HubbleAddr:        getEnv("HUBBLE_ADDR", ""),
+		HubbleTLSCAFile:   getEnv("HUBBLE_TLS_CA_FILE", ""),
+		HubbleTLSCertFile: getEnv("HUBBLE_TLS_CERT_FILE", ""),
+		HubbleTLSKeyFile:  getEnv("HUBBLE_TLS_KEY_FILE", ""),
 
 		DeEscalationDwell: deEscalationDwell,
 	}

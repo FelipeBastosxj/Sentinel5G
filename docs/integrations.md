@@ -12,14 +12,53 @@ have two options:
 
 1. **Standalone (default):** attach `packet_filter.c` directly via
    `pkg/ebpf.Attach` on the node interfaces facing telecom workloads. This
-   is what `cmd/operator` does today.
-2. **Cilium-native:** compile the same detection logic as a Cilium
-   [custom BPF program](https://docs.cilium.io/) or export equivalent
-   signals via Cilium's Hubble flow API instead of a second XDP attachment
-   point on the same interface — two independent XDP programs cannot both
-   own the same attachment point without an explicit multi-prog dispatcher.
-   This integration is tracked in `ROADMAP.md` and not implemented in this
-   scaffold.
+   is what `cmd/operator` does today, and requires no Cilium/Hubble at all.
+2. **Cilium-native (`pkg/hubble.Observer`, `HUBBLE_ADDR`):** instead of a
+   second XDP attachment point on the same interface — two independent XDP
+   programs cannot both own the same attachment point without an explicit
+   multi-prog dispatcher — consume Cilium's already-running dataplane
+   visibility via Hubble's gRPC Observer API (`GetFlows`, typically served
+   by Hubble Relay, which aggregates every node's own Hubble agent into one
+   stream). `Observer.Start` dials `HUBBLE_ADDR`, streams flows with
+   `Follow: true`, and republishes matching ones (UDP to port 2152/5060,
+   the same telecom signaling ports `bpf/packet_filter.c`'s
+   `is_signaling_port()` recognizes) as `events.NormalizedEvent` on the
+   same NATS subject the eBPF path uses — `pkg/hubble.FromFlow` does the
+   mapping, reading `Namespace`/`PodName` directly off the flow's already-
+   resolved `Source` endpoint (Cilium has already done the identity lookup
+   `pkg/ingestion.FromSignalingEvent` otherwise has to do itself via
+   `PodIPIndex`). Unlike `pkg/ingestion.Publisher` and `pkg/falco.Bridge`
+   (both `NeedLeaderElection() == false`, since each needs to run on every
+   node/replica to see its own local traffic), `Observer.
+   NeedLeaderElection()` returns `true` — Hubble Relay has already
+   aggregated every node's flows into one stream, so more than one live
+   `Observer` against the same Relay would double-publish every flow.
+   Empty `HUBBLE_ADDR` (the default) leaves this disabled entirely, same
+   opt-in posture as `ebpf.enabled`/`daemonset.enabled`. A cluster running
+   Cilium should use this *instead of* attaching `packet_filter.c`, not
+   alongside it — running both against the same real traffic would
+   double-count every signaling packet as two separate `NormalizedEvent`s.
+   `HUBBLE_TLS_CA_FILE`/`HUBBLE_TLS_CERT_FILE`/`HUBBLE_TLS_KEY_FILE`
+   configure mTLS to Hubble Relay, commonly deployed that way — see
+   [Cilium's Hubble TLS docs](https://docs.cilium.io/en/stable/observability/hubble/configuration/#tls-configuration).
+
+   **Verification note**: this integration was NOT verified against a live
+   Hubble/Cilium deployment. This project's real WSL2 test cluster (see
+   the persistent session memory referenced from `CLAUDE.md`) runs
+   flannel, not Cilium, as its CNI, and installing Cilium there would risk
+   breaking the Istio/NATS/Open5GS environment already relied on for other
+   testing. What *was* verified instead: an in-process gRPC server
+   implementing the real `observer.ObserverServer` interface
+   (`google.golang.org/grpc/test/bufconn`, not a real network listener),
+   exercised end-to-end through the actual generated
+   `observer.ObserverClient` — dial, stream, `Recv` loop, the
+   `GetFlowsResponse` oneof, graceful stream shutdown — with hand-built but
+   schema-accurate `flow.Flow` messages (checked against
+   `github.com/cilium/cilium/api/v1/flow`'s actual generated Go types, not
+   assumed), publishing to a real NATS JetStream server and confirmed via a
+   direct subscription. This is the same class of explicit, honest caveat
+   this page already carries for the Falco bridge below and for
+   `LinkerdAdapter`'s real-traffic-enforcement gap further down.
 
 **Falco bridging: `cmd/falco-bridge`.** Falco's syscall-level alerts are
 bridged into `events.NormalizedEvent` by a small, separate binary
