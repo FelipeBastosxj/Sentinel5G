@@ -114,8 +114,9 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       carries none.
 - [ ] `k8s.io/*`/`controller-runtime` dependency bump — currently pinned
       to the Kubernetes 1.30 line, needs its own regression pass.
-- [ ] Path-based CI job filtering (skip unrelated jobs on single-toolchain
-      PRs).
+- [x] Path-based CI job filtering (skip unrelated jobs on single-toolchain
+      PRs). A `changes` job (`dorny/paths-filter`) gates `ci.yml`'s four
+      jobs; editing the workflow file itself always runs all of them.
 - [ ] Dockerfile hardening: pin base images to a digest, add
       `HEALTHCHECK`.
 

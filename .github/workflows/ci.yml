@@ -9,8 +9,50 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      python: ${{ steps.filter.outputs.python }}
+      bpf: ${{ steps.filter.outputs.bpf }}
+      helm: ${{ steps.filter.outputs.helm }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Every filter also matches this workflow file itself, so editing
+          # ci.yml always runs the full suite instead of silently skipping
+          # whatever job the edit actually affects.
+          filters: |
+            go:
+              - 'api/**'
+              - 'cmd/operator/**'
+              - 'pkg/**'
+              - 'go.mod'
+              - 'go.sum'
+              - '.golangci.yml'
+              - 'config/crd/bases/**'
+              - '.github/workflows/ci.yml'
+            python:
+              - 'cmd/ai-engine/**'
+              - '.github/workflows/ci.yml'
+            bpf:
+              - 'bpf/**'
+              - '.github/workflows/ci.yml'
+            helm:
+              - 'charts/**'
+              - 'config/crd/bases/**'
+              - '.github/workflows/ci.yml'
+
   go:
     name: Go build/lint/test
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +112,8 @@ jobs:
 
   python:
     name: AI engine lint/test
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -100,6 +144,8 @@ jobs:
 
   bpf:
     name: eBPF compile check
+    needs: changes
+    if: needs.changes.outputs.bpf == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,6 +166,8 @@ jobs:
 
   helm-lint:
     name: Helm chart lint
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

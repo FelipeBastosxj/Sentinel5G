@@ -53,7 +53,11 @@ docs(readme): update helm installation instructions
 
 ## PR requirements
 
-- CI must pass (lint + tests across every changed toolchain).
+- CI must pass (lint + tests across every changed toolchain). `.github/
+  workflows/ci.yml`'s four jobs (`go`, `python`, `bpf`, `helm-lint`) are
+  path-filtered via a `changes` job (`dorny/paths-filter`) — a PR touching
+  only `cmd/ai-engine/` shows the other three as skipped, not failed; that's
+  expected, not a CI problem. Editing `ci.yml` itself always runs every job.
 - CRD manifests must be updated if the API changed.
 - eBPF changes must be reviewed for kernel-version compatibility and stack
   usage, not just for compiling locally.
