@@ -282,3 +282,68 @@ jobs:
         run: |
           cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.ghcr_manifest_digest }}"
           cosign sign --yes "docker.io/${{ steps.vars.outputs.dockerhub_owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.dockerhub_manifest_digest }}"
+
+  # Publishes charts/sentinel5g-operator as an OCI artifact to GHCR --
+  # `helm install oci://ghcr.io/.../charts/sentinel5g-operator --version
+  # X.Y.Z` becomes possible without cloning the repo first, the same gap
+  # README.md's "No hosted chart repository is published yet" flags. GHCR
+  # already hosts OCI artifacts generally (it's how the multi-arch image
+  # manifests above are stored too), so this reuses that registry and the
+  # same cosign signing step rather than standing up a separate index.yaml-
+  # based chart repository. Independent of build-scan-push/manifest above
+  # (no `needs`): a chart-only release doesn't have to wait on image builds.
+  publish-chart:
+    name: Publish Helm chart (OCI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Chart.yaml's version matches this release tag
+        # Chart.yaml's version is the source of truth (bumped by hand as
+        # part of the release PR, alongside CHANGELOG.md, the same way
+        # appVersion already tracks the image tag) -- this only catches
+        # forgetting to bump it before tagging, it doesn't derive it.
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          chart_version="$(grep -m1 '^version:' charts/sentinel5g-operator/Chart.yaml | awk '{print $2}')"
+          if [ "$tag_version" != "$chart_version" ]; then
+            echo "ERROR: tag $GITHUB_REF_NAME (version $tag_version) does not match" >&2
+            echo "charts/sentinel5g-operator/Chart.yaml's version: $chart_version" >&2
+            echo "Bump Chart.yaml's version (and appVersion) to match before tagging a release." >&2
+            exit 1
+          fi
+
+      - name: Compute lowercase image owner
+        # See build-scan-push's identically named step for why this can't
+        # just be github.repository_owner as-is.
+        id: vars
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package and push the chart as an OCI artifact
+        id: push
+        run: |
+          set -euo pipefail
+          helm package charts/sentinel5g-operator --destination /tmp
+          push_out="$(helm push /tmp/sentinel5g-operator-*.tgz "oci://ghcr.io/${{ steps.vars.outputs.owner }}/charts" 2>&1)"
+          echo "$push_out" >&2
+          digest="$(grep -oE 'Digest: sha256:[0-9a-f]{64}' <<<"$push_out" | grep -oE 'sha256:[0-9a-f]{64}')"
+          [ -n "$digest" ] || { echo "failed to parse a digest from helm push output" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the chart (keyless)
+        run: |
+          cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/charts/sentinel5g-operator@${{ steps.push.outputs.digest }}"
