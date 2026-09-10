@@ -44,14 +44,6 @@ ok()   { printf '%s%s%s\n' "$GREEN" "$1" "$RESET"; }
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Explicit, isolated kubeconfig for this script alone -- never touches
-# ~/.kube/config or whatever the host's default kubectl/context already is.
-# Found the hard way: a machine with k3s (or minikube/microk8s/Docker
-# Desktop Kubernetes/...) already installed can make "kubectl" itself
-# default to THAT cluster's kubeconfig regardless of what kind just wrote,
-# so this script never relies on ambient defaults for anything it runs.
-export KUBECONFIG="$REPO_ROOT/.kube-quickstart.yaml"
-
 # --- 1. Prerequisites -------------------------------------------------------
 step "Checking prerequisites"
 
@@ -61,12 +53,27 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
-  echo "docker is installed but the daemon isn't reachable (is it running?)." >&2
+  # Two genuinely different causes, and the distinction is the whole fix, so
+  # name both instead of only asking "is it running?": on a fresh Linux box
+  # or VM the daemon is usually up and it is the *user* that lacks access
+  # (not in the "docker" group), which reports as the same unreachable
+  # daemon here.
+  echo "docker is installed but its daemon isn't reachable. Two common causes:" >&2
+  echo "  1. The daemon isn't running:  sudo systemctl start docker" >&2
+  echo "  2. Your user can't talk to it (not in the 'docker' group):" >&2
+  echo "       sudo usermod -aG docker \"$(id -un)\"" >&2
+  echo "     then start a new login shell (or run: newgrp docker) and re-run this." >&2
   exit 1
 fi
-if ! command -v kubectl >/dev/null 2>&1; then
-  echo "kubectl is required and wasn't found on PATH. Install it first:" >&2
-  echo "  https://kubernetes.io/docs/tasks/tools/#kubectl" >&2
+# curl is used by this script's own preflight checks below and to fetch any
+# missing CLI -- some minimal server/VM images (and slim container bases)
+# genuinely ship without it, where every check below would otherwise fail as
+# a confusing "curl: command not found" mid-run.
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required and wasn't found on PATH. Install it first, e.g.:" >&2
+  echo "  Debian/Ubuntu:  sudo apt-get install -y curl" >&2
+  echo "  RHEL/Fedora:    sudo dnf install -y curl" >&2
+  echo "  Alpine:         sudo apk add curl" >&2
   exit 1
 fi
 
@@ -107,20 +114,131 @@ case "$OS" in
     ;;
 esac
 
+# Everything this script has to *write* -- its isolated kubeconfig, any CLI
+# it downloads, helm's own cache/config -- goes under one directory. The repo
+# root is preferred (keeps it all next to the clone, is already covered by
+# .gitignore, and is where CI looks for the kubeconfig), but it is NOT
+# assumed writable: found the hard way that a clone very easily belongs to
+# someone else or sits on a read-only mount -- a checkout unpacked with sudo
+# (`sudo git clone`, a tarball extracted as root, an image with the repo
+# baked in), a shared /opt or /srv path on a VM, an NFS mount with
+# root_squash. The old hard-coded "$REPO_ROOT/bin" and
+# "$REPO_ROOT/.kube-quickstart.yaml" turned every one of those into a bare
+# "Permission denied" from inside curl or kind, so fall back to a per-user
+# writable directory rather than failing.
+pick_state_dir() {
+  local candidate
+  for candidate in \
+    "$REPO_ROOT" \
+    "${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/sentinel5g-quickstart" \
+    "${TMPDIR:-/tmp}/sentinel5g-quickstart-$(id -u)"
+  do
+    # An actual write, not [ -w ]: only this catches a read-only mount, a
+    # restrictive ACL, or a pre-existing root-owned bin/ inside an
+    # otherwise-writable checkout.
+    if mkdir -p "$candidate/bin" 2>/dev/null \
+      && ( : > "$candidate/.sentinel5g-write-probe" ) 2>/dev/null \
+      && ( : > "$candidate/bin/.sentinel5g-write-probe" ) 2>/dev/null; then
+      rm -f "$candidate/.sentinel5g-write-probe" "$candidate/bin/.sentinel5g-write-probe"
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! STATE_DIR="$(pick_state_dir)"; then
+  echo "ERROR: nowhere writable to keep this script's kubeconfig and any CLI it" >&2
+  echo "needs to download -- tried the repo itself, \$XDG_STATE_HOME/\$HOME, and" >&2
+  echo "\$TMPDIR (/tmp). Make one of those writable, or re-run from a clone you own." >&2
+  exit 1
+fi
+BIN_DIR="$STATE_DIR/bin"
+if [ "$STATE_DIR" != "$REPO_ROOT" ]; then
+  info "Repo directory isn't writable -- this run's kubeconfig and CLIs go in $STATE_DIR"
+fi
+
+# Anything installed below is used for this run only, never added to the
+# system PATH.
+export PATH="$BIN_DIR:$PATH"
+
+# Explicit, isolated kubeconfig for this script alone -- never touches
+# ~/.kube/config or whatever the host's default kubectl/context already is.
+# Found the hard way: a machine with k3s (or minikube/microk8s/Docker
+# Desktop Kubernetes/...) already installed can make "kubectl" itself
+# default to THAT cluster's kubeconfig regardless of what kind just wrote,
+# so this script never relies on ambient defaults for anything it runs.
+export KUBECONFIG="$STATE_DIR/.kube-quickstart.yaml"
+
+# Same reasoning for helm's own state, plus it keeps the script working when
+# $HOME itself isn't writable (a service account on a VM, a container running
+# as an arbitrary uid) -- helm otherwise fails writing its cache/config.
+export HELM_CACHE_HOME="$STATE_DIR/helm/cache"
+export HELM_CONFIG_HOME="$STATE_DIR/helm/config"
+export HELM_DATA_HOME="$STATE_DIR/helm/data"
+
+# --fail (-f) is the point of routing every download through here: without
+# it, `curl -sLo file url` writes a 404/503 error *page* to the file and
+# still exits 0, so a bad URL or a registry blip produced an "installed"
+# CLI that only failed much later, as an unrelated-looking
+# "cannot execute binary file". The retries cover the transient half of
+# that same class of failure.
+fetch_cli() {
+  local name="$1" url="$2"
+  if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 180 -o "$BIN_DIR/$name" "$url"; then
+    rm -f "$BIN_DIR/$name"
+    echo "ERROR: failed to download $name from:" >&2
+    echo "  $url" >&2
+    echo "Check egress to that host, or install $name yourself and re-run." >&2
+    exit 1
+  fi
+  chmod +x "$BIN_DIR/$name"
+}
+
+# kubectl is installed here rather than demanded as a prerequisite: it is no
+# harder to fetch than kind or helm (same single static binary), and having
+# the script hard-fail on the one CLI it could trivially provide itself was
+# the most common way a first run died on a fresh machine or VM.
+if ! command -v kubectl >/dev/null 2>&1; then
+  info "kubectl not found -- installing to $BIN_DIR/kubectl (not touching system PATH)"
+  # Whatever upstream currently calls stable, with a known-good pin as a
+  # fallback so a hiccup fetching stable.txt doesn't become an unusable
+  # kubectl. kubectl supports +/-1 minor against the API server and kind's
+  # default node image tracks recent Kubernetes, so stable is right here.
+  KUBECTL_VERSION="$(curl -fsSL --max-time 15 https://dl.k8s.io/release/stable.txt 2>/dev/null || true)"
+  KUBECTL_VERSION="${KUBECTL_VERSION:-v1.31.4}"
+  fetch_cli kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${OS}/${ARCH}/kubectl"
+fi
 if ! command -v kind >/dev/null 2>&1; then
-  info "kind not found -- installing to ./bin/kind (not touching system PATH)"
-  mkdir -p "$REPO_ROOT/bin"
-  curl -sLo "$REPO_ROOT/bin/kind" "https://kind.sigs.k8s.io/dl/latest/kind-${OS}-${ARCH}"
-  chmod +x "$REPO_ROOT/bin/kind"
-  export PATH="$REPO_ROOT/bin:$PATH"
+  info "kind not found -- installing to $BIN_DIR/kind (not touching system PATH)"
+  fetch_cli kind "https://kind.sigs.k8s.io/dl/latest/kind-${OS}-${ARCH}"
 fi
 if ! command -v helm >/dev/null 2>&1; then
-  info "helm not found -- installing to ./bin/helm (not touching system PATH)"
-  mkdir -p "$REPO_ROOT/bin"
-  curl -sL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
-    | HELM_INSTALL_DIR="$REPO_ROOT/bin" USE_SUDO=false bash >/dev/null
-  export PATH="$REPO_ROOT/bin:$PATH"
+  info "helm not found -- installing to $BIN_DIR/helm (not touching system PATH)"
+  if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 180 \
+      https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
+      | HELM_INSTALL_DIR="$BIN_DIR" USE_SUDO=false bash >/dev/null; then
+    echo "ERROR: failed to install helm into $BIN_DIR." >&2
+    echo "Check egress to raw.githubusercontent.com/get.helm.sh, or install helm" >&2
+    echo "yourself (https://helm.sh/docs/intro/install/) and re-run." >&2
+    exit 1
+  fi
 fi
+
+# Sanity-check that what is on PATH actually *runs*: a wrong-architecture or
+# truncated binary, or a system CLI that is broken for its own reasons, is
+# invisible to `command -v` and would otherwise surface as a confusing
+# failure several steps later.
+for cli in "kubectl version --client" "kind version" "helm version --short"; do
+  # shellcheck disable=SC2086 -- deliberate word splitting: cli is "<bin> <args>"
+  if ! $cli >/dev/null 2>&1; then
+    name="${cli%% *}"
+    echo "ERROR: '$name' is on PATH ($(command -v "$name")) but '$cli' failed." >&2
+    echo "It looks broken or built for a different architecture ($OS/$ARCH here)." >&2
+    echo "Remove or fix that copy and re-run -- this script will install its own." >&2
+    exit 1
+  fi
+done
 ok "docker, kubectl, kind, helm all available"
 
 # --- 2. Cluster --------------------------------------------------------------
@@ -128,6 +246,13 @@ step "Creating (or reusing) a local kind cluster: $CLUSTER_NAME"
 
 if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
   info "Cluster '$CLUSTER_NAME' already exists, reusing it"
+  # Re-export the cluster's kubeconfig instead of assuming this script's
+  # isolated one still describes it. The cluster outliving that file is
+  # completely normal -- it was deleted or cleaned up, /tmp was swept, or
+  # the state dir simply moved between runs because the repo's writability
+  # changed -- and without this, the reuse path died on the next line with
+  # `no context exists with the name: "kind-sentinel5g-quickstart"`.
+  kind export kubeconfig --name "$CLUSTER_NAME" >/dev/null
 else
   kind create cluster --name "$CLUSTER_NAME"
 fi
@@ -309,13 +434,28 @@ else
   info "Still Phase: ${PHASE:-<none>} after 30s -- check 'kubectl get events -n $DEMO_NAMESPACE' if this doesn't move to Mitigating shortly."
 fi
 
+# The commands printed below have to work when pasted into the user's own
+# shell, which knows nothing about this script's isolated KUBECONFIG -- and,
+# for anything this script downloaded, nothing about $BIN_DIR either. Print
+# the export, and the real path of each CLI when it isn't already on the
+# user's PATH. Every printed path is quoted: a clone under a directory with
+# a space in its name is entirely ordinary ("~/Desktop", and its localized
+# equivalents such as "Área de trabalho"), and unquoted these commands
+# silently split into the wrong arguments when pasted.
+kubectl_hint="kubectl"; kind_hint="kind"
+case "$(command -v kubectl)" in "$BIN_DIR"/*) kubectl_hint="\"$BIN_DIR/kubectl\"" ;; esac
+case "$(command -v kind)" in "$BIN_DIR"/*) kind_hint="\"$BIN_DIR/kind\"" ;; esac
+
 cat <<EOF
 
+${BOLD}Point your shell at the cluster this script created:${RESET}
+  export KUBECONFIG="$KUBECONFIG"
+
 ${BOLD}Look around:${RESET}
-  kubectl get telecomsecuritypolicy -n $DEMO_NAMESPACE -w
-  kubectl get pods -A
-  kubectl logs -n $NAMESPACE deploy/sentinel5g-operator
+  $kubectl_hint get telecomsecuritypolicy -n $DEMO_NAMESPACE -w
+  $kubectl_hint get pods -A
+  $kubectl_hint logs -n $NAMESPACE deploy/sentinel5g-operator
 
 ${BOLD}Tear down when done:${RESET}
-  kind delete cluster --name $CLUSTER_NAME
+  $kind_hint delete cluster --name $CLUSTER_NAME
 EOF

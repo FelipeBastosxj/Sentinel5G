@@ -54,13 +54,18 @@ image.repository=docker.io/312181015/sentinel5g-operator` to the Helm
 install below to use Docker Hub instead of the GHCR default.
 
 **Prefer one command?** `./scripts/quickstart.sh` runs every step below
-automatically (installing `kind`/`helm` locally if you don't have them, and
-working around a real `kind`-on-Docker DNS-resolution failure mode found the
-hard way — not specific to any one machine or cloud sandbox). Needs `docker`
-and `kubectl` already available; everything else it handles. The steps below
-are what it's actually running, for anyone who wants to follow along or
-adapt them. Hitting something environment-specific (a cloud VM, a
-Codespace, a corporate network)? Check
+automatically (installing `kubectl`/`kind`/`helm` for its own use if you
+don't have them, and working around a real `kind`-on-Docker DNS-resolution
+failure mode found the hard way — not specific to any one machine or cloud
+sandbox). All it needs is `docker` (running, and usable by your user) and
+`curl`; everything else it handles, without installing anything into your
+system: the CLIs it downloads, its kubeconfig and helm's cache all live
+beside the clone — or in a per-user directory when the clone itself isn't
+writable, e.g. a checkout unpacked with `sudo` or a shared path on a VM.
+
+The steps below are what it's actually running, for anyone who wants to
+follow along or adapt them. Hitting something environment-specific (a
+cloud VM, a Codespace, a corporate network)? Check
 [`docs/troubleshooting.md`](docs/troubleshooting.md) before assuming it's a
 Sentinel5G bug — most of what's been found there so far is generic
 kind/network/RBAC friction, not code.
