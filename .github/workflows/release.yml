@@ -35,6 +35,9 @@ jobs:
           - name: sentinel5g-ai-engine
             context: cmd/ai-engine
             dockerfile: cmd/ai-engine/Dockerfile
+          - name: sentinel5g-falco-bridge
+            context: .
+            dockerfile: cmd/falco-bridge/Dockerfile
         platform: [linux/amd64, linux/arm64]
     steps:
       - uses: actions/checkout@v4
@@ -196,7 +199,7 @@ jobs:
     needs: build-scan-push
     strategy:
       matrix:
-        component: [sentinel5g-operator, sentinel5g-ai-engine]
+        component: [sentinel5g-operator, sentinel5g-ai-engine, sentinel5g-falco-bridge]
     steps:
       - name: Compute lowercase image owners
         # See build-scan-push's identically named step: GHCR's owner and

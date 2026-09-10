@@ -21,11 +21,67 @@ have two options:
    This integration is tracked in `ROADMAP.md` and not implemented in this
    scaffold.
 
-Falco can run alongside Sentinel5G purely as a complementary
-syscall-level detection signal; there is no code-level integration point
-today since Falco alerts and Sentinel5G's `ThreatScoreEvent`s use different
-schemas. Bridging them (e.g. a Falco gRPC output plugin that emits
-`NormalizedEvent`s) is a natural roadmap item.
+**Falco bridging: `cmd/falco-bridge`.** Falco's syscall-level alerts are
+bridged into `events.NormalizedEvent` by a small, separate binary
+(`pkg/falco.Bridge`) — not folded into `cmd/operator`, since it's a pure
+HTTP-webhook-to-NATS translator with no need for the operator's K8s
+RBAC/leader-election/CRD-watching machinery. Point Falco's own
+[`http_output`](https://falco.org/docs/outputs/#http-output) at it:
+
+```yaml
+# Falco's own falco.yaml
+http_output:
+  enabled: true
+  url: "http://sentinel5g-falco-bridge.sentinel5g-system.svc.cluster.local:8091/falco"
+```
+
+`Bridge.FromAlert` maps Falco's `output_fields` (`fd.sip`/`fd.rip` →
+SourceIP, `fd.dip`/`fd.lip` → DestIP, `fd.dport`/`fd.lport` → DestPort,
+`k8s.ns.name`/`k8s.pod.name` → Namespace/PodName) the same
+best-effort-attribution way `pkg/ingestion.FromSignalingEvent` does for the
+eBPF path: `output_fields` is an open map whose actual keys depend on which
+`%fields` a given Falco rule's own `output:` format string references, so a
+missing or wrong-typed field is treated as unknown, not an error. `DestPort`
+is classified into a `Protocol` using the same two telecom signaling ports
+`bpf/packet_filter.c`'s `is_signaling_port()` recognizes (2152 → GTP-U, 5060
+→ SIP), so downstream feature extraction doesn't need to special-case which
+Layer 1 source produced an event. `PayloadSize`, `RatePerSecond`,
+`Malformed`, and `VLANID` stay at their zero value — Falco's syscall-level
+view has no equivalent of a packet payload size, a windowed rate (Falco
+emits one alert per triggering event), protocol-framing validation, or a
+Layer 2 VLAN tag.
+
+This is Falco's counterpart to `pkg/ingestion.Publisher` (the eBPF-sourced
+bridge), not a replacement — the two are independent and not mutually
+exclusive: a cluster can run both, publishing onto the same subject, since
+`NormalizedEvent` exists specifically so Layer 3 doesn't need to know which
+Layer 1 source produced an event. Like `Publisher`, `Bridge.
+NeedLeaderElection()` returns `false` — Falco commonly runs as its own
+DaemonSet, and every alert needs publishing regardless of which replica of
+this bridge happens to be elected leader if run under a manager (it isn't,
+here, but the same reasoning applies to a horizontally-scaled `Deployment`
+behind the `Service` `deployments/quickstart/falco-bridge.yaml` renders).
+
+Falco's `http_output` posts unauthenticated by default — set
+`FALCO_BRIDGE_SHARED_SECRET` (and Falco's own matching
+`http_output.headers: {"X-Sentinel5g-Shared-Secret": "..."}`) if the bridge
+is reachable by anything other than Falco itself: the same "an
+unauthenticated ingress is a real risk" posture this page already documents
+for the NATS bus below — anything that can `POST /falco` can forge a
+`NormalizedEvent`.
+
+**Verification note**: this bridge was verified end to end against a real
+NATS JetStream server (a synthetic Falco-shaped JSON payload POSTed to a
+running `Bridge` produced a correctly-mapped `NormalizedEvent`, actually
+delivered on the real subject, confirmed by directly subscribing to it) and
+inside a real built `docker build`/`docker run` container (`HEALTHCHECK`
+reports `"Status":"healthy"` against a live NATS connection). What was
+*not* verified is a live Falco daemon's own alerts flowing through it —
+this WSL2 environment's custom kernel doesn't reliably support Falco's own
+kernel-module/eBPF probe. The HTTP contract itself (Falco's long-stable,
+widely-integrated JSON output schema) is the part carrying the residual
+risk; this is the same kind of explicit, honest caveat this page already
+carries for `LinkerdAdapter`'s real-traffic-enforcement gap below.
 
 ## Mesh isolation: Istio, Cilium, Linkerd
 

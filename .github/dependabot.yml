@@ -14,3 +14,7 @@ updates:
     directory: "/cmd/ai-engine"
     schedule:
       interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/cmd/falco-bridge"
+    schedule:
+      interval: "weekly"
