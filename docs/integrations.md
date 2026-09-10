@@ -27,26 +27,57 @@ today since Falco alerts and Sentinel5G's `ThreatScoreEvent`s use different
 schemas. Bridging them (e.g. a Falco gRPC output plugin that emits
 `NormalizedEvent`s) is a natural roadmap item.
 
-## Mesh isolation: Istio
+## Mesh isolation: Istio, Cilium
 
-`pkg/mesh.IstioAdapter` quarantines a workload by creating a deny-all
+Both adapters share the same pattern: no vendored mesh-specific Go client
+(`istio.io/client-go`, `github.com/cilium/cilium`'s API module) is required,
+since each talks to its CRD via an unstructured `controller-runtime` client
+— the operator works against any cluster running the relevant CRD,
+regardless of that mesh's own Go client version. Both are idempotent: the
+same selector always maps to the same policy object name (see
+`pkg/mesh.quarantineName`, shared by both adapters), so repeated
+`Quarantine` calls update in place rather than accumulating stale objects.
+`buildMeshAdapter` (`cmd/operator/main.go`) checks the relevant CRD is
+actually registered before building either adapter, falling back to
+`mesh.NoopAdapter` (with a log line explaining why) if it isn't — the same
+"degrade gracefully" rule `EbpfBlock` already follows when eBPF isn't
+attached.
+
+**`pkg/mesh.IstioAdapter`** quarantines a workload by creating a deny-all
 `security.istio.io/v1` `AuthorizationPolicy` scoped to the policy's
-`targetWorkloads` selector — no `istio.io/client-go` dependency is required,
-since the adapter talks to the CRD via an unstructured `controller-runtime`
-client. This means:
+`targetWorkloads` selector (`spec.action: DENY` with a single empty rule —
+see that file's own comment for why an empty `rules: []` doesn't work,
+found by testing against a real cluster).
 
-- The operator works against any cluster running Istio's
-  `AuthorizationPolicy` CRD, regardless of Istio's Go client version.
-- Quarantine is idempotent: the same selector always maps to the same
-  policy name (see `pkg/mesh.quarantineName`), so repeated `Quarantine`
-  calls update in place rather than accumulating stale objects.
-- Clusters without Istio should set `MESH_ADAPTER=noop`
-  (`mesh.adapter=noop` in `.env.example`, or the Helm chart's
-  `config.meshAdapter`), which makes `IsolatePod` actions no-ops.
+**`pkg/mesh.CiliumAdapter`** (`MESH_ADAPTER=cilium`) quarantines a workload
+by creating a `cilium.io/v2` `CiliumNetworkPolicy` with `ingressDeny`/
+`egressDeny` rules using the `"all"` reserved entity — deliberately not an
+empty `endpointSelector`/`ingress`/`egress` ("allow nothing"): Cilium's own
+docs are explicit that "deny policies take precedence over allow policies,"
+but merely adding no allow rules doesn't override an *existing* allow policy
+for the same pod from elsewhere (e.g. a baseline "allow same-namespace"
+policy many clusters run) — only an explicit deny does. `"all"` is used
+rather than an empty selector for the same reason: an empty
+`fromEndpoints`/`toEndpoints` only covers Cilium-managed endpoints inside
+the cluster, while `"all"` is documented as covering the cluster **and**
+`world` (external) traffic, matching `IstioAdapter`'s full deny-all scope
+rather than a narrower intra-cluster-only one.
 
-Other service meshes (Linkerd, Cilium's own mesh mode) are not implemented;
-`pkg/mesh.Adapter` is the extension point — implement it and register it in
-`pkg/mesh.NewAdapter`.
+Clusters without either mesh should leave `MESH_ADAPTER` unset or set it to
+`noop` (`mesh.adapter=noop` in `.env.example`, or the Helm chart's
+`config.meshAdapter`), which makes `IsolatePod` actions no-ops.
+
+Linkerd is not implemented — its policy model (`policy.linkerd.io`
+`Server`/`AuthorizationPolicy`) is scoped per-port (`Server.spec.port` is
+required, no wildcard), unlike Istio's and Cilium's workload-wide deny,
+and `pkg/mesh.Adapter.Quarantine`'s signature carries no port information to
+scope a `Server` by. A real implementation needs either extending `Adapter`
+to be port-aware, or discovering the target Pods' declared container ports
+at `Quarantine`-call time (itself an incomplete guarantee — a container's
+declared `ports:` in its spec is documentation only, not enforced, so a
+port the workload actually listens on but didn't declare would stay
+reachable). `pkg/mesh.Adapter` is the extension point for this or any other
+mesh — implement it and register it in `pkg/mesh.NewAdapter`.
 
 ## eBPF blocklist enforcement
 

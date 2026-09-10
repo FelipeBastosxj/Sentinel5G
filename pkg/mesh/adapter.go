@@ -3,7 +3,21 @@
 // blocklist in pkg/ebpf (which acts at the node/kernel level).
 package mesh
 
-import "context"
+import (
+	"context"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// AdapterDeps are an Adapter implementation's external dependencies,
+// injected so each can be unit-tested against a fake controller-runtime
+// client. Shared across every Adapter kind (not just Istio's) since they all
+// only need a client.Client today -- a new kind that genuinely needs more
+// should extend this struct rather than inventing its own, so NewAdapter's
+// signature doesn't have to change per kind.
+type AdapterDeps struct {
+	Client client.Client
+}
 
 // Adapter quarantines or releases a workload identified by a label selector
 // within a namespace. Implementations must be idempotent: calling Quarantine
@@ -15,12 +29,15 @@ type Adapter interface {
 	Release(ctx context.Context, namespace string, selector map[string]string) error
 }
 
-// NewAdapter builds the Adapter named by kind ("istio" or "noop"), matching
-// the MESH_ADAPTER environment variable documented in .env.example.
-func NewAdapter(kind string, deps IstioAdapterDeps) (Adapter, error) {
+// NewAdapter builds the Adapter named by kind ("istio", "cilium", or
+// "noop"), matching the MESH_ADAPTER environment variable documented in
+// .env.example.
+func NewAdapter(kind string, deps AdapterDeps) (Adapter, error) {
 	switch kind {
 	case "istio":
 		return NewIstioAdapter(deps), nil
+	case "cilium":
+		return NewCiliumAdapter(deps), nil
 	case "noop", "":
 		return NoopAdapter{}, nil
 	default:
@@ -31,7 +48,7 @@ func NewAdapter(kind string, deps IstioAdapterDeps) (Adapter, error) {
 type unsupportedAdapterError struct{ kind string }
 
 func (e unsupportedAdapterError) Error() string {
-	return "mesh: unsupported adapter kind " + e.kind + " (expected \"istio\" or \"noop\")"
+	return "mesh: unsupported adapter kind " + e.kind + " (expected \"istio\", \"cilium\", or \"noop\")"
 }
 
 // NoopAdapter never touches the cluster; it exists so MESH_ADAPTER=noop lets
