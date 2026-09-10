@@ -79,8 +79,11 @@ kind/network/RBAC friction, not code.
   --set profile=demo -y`. Without it, step 3 still reaches `Phase:
   Mitigating`, it just won't produce a real 403.
 
-No hosted chart repository is published yet, so clone the repo first — every
-command below is run from its root:
+The chart itself is published as an OCI artifact (`helm install sentinel5g
+oci://ghcr.io/felipebastosxj/charts/sentinel5g-operator --version 0.2.2`,
+no `helm repo add` needed) but this walkthrough also uses other files from
+the repo (the demo NATS/workload manifests, the sample policy) — clone it
+first; every command below is run from its root:
 
 ```sh
 git clone https://github.com/FelipeBastosxj/Sentinel5G.git
@@ -92,14 +95,17 @@ cd Sentinel5G
 ```sh
 kubectl apply -f deployments/quickstart/nats.yaml
 helm install sentinel5g charts/sentinel5g-operator --namespace sentinel5g-system --create-namespace \
-  --set nats.url=nats://nats.default.svc.cluster.local:4222
+  --set nats.url=nats://nats.default.svc.cluster.local:4222 \
+  --set nats.allowUnauthenticated=true
 ```
 
 This also installs the `TelecomSecurityPolicy` CRD — no separate `kubectl
 apply` needed for it. (`deployments/quickstart/nats.yaml` is a minimal
-single-node JetStream instance for this demo only — see
-[`docs/integrations.md`](docs/integrations.md) for a production-appropriate
-NATS setup with auth/TLS.)
+single-node JetStream instance with no auth, for this demo only — the
+operator otherwise refuses to start against an unauthenticated bus, see
+[`docs/production-install.md`](docs/production-install.md) for a
+production-appropriate NATS setup with auth/TLS and the rest of a real
+install, not just this demo.)
 
 ### 2. Protect a demo workload
 
