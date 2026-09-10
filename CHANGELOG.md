@@ -3,6 +3,45 @@
 Notable changes to Sentinel5G, per release. See `ROADMAP.md` for what's
 planned next.
 
+## [Unreleased]
+
+### Fixed
+- `scripts/quickstart.sh` failed outright on a clone the running user
+  doesn't own or can't write to -- a checkout unpacked with `sudo`, a
+  shared `/opt`/`/srv` path on a VM, an NFS mount with `root_squash` --
+  because both its kubeconfig and the CLIs it downloads were hard-coded
+  under the repo root. Everything it writes now goes to one directory,
+  still the repo root when writable, otherwise `$XDG_STATE_HOME`/`$HOME`
+  or `$TMPDIR` (which it reports).
+- `scripts/quickstart.sh` hard-failed when `kubectl` wasn't already
+  installed -- the single most common way a first run died on a fresh
+  machine or VM -- despite already installing `kind` and `helm` itself.
+  It now installs `kubectl` the same way, so `docker` and `curl` are the
+  only prerequisites.
+- `scripts/quickstart.sh`'s CLI downloads used `curl -sLo` without
+  `--fail`, which writes a 404/503 error *page* to the target file and
+  exits 0: a bad URL or registry blip produced an "installed" binary that
+  failed much later as `cannot execute binary file`. All downloads now
+  fail loudly (and retry transient errors), and each CLI is checked to
+  actually run before use.
+- Re-running `scripts/quickstart.sh` against an existing cluster whose
+  kubeconfig was gone (deleted, swept from `/tmp`, or simply written
+  elsewhere) died on `no context exists with the name:
+  "kind-sentinel5g-quickstart"`. The reuse path now re-exports it.
+- `scripts/quickstart.sh` reported an unreachable Docker daemon as only
+  "is it running?", which misdiagnoses the common case on a fresh Linux
+  host or VM: the daemon is up and the user simply isn't in the `docker`
+  group. Both causes are now named, with the fix for each.
+
+### Changed
+- `scripts/quickstart.sh` keeps helm's cache/config alongside its own
+  kubeconfig instead of in `$HOME`, so it also works where `$HOME` isn't
+  writable (a service account, a container running as an arbitrary uid).
+- `scripts/quickstart.sh` now prints the `export KUBECONFIG=...` line (and
+  the real path of any CLI it installed) with its closing hints -- the
+  commands it suggested previously couldn't work as pasted, since the
+  script's kubeconfig is deliberately isolated from the user's shell.
+
 ## [0.2.2] - 2026-09-08
 
 ### Added

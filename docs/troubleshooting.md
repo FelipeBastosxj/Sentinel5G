@@ -37,6 +37,37 @@ that's success for this check). A hang or connection error means egress is
 actually blocked; fix the allowlist/firewall/security group rather than
 retrying.
 
+## A clone you can't write to (root-owned checkout, read-only mount)
+
+**Symptom:** `quickstart.sh` fails with `Permission denied` from inside
+`curl` or `kind` while installing a CLI or writing its kubeconfig, on a
+clone you don't own — most often one unpacked with `sudo` (`sudo git
+clone`, a tarball extracted as root, an image with the repo baked in), a
+shared `/opt` or `/srv` path on a VM, or an NFS mount with `root_squash`.
+
+The script writes exactly three things — its isolated kubeconfig, any CLI
+it had to download, and helm's cache/config — and prefers to keep them
+beside the clone. When the clone isn't writable it now falls back, in
+order, to `$XDG_STATE_HOME` (or `$HOME/.local/state`) and then `$TMPDIR`
+(`/tmp`), printing where it landed:
+
+```
+Repo directory isn't writable -- this run's kubeconfig and CLIs go in /home/you/.local/state/sentinel5g-quickstart
+```
+
+So this is no longer fatal, and no `chown` is required. If you'd rather
+keep everything next to the clone, take ownership of it:
+
+```sh
+sudo chown -R "$(id -un):$(id -gn)" /path/to/Sentinel5G
+```
+
+Because the kubeconfig may not be in the repo, the script prints the
+`export KUBECONFIG=...` line to paste before running `kubectl` against the
+cluster it created. Note the cluster itself outlives that file: a re-run
+re-exports the kubeconfig for an existing cluster rather than assuming it's
+still there.
+
 ## DNS resolution inside kind
 
 **Symptom:** image pulls inside the kind cluster fail with something like
@@ -124,9 +155,9 @@ specifically, this is the first thing to suspect. Multi-arch
 are tracked as project work; check the CHANGELOG for whether that's landed
 yet.
 
-`quickstart.sh` itself (and the `kind`/`helm` binaries it downloads) already
-supports both `amd64` and `arm64` — this limitation is specific to
-Sentinel5G's own published operator/ai-engine images.
+`quickstart.sh` itself (and the `kubectl`/`kind`/`helm` binaries it
+downloads) already supports both `amd64` and `arm64` — this limitation is
+specific to Sentinel5G's own published operator/ai-engine images.
 
 ## eBPF: kernel, capabilities, and build
 
