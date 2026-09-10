@@ -5,6 +5,52 @@ planned next.
 
 ## [Unreleased]
 
+Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
+
+### Added
+- `SECURITY.md`: vulnerability disclosure policy (GitHub private
+  vulnerability reporting), response targets, and severity guidance.
+- `docs/production-install.md`: ordered checklist for a real install,
+  distinct from `scripts/quickstart.sh`'s kind-only demo.
+- The Helm chart is now also published as a signed OCI artifact
+  (`oci://ghcr.io/felipebastosxj/charts/sentinel5g-operator`) on every
+  release, alongside the container images -- `helm install` no longer
+  requires cloning the repo first.
+- `EBPFAttachFailed` Kubernetes Event, recorded against the operator's own
+  Pod (via new `POD_NAME`/`POD_NAMESPACE` Downward API env vars) whenever
+  the eBPF attach fails, so `kubectl describe pod`/`kubectl get events`
+  surface it directly instead of only the equivalent log line.
+- `TelecomSecurityPolicy.status.phase` has a new `Alerting` value: set when
+  the effective threat score threshold is crossed but `autoMitigate: false`
+  withholds action, instead of the previous `Degraded` (which reads as "the
+  operator is broken" and is now reserved for a genuine operator-side
+  failure) — makes a detection-only pilot's false-positive rate legible.
+
+### Changed
+- **Breaking-ish default:** the operator and the AI engine
+  (`AI_ENGINE_MODE=nats`) now refuse to start against a NATS bus with no
+  auth/TLS configured, unless `NATS_ALLOW_UNAUTHENTICATED=true`
+  (`nats.allowUnauthenticated` in both Helm charts) is set explicitly.
+  `scripts/quickstart.sh`, `deployments/docker-compose.yml`, and
+  `deployments/quickstart/ai-engine.yaml` all now set this for their own
+  (intentionally unauthenticated, throwaway) NATS instances; a real install
+  should configure real credentials instead -- see
+  `docs/production-install.md`.
+- The operator no longer hard-exits when it can't reach NATS at startup: it
+  retries with backoff in the background (`pkg/events.Connector`), and
+  `/readyz` reports not-ready in the meantime instead of the Pod
+  crash-looping. `ThreatScoreWatcher`/`pkg/ingestion.Publisher`/
+  `pkg/hubble.Observer` all tolerate NATS not being connected yet.
+- `charts/sentinel5g-operator`'s CRD now carries `helm.sh/resource-policy:
+  keep` by default (`crds.keep: true`) -- `helm uninstall` no longer deletes
+  every `TelecomSecurityPolicy` along with the release.
+- `serviceMonitor.enabled: true` without the `monitoring.coreos.com/v1` CRD
+  installed now renders nothing (with a warning in the post-install NOTES)
+  instead of failing the `helm install`/`upgrade` outright.
+- `pkg/ebpf.Attach` now checks `--bpf-interface` resolves to a real
+  interface *before* loading the BPF collection into the kernel, instead of
+  after -- a typo'd interface name fails faster and without the wasted load.
+
 ### Fixed
 - `scripts/quickstart.sh` failed outright on a clone the running user
   doesn't own or can't write to -- a checkout unpacked with `sudo`, a
