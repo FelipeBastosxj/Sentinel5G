@@ -33,7 +33,7 @@ type Observer struct {
 	// unauthenticated.
 	TLSConfig *tls.Config
 
-	Bus     *events.Bus
+	Bus     *events.Connector
 	Subject string
 	Log     logr.Logger
 
@@ -130,7 +130,12 @@ func (o *Observer) streamFlows(ctx context.Context, client observerpb.ObserverCl
 		if !ok {
 			continue
 		}
-		if err := o.Bus.PublishNormalizedEvent(o.Subject, event); err != nil {
+		bus, connected := o.Bus.Bus()
+		if !connected {
+			o.Log.V(1).Info("dropping NormalizedEvent from a Hubble flow: NATS not yet connected")
+			continue
+		}
+		if err := bus.PublishNormalizedEvent(o.Subject, event); err != nil {
 			o.Log.Error(err, "failed to publish NormalizedEvent from a Hubble flow")
 		}
 	}

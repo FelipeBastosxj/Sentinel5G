@@ -59,6 +59,16 @@ type Loader struct {
 // Attach loads the compiled BPF object at objPath and attaches its XDP
 // program to the network interface named iface.
 func Attach(objPath, iface string) (*Loader, error) {
+	// Checked first, before touching the kernel at all: a wrong --bpf-interface
+	// is the cheapest of the "four settings that all have to be right"
+	// misconfigurations (see docs/integrations.md) to rule out, and doing so
+	// before LoadCollectionSpec/NewCollection avoids loading a whole BPF
+	// collection into the kernel only to fail on this a moment later.
+	ifi, err := net.InterfaceByName(iface)
+	if err != nil {
+		return nil, fmt.Errorf("resolve interface %q: %w: %w", iface, ErrInterfaceNotFound, err)
+	}
+
 	spec, err := ebpf.LoadCollectionSpec(objPath)
 	if err != nil {
 		return nil, fmt.Errorf("load bpf collection spec from %q: %w", objPath, err)
@@ -121,12 +131,6 @@ func Attach(objPath, iface string) (*Loader, error) {
 	if !ok {
 		coll.Close()
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, signalingEventsV6MapName)
-	}
-
-	ifi, err := net.InterfaceByName(iface)
-	if err != nil {
-		coll.Close()
-		return nil, fmt.Errorf("resolve interface %q: %w: %w", iface, ErrInterfaceNotFound, err)
 	}
 
 	xdpLink, err := link.AttachXDP(link.XDPOptions{

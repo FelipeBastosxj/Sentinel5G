@@ -179,7 +179,7 @@ func TestClosedLoop_RealAPIServer_RealNATS_MitigatesOnHighThreatScore(t *testing
 		Client:        c,
 		Log:           testr.New(t),
 		Index:         index,
-		Bus:           bus,
+		Bus:           events.NewConnectedConnector(bus),
 		Subject:       cfg.ThreatsSubject,
 		Blocklist:     blocklist,
 		Mesh:          meshAdapter,

@@ -31,3 +31,4 @@ data:
   {{- if .Values.nats.tlsKeyFile }}
   NATS_TLS_KEY_FILE: {{ .Values.nats.tlsKeyFile | quote }}
   {{- end }}
+  NATS_ALLOW_UNAUTHENTICATED: {{ .Values.nats.allowUnauthenticated | quote }}

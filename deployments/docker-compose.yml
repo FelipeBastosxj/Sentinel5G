@@ -25,6 +25,10 @@ services:
       NATS_EVENTS_SUBJECT: sentinel5g.events.normalized
       NATS_THREATS_SUBJECT: sentinel5g.threats.scored
       MODEL_PATH: /app/models/autoencoder.onnx
+      # This compose file's nats service has no auth configured -- opt into
+      # that explicitly rather than leaving it as a silent default. See
+      # docs/integrations.md's "Securing the NATS message bus".
+      NATS_ALLOW_UNAUTHENTICATED: "true"
     volumes:
       - ../cmd/ai-engine/models:/app/models:ro
     depends_on:

@@ -47,7 +47,7 @@ type ThreatScoreWatcher struct {
 	client.Client
 	Log           logr.Logger
 	Index         *PolicyIndex
-	Bus           *events.Bus
+	Bus           *events.Connector
 	Subject       string
 	Blocklist     ebpf.BlocklistUpdater
 	Mesh          mesh.Adapter
@@ -58,7 +58,15 @@ type ThreatScoreWatcher struct {
 // the controller-runtime manager (started after the informer cache syncs,
 // stopped on shutdown).
 func (w *ThreatScoreWatcher) Start(ctx context.Context) error {
-	unsubscribe, err := w.Bus.SubscribeThreatScores(w.Subject, "sentinel5g-operator", func(event events.ThreatScoreEvent) error {
+	bus, err := w.Bus.Wait(ctx)
+	if err != nil {
+		// ctx done before NATS ever connected -- ordinary shutdown, not a
+		// Start failure (returning an error here would take the whole
+		// manager down with it).
+		return nil
+	}
+
+	unsubscribe, err := bus.SubscribeThreatScores(w.Subject, "sentinel5g-operator", func(event events.ThreatScoreEvent) error {
 		return w.handle(ctx, event)
 	})
 	if err != nil {
@@ -105,7 +113,10 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 	}
 
 	if !policy.Spec.ThreatDetection.AutoMitigate {
-		latest.Status.Phase = securityv1alpha1.PolicyPhaseDegraded
+		// Threshold crossed, action withheld by policy (detection-only pilot),
+		// not a failure -- PolicyPhaseDegraded is reserved for genuine
+		// operator-side failures (a mesh/eBPF action erroring below).
+		latest.Status.Phase = securityv1alpha1.PolicyPhaseAlerting
 		return w.updateStatus(ctx, latest)
 	}
 

@@ -392,11 +392,17 @@ step "Installing the Sentinel5G operator (Helm)"
 # a no-op when SENTINEL5G_OPERATOR_IMAGE is unset (the split reproduces
 # values.yaml's own default), and what lets CI point this at a PR's own
 # locally built, kind-loaded image (see SENTINEL5G_KIND_LOAD_IMAGES above).
+# nats.allowUnauthenticated=true: deployments/quickstart/nats.yaml has no
+# auth configured, and this is a throwaway kind cluster this script fully
+# owns -- never do this on a production install (see
+# docs/production-install.md and docs/integrations.md's "Securing the NATS
+# message bus").
 helm upgrade --install sentinel5g charts/sentinel5g-operator \
   --namespace "$NAMESPACE" --create-namespace \
   --set image.repository="${OPERATOR_IMAGE%:*}" \
   --set image.tag="${OPERATOR_IMAGE##*:}" \
   --set nats.url=nats://nats.default.svc.cluster.local:4222 \
+  --set nats.allowUnauthenticated=true \
   --wait --timeout=180s
 
 kubectl wait --for=condition=Established crd/telecomsecuritypolicies.security.sentinel5g.io --timeout=60s

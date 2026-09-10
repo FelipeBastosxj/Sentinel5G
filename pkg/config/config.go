@@ -30,6 +30,14 @@ type OperatorConfig struct {
 	NATSTLSCertFile     string
 	NATSTLSKeyFile      string
 
+	// NATSAllowUnauthenticated must be explicitly set to true to run against
+	// a NATS bus with none of the credential/TLS fields above configured.
+	// Defaults to false: anything able to reach an unauthenticated NATS_URL
+	// can forge a ThreatScoreEvent and trigger a real automated mitigation
+	// (see docs/integrations.md), so Load() fails fast instead of silently
+	// starting insecure.
+	NATSAllowUnauthenticated bool
+
 	ThreatScoreThreshold float64
 	MeshAdapter          string
 
@@ -81,6 +89,11 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
+	allowUnauthenticated, err := parseBoolEnv("NATS_ALLOW_UNAUTHENTICATED", false)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
 	cfg := OperatorConfig{
 		MetricsBindAddress:     getEnv("METRICS_BIND_ADDRESS", ":8080"),
 		HealthProbeBindAddress: getEnv("HEALTH_PROBE_BIND_ADDRESS", ":8081"),
@@ -98,6 +111,8 @@ func Load() (OperatorConfig, error) {
 		NATSTLSCertFile:     getEnv("NATS_TLS_CERT_FILE", ""),
 		NATSTLSKeyFile:      getEnv("NATS_TLS_KEY_FILE", ""),
 
+		NATSAllowUnauthenticated: allowUnauthenticated,
+
 		ThreatScoreThreshold: threshold,
 		MeshAdapter:          getEnv("MESH_ADAPTER", "istio"),
 		LogLevel:             getEnv("LOG_LEVEL", "info"),
@@ -114,7 +129,23 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, fmt.Errorf("THREAT_SCORE_THRESHOLD must be within [0,1], got %f", cfg.ThreatScoreThreshold)
 	}
 
+	if !cfg.NATSAllowUnauthenticated && !natsHasCredentials(cfg) {
+		return OperatorConfig{}, fmt.Errorf(
+			"refusing to start with an unauthenticated NATS connection: set NATS_CREDENTIALS_FILE, " +
+				"NATS_USERNAME+NATS_PASSWORD, or NATS_TLS_CERT_FILE+NATS_TLS_KEY_FILE, " +
+				"or set NATS_ALLOW_UNAUTHENTICATED=true to opt into it explicitly " +
+				"(see docs/integrations.md's \"Securing the NATS message bus\")",
+		)
+	}
+
 	return cfg, nil
+}
+
+func natsHasCredentials(cfg OperatorConfig) bool {
+	return cfg.NATSCredentialsFile != "" ||
+		cfg.NATSUsername != "" ||
+		cfg.NATSTLSCertFile != "" ||
+		cfg.NATSTLSCAFile != ""
 }
 
 func getEnv(key, fallback string) string {

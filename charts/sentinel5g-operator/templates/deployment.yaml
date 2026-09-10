@@ -52,14 +52,26 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "sentinel5g-operator.fullname" . }}-config
-          {{- if .Values.nats.existingPasswordSecret }}
           env:
+            # Downward API, not user-tunable config: lets the manager attach
+            # a Kubernetes Event (e.g. "EBPFAttachFailed") to its own Pod
+            # object, so `kubectl describe pod`/`kubectl get events` surface
+            # it directly instead of only the equivalent log line.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.nats.existingPasswordSecret }}
             - name: NATS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.nats.existingPasswordSecret }}
                   key: password
-          {{- end }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 8080
