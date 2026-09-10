@@ -80,7 +80,16 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       30s window, separate from `scan_rate`'s single-port flood check.
 - [ ] Cilium-native capture path (Hubble or a custom BPF program) as an
       alternative to standalone XDP.
-- [ ] Falco output bridging into `NormalizedEvent`.
+- [x] Falco output bridging into `NormalizedEvent`. A new, separate binary
+      (`cmd/falco-bridge`, backed by `pkg/falco.Bridge`) receives Falco's
+      own `http_output` JSON alerts and publishes them onto the same NATS
+      subject the eBPF path uses — the two Layer 1 sources are independent
+      and not mutually exclusive. Verified end to end against a real NATS
+      server and inside a real built container (`HEALTHCHECK` reports
+      healthy); a live Falco daemon's own alerts were not exercised (this
+      WSL2 environment's custom kernel doesn't reliably support Falco's
+      kernel probe) — see `docs/integrations.md` for the full, explicit
+      caveat.
 - [x] Additional `pkg/mesh.Adapter` implementations: `CiliumAdapter`
       (`MESH_ADAPTER=cilium`, `cilium.io/v2` `CiliumNetworkPolicy` with
       `ingressDeny`/`egressDeny: [{from,to}Entities: ["all"]]`) and

@@ -32,6 +32,7 @@ jobs:
             go:
               - 'api/**'
               - 'cmd/operator/**'
+              - 'cmd/falco-bridge/**'
               - 'pkg/**'
               - 'go.mod'
               - 'go.sum'
