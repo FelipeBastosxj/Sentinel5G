@@ -78,8 +78,18 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       `track_port_scan()` in `bpf/packet_filter.c`) tracks a bounded,
       deduplicated set of distinct destination ports per source over a
       30s window, separate from `scan_rate`'s single-port flood check.
-- [ ] Cilium-native capture path (Hubble or a custom BPF program) as an
-      alternative to standalone XDP.
+- [x] Cilium-native capture path as an alternative to standalone XDP.
+      `pkg/hubble.Observer` (opt-in via `HUBBLE_ADDR`, wired into
+      `cmd/operator`) streams flows from Cilium's own Hubble Observer gRPC
+      API (typically Hubble Relay) instead of attaching `packet_filter.c`
+      to the same interface a second time, and republishes matching
+      telecom-signaling flows as `NormalizedEvent`s on the same NATS
+      subject the eBPF path uses. Verified via an in-process gRPC server
+      (bufconn) exercising the real generated client/server wire path
+      against a live NATS server; not verified against a live Hubble/
+      Cilium deployment (this project's real test cluster runs flannel,
+      not Cilium) — see `docs/integrations.md` for the full, explicit
+      caveat.
 - [x] Falco output bridging into `NormalizedEvent`. A new, separate binary
       (`cmd/falco-bridge`, backed by `pkg/falco.Bridge`) receives Falco's
       own `http_output` JSON alerts and publishes them onto the same NATS
