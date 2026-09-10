@@ -109,3 +109,28 @@ func TestPodIPIndex_PutMovesAPodsOwnEntryWhenItsIPChanges(t *testing.T) {
 		t.Fatal("expected Remove to evict the entry under the Pod's current IP")
 	}
 }
+
+// Regression guard for the same race TestPodIPIndex_RemoveDoesNotEvictAReusedIPsNewOwner
+// covers, but on Put's own IP-change cleanup path instead of Remove: a stale
+// Put (delivered late, e.g. a re-scheduled Pod's watch event arriving after
+// a delay) must not evict a *different* Pod's live entry just because that
+// different Pod happens to have reused the first Pod's old IP in the
+// meantime.
+func TestPodIPIndex_PutDoesNotEvictAReusedIPsNewOwnerWhenItsOwnIPChanges(t *testing.T) {
+	idx := NewPodIPIndex()
+	movedPod := PodRef{Namespace: "telecom-core", Name: "amf-0"}
+	newOwnerOfOldIP := PodRef{Namespace: "telecom-core", Name: "amf-1"}
+
+	idx.Put("10.42.0.7", movedPod)        // movedPod starts at .7.
+	idx.Put("10.42.0.7", newOwnerOfOldIP) // .7 reused by a different Pod.
+	idx.Put("10.42.0.9", movedPod)        // movedPod's own stale Put finally arrives, now at .9.
+
+	ref, ok := idx.Lookup("10.42.0.7")
+	if !ok || ref != newOwnerOfOldIP {
+		t.Fatalf("expected the reused IP's current owner %+v to survive the moved Pod's stale Put, got %+v (ok=%v)", newOwnerOfOldIP, ref, ok)
+	}
+	ref, ok = idx.Lookup("10.42.0.9")
+	if !ok || ref != movedPod {
+		t.Fatalf("expected the moved Pod's new IP to resolve to %+v, got %+v (ok=%v)", movedPod, ref, ok)
+	}
+}

@@ -198,9 +198,9 @@ func (l *Loader) Unblock(ip net.IP) error {
 }
 
 // blocklistMapAndKey picks blocklist vs blocklist_v6 and the matching key
-// encoding based on ip's address family (see ipv4Key/ipv6Key).
+// encoding based on ip's address family (see isIPv4/ipv4Key/ipv6Key).
 func (l *Loader) blocklistMapAndKey(ip net.IP) (*ebpf.Map, []byte, error) {
-	if ip.To4() != nil {
+	if isIPv4(ip) {
 		key, err := ipv4Key(ip)
 		return l.blocklist, key, err
 	}
@@ -453,22 +453,14 @@ func (l *Loader) SignalRate(ip net.IP, destPort uint16) (count uint32, ok bool) 
 	var entry signalRateEntry
 	signaling := destPort == gtpuPort || destPort == sipPort
 
-	if ip.To4() != nil {
+	if v4 := ip.To4(); v4 != nil {
 		if signaling {
-			key, err := ipv4Key(ip)
-			if err != nil {
-				return 0, false
-			}
-			if err := l.signalRate.Lookup(key, &entry); err != nil {
+			if err := l.signalRate.Lookup([]byte(v4), &entry); err != nil {
 				return 0, false
 			}
 			return entry.Count, true
 		}
 
-		v4, err := ipv4Key(ip)
-		if err != nil {
-			return 0, false
-		}
 		key := scanRateKey{Saddr: binary.LittleEndian.Uint32(v4), DestPort: destPort}
 		if err := l.scanRate.Lookup(&key, &entry); err != nil {
 			return 0, false

@@ -319,11 +319,10 @@ static __always_inline void track_signal_rate(__u32 saddr)
 // has no assumed bound on volume the way signaling traffic does, so
 // unconditional per-packet emission here risks both the <0.2ms/packet
 // latency budget and overrunning signaling_events with non-signaling noise.
-static __always_inline __u32 track_scan_rate(__u32 saddr, __u16 dest_port)
+static __always_inline __u32 track_scan_rate(__u32 saddr, __u16 dest_port, __u64 now)
 {
 	struct scan_key key = {.saddr = saddr, .dest_port = dest_port};
 	struct signal_rate_entry *entry = bpf_map_lookup_elem(&scan_rate, &key);
-	__u64 now = bpf_ktime_get_ns();
 
 	if (!entry) {
 		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
@@ -346,11 +345,14 @@ static __always_inline __u32 track_scan_rate(__u32 saddr, __u16 dest_port)
 // MULTIPORT_SCAN_THRESHOLD-th *new distinct* port this source has touched
 // within the current window. Complements (does not replace)
 // track_scan_rate(): the two catch different attack shapes (see
-// port_scan_entry's comment above).
-static __always_inline int track_port_scan(__u32 saddr, __u16 dest_port)
+// port_scan_entry's comment above). Takes now (rather than calling
+// bpf_ktime_get_ns() itself) so the caller can share one timestamp between
+// this and track_scan_rate() for the same packet instead of paying for two
+// BPF helper calls on the highest-volume traffic class the <0.2ms/packet
+// budget most needs to watch.
+static __always_inline __u32 track_port_scan(__u32 saddr, __u16 dest_port, __u64 now)
 {
 	struct port_scan_entry *entry = bpf_map_lookup_elem(&port_scan, &saddr);
-	__u64 now = bpf_ktime_get_ns();
 
 	if (!entry || now - entry->window_start_ns > MULTIPORT_SCAN_WINDOW_NS) {
 		struct port_scan_entry fresh = {.window_start_ns = now, .distinct_count = 1};
@@ -363,7 +365,7 @@ static __always_inline int track_port_scan(__u32 saddr, __u16 dest_port)
 		return 0; // Already reported this window; avoid rescanning every packet.
 
 	#pragma unroll
-	for (int i = 0; i < MULTIPORT_SCAN_THRESHOLD; i++) {
+	for (__u32 i = 0; i < MULTIPORT_SCAN_THRESHOLD; i++) {
 		if (i >= entry->distinct_count)
 			break;
 		if (entry->ports[i] == dest_port)
@@ -407,13 +409,12 @@ static __always_inline void track_signal_rate_v6(const struct in6_key *saddr6)
 	}
 }
 
-static __always_inline __u32 track_scan_rate_v6(const struct in6_key *saddr6, __u16 dest_port)
+static __always_inline __u32 track_scan_rate_v6(const struct in6_key *saddr6, __u16 dest_port, __u64 now)
 {
 	struct scan_key_v6 key = {.dest_port = dest_port};
 	__builtin_memcpy(key.saddr, saddr6->addr, 16);
 
 	struct signal_rate_entry *entry = bpf_map_lookup_elem(&scan_rate_v6, &key);
-	__u64 now = bpf_ktime_get_ns();
 
 	if (!entry) {
 		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
@@ -432,10 +433,9 @@ static __always_inline __u32 track_scan_rate_v6(const struct in6_key *saddr6, __
 	return prior_count;
 }
 
-static __always_inline int track_port_scan_v6(const struct in6_key *saddr6, __u16 dest_port)
+static __always_inline __u32 track_port_scan_v6(const struct in6_key *saddr6, __u16 dest_port, __u64 now)
 {
 	struct port_scan_entry *entry = bpf_map_lookup_elem(&port_scan_v6, saddr6);
-	__u64 now = bpf_ktime_get_ns();
 
 	if (!entry || now - entry->window_start_ns > MULTIPORT_SCAN_WINDOW_NS) {
 		struct port_scan_entry fresh = {.window_start_ns = now, .distinct_count = 1};
@@ -448,7 +448,7 @@ static __always_inline int track_port_scan_v6(const struct in6_key *saddr6, __u1
 		return 0;
 
 	#pragma unroll
-	for (int i = 0; i < MULTIPORT_SCAN_THRESHOLD; i++) {
+	for (__u32 i = 0; i < MULTIPORT_SCAN_THRESHOLD; i++) {
 		if (i >= entry->distinct_count)
 			break;
 		if (entry->ports[i] == dest_port)
@@ -530,12 +530,17 @@ int xdp_packet_filter(struct xdp_md *ctx)
 			emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
 						 protocol6, 0, vlan_id);
 		} else {
-			__u32 prior6 = track_scan_rate_v6(&saddr6, dest_port6);
+			// Shared between both trackers below: they're always called
+			// together for this packet, so one bpf_ktime_get_ns() call
+			// serves both instead of each fetching it independently.
+			__u64 now6 = bpf_ktime_get_ns();
+
+			__u32 prior6 = track_scan_rate_v6(&saddr6, dest_port6, now6);
 			if (prior6 + 1 == SCAN_EMIT_THRESHOLD)
 				emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
 							 SIGNAL_PROTO_UNKNOWN, 0, vlan_id);
 
-			if (track_port_scan_v6(&saddr6, dest_port6))
+			if (track_port_scan_v6(&saddr6, dest_port6, now6))
 				emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6,
 							 MULTIPORT_SCAN_THRESHOLD, SIGNAL_PROTO_PORT_SCAN,
 							 0, vlan_id);
@@ -604,7 +609,13 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		// to reach Layer 2/3 (see ROADMAP.md Phase 1). Escalate to an
 		// observation once a sustained burst from this source crosses
 		// SCAN_EMIT_THRESHOLD within the window, not on every packet.
-		__u32 prior_count = track_scan_rate(saddr, dest_port);
+		//
+		// now is shared between both trackers below (always called together
+		// for this packet) rather than each fetching bpf_ktime_get_ns()
+		// independently.
+		__u64 now = bpf_ktime_get_ns();
+
+		__u32 prior_count = track_scan_rate(saddr, dest_port, now);
 		if (prior_count + 1 == SCAN_EMIT_THRESHOLD)
 			emit_signaling_event(saddr, iph->daddr, dest_port, payload_size,
 					      SIGNAL_PROTO_UNKNOWN, 0, vlan_id);
@@ -615,7 +626,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		// the distinct-port count (MULTIPORT_SCAN_THRESHOLD, by definition
 		// of the edge trigger), not a byte size — see
 		// pkg/ebpf/blocklist.go's SignalingEvent.PayloadSize doc.
-		if (track_port_scan(saddr, dest_port))
+		if (track_port_scan(saddr, dest_port, now))
 			emit_signaling_event(saddr, iph->daddr, dest_port, MULTIPORT_SCAN_THRESHOLD,
 					      SIGNAL_PROTO_PORT_SCAN, 0, vlan_id);
 	}

@@ -62,7 +62,16 @@ func (idx *PodIPIndex) Put(ip string, ref PodRef) {
 		// keep the forward index accurate) -- byPod is about to only
 		// remember the new IP, so the entry under the old one would
 		// otherwise become unreachable from Remove and linger forever.
-		delete(idx.byIP, oldIP)
+		//
+		// Same ownership check Remove uses, and for the same reason: by
+		// the time this stale Put finally runs, a third Pod may have
+		// already reused oldIP and been Put under it (real, since
+		// Kubernetes doesn't serialize these). Deleting byIP[oldIP]
+		// unconditionally here would evict that other Pod's live, correct
+		// mapping instead of this one's now-stale one.
+		if owner, ok := idx.byIP[oldIP]; ok && owner == ref {
+			delete(idx.byIP, oldIP)
+		}
 	}
 	idx.byIP[ip] = ref
 	idx.byPod[key] = ip
