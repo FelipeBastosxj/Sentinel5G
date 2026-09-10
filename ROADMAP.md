@@ -161,6 +161,98 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       `docker build`/`docker run` against the live k3s+NATS environment —
       both images report `"Status":"healthy"`.
 
+## Phase 2.5 — Production readiness
+
+Everything above is about making each layer *work*. This section is the
+honest gap between that and installing Sentinel5G on a cluster that
+carries real traffic — raised by the first person to ask "can I put this
+in production?", and answered here rather than in a thread. Nothing in
+this section is a bug in what's built; it's what's missing *around* it.
+The two load-bearing items are the detection gap and the load-testing
+harness (Phase 3 below): until both move, automated mitigation on real
+traffic is a false-positive risk without the compensating benefit.
+
+- [ ] **The operator hard-exits when NATS is unreachable.**
+      `cmd/operator/main.go:112` logs and `os.Exit(1)`, so the chart's
+      default `nats.url` pointing at a JetStream that isn't there (the
+      chart deliberately bundles none — see `values.yaml`) surfaces as a
+      `CrashLoopBackOff` immediately after `helm install` instead of as a
+      clear "no bus" condition. Reconciling CRs doesn't itself need the
+      bus, so this should retry and degrade the way the mesh and eBPF
+      paths already do when their own dependency is absent.
+- [ ] **No production install path, documented separately from
+      `scripts/quickstart.sh`.** The quickstart is a kind-only demo — it
+      forces its own kubeconfig and a fixed cluster name, so it can't
+      touch a real cluster even by accident, and it applies
+      `config/samples/security_v1alpha1_telecomsecuritypolicy.yaml` with
+      `autoMitigate: true` + `isolatePod: true`. What a real deployment
+      needs instead (own JetStream first, NATS auth/TLS, a detection-only
+      rollout, eBPF opted in per node) exists, but scattered across
+      `docs/integrations.md`, `values.yaml` comments and
+      `docs/troubleshooting.md`. Wants one ordered checklist that is
+      explicitly *not* the quickstart.
+- [ ] **The AI engine has no chart, and no way to obtain a model.**
+      `deployments/quickstart/ai-engine.yaml` is a plain manifest, and it
+      needs `autoencoder.onnx` + `.onnx.data` + `.norm.json` delivered
+      through a hand-created Secret; those artifacts are deliberately not
+      committed. Skip that and nothing ever publishes a
+      `ThreatScoreEvent`: every policy sits at `Phase: Monitoring`
+      forever, with no signal anywhere that the scoring half of the
+      system was never deployed. Options, roughly in order of usefulness:
+      a published model artifact per release, a chart that takes it as a
+      required value, or at minimum a readiness condition on the operator
+      meaning "subscribed, but no scores have ever arrived".
+- [ ] **`helm uninstall` deletes every `TelecomSecurityPolicy`.** The CRD
+      is a normal template (`charts/sentinel5g-operator/templates/crd.yaml`)
+      with no `helm.sh/resource-policy: keep` — a deliberate choice, so
+      `crds.install` can toggle it and `helm upgrade` can manage schema
+      changes (`docs/getting-started.md` covers that trade-off). What
+      isn't stated anywhere is its cost: uninstalling the release takes
+      the CRD and every custom resource with it. Either annotate for
+      keep, or say so loudly where someone will read it first.
+- [ ] **Enabling eBPF enforcement is really four settings, and getting
+      the combination wrong still ends in a no-op.** `ebpf.enabled: true`
+      alone does nothing useful on a multi-node cluster without
+      `daemonset.enabled: true` (and the `hostNetwork` it implies), on
+      kernels older than 5.8 with the default `CAP_BPF`, or when the
+      node's real interface isn't the default `ebpf.interface: eth0`.
+      Attach failures are classified since 0.2.2, which turned a silent
+      no-op into a legible log line — but nothing validates the
+      combination up front. Wants a preflight (does that interface exist
+      on this node, does this kernel support the requested capabilities)
+      surfaced as a Pod condition or event.
+- [ ] **`serviceMonitor.enabled: true` fails the apply** when the
+      `monitoring.coreos.com/v1` CRD isn't installed, rather than
+      rendering nothing and warning. `values.yaml` states the
+      requirement; a `lookup`-based guard would turn an install-time
+      error into a skip.
+- [ ] **Nothing stops a deployment shipping with an unauthenticated
+      bus.** NATS auth/TLS is fully wired but optional and empty by
+      default, and anything able to reach `NATS_URL` can forge a
+      `ThreatScoreEvent` and trigger a real mitigation (see
+      `docs/integrations.md`'s "Securing the NATS message bus"). Consider
+      refusing to start without either credentials or an explicit
+      `nats.allowUnauthenticated: true`, so the insecure mode has to be
+      opted into instead of defaulted into.
+- [ ] **A detection-only pilot works, but is labelled as a
+      malfunction.** `autoMitigate: false` makes the watcher stop before
+      acting (`pkg/controller/threat_score_watcher.go:107`) — exactly the
+      right way to measure false positives against real traffic before
+      letting it act — but it reports `Phase: Degraded`, which reads as
+      "the operator is broken", not "threshold crossed, action withheld
+      by policy". Wants its own phase (`Alerting`, say) and a counter, so
+      a shadow-mode rollout is measurable.
+- [ ] **Close the in-tunnel-flood detection gap.** Restating Phase 1's
+      §2.4 finding as open work rather than a closed measurement: the
+      only anomaly type that is simultaneously real GTP-U and observable
+      by `bpf/packet_filter.c` today scores *below* the held-out normal
+      baseline (0.0679 vs 0.0811) and is missed at every production
+      sensitivity threshold — recall 0/3,348. This is the single biggest
+      reason not to trust automated mitigation on real traffic yet.
+      Likely needs different features (per-tunnel/per-TEID rate rather
+      than per-source only), a different model, or an explicit non-ML
+      detector for this class.
+
 ## Phase 3 — Scale & multi-cluster
 
 - [ ] Multi-cluster policy propagation.
