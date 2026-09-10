@@ -40,6 +40,16 @@ func init() {
 }
 
 func main() {
+	// `manager healthcheck` is a separate mode entirely, not a flag: it's
+	// invoked by the Dockerfile's HEALTHCHECK against an already-running
+	// container's own process, so it must exit immediately with a plain 0/1
+	// rather than going anywhere near flag.Parse()/manager startup. See
+	// runHealthcheck's doc comment (healthcheck.go) for why this exists at
+	// all instead of a shell command.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
 	var bpfObjectPath, bpfInterface string
 	flag.StringVar(&bpfObjectPath, "bpf-object", "/var/run/sentinel5g/packet_filter.o", "path to the compiled bpf/packet_filter.c object")
 	flag.StringVar(&bpfInterface, "bpf-interface", "eth0", "network interface to attach the XDP program to")
