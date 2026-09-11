@@ -69,6 +69,13 @@ type OperatorConfig struct {
 	// reverses its active ones (see that package's tryDeEscalate for why
 	// this is a quiet-period timer, not a "sustained low score" check).
 	DeEscalationDwell time.Duration
+
+	// ScoringPipelineGrace is how long after startup the operator waits
+	// before reporting ScoringPipelineReady=False on every policy (see
+	// pkg/controller's scoring_pipeline.go). It only covers the window where
+	// "no score yet" is still expected -- an install where the AI engine
+	// happens to come up after the operator.
+	ScoringPipelineGrace time.Duration
 }
 
 // Load reads OperatorConfig from the environment, applying the same defaults
@@ -85,6 +92,11 @@ func Load() (OperatorConfig, error) {
 	}
 
 	deEscalationDwell, err := parseDurationEnv("DE_ESCALATION_DWELL", 5*time.Minute)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	scoringPipelineGrace, err := parseDurationEnv("SCORING_PIPELINE_GRACE", 10*time.Minute)
 	if err != nil {
 		return OperatorConfig{}, err
 	}
@@ -122,7 +134,8 @@ func Load() (OperatorConfig, error) {
 		HubbleTLSCertFile: getEnv("HUBBLE_TLS_CERT_FILE", ""),
 		HubbleTLSKeyFile:  getEnv("HUBBLE_TLS_KEY_FILE", ""),
 
-		DeEscalationDwell: deEscalationDwell,
+		DeEscalationDwell:    deEscalationDwell,
+		ScoringPipelineGrace: scoringPipelineGrace,
 	}
 
 	if cfg.ThreatScoreThreshold < 0 || cfg.ThreatScoreThreshold > 1 {

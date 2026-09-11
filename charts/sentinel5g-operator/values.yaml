@@ -68,6 +68,16 @@ config:
   leaderElect: true
   threatScoreThreshold: 0.85
   meshAdapter: istio
+  # How long after startup before every TelecomSecurityPolicy reports
+  # ScoringPipelineReady=False (visible as the `Scoring` column in
+  # `kubectl get tsp`). The AI engine is NOT part of this chart -- it's
+  # deployed separately and needs a trained model -- and without it nothing
+  # ever publishes a ThreatScoreEvent, leaving every policy at
+  # Phase: Monitoring indefinitely with no other signal that half the system
+  # is missing. Raise this if your AI engine legitimately takes longer than
+  # 10m to start scoring; it does not affect detection, only when the
+  # operator starts saying it hasn't seen a score.
+  scoringPipelineGrace: 10m
 
 nats:
   # Set to the URL of an existing NATS JetStream deployment. This chart does

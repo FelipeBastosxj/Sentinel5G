@@ -37,6 +37,9 @@ spec:
     - jsonPath: .status.observedThreatScore
       name: Score
       type: string
+    - jsonPath: .status.conditions[?(@.type=="ScoringPipelineReady")].status
+      name: Scoring
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

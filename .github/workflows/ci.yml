@@ -200,6 +200,18 @@ jobs:
           with open("/tmp/chart-crd.yaml") as f:
               chart = yaml.safe_load(f)
 
+          # The chart deliberately adds annotations controller-gen has no
+          # concept of, and comparing them would make this check fail on
+          # every run for a reason that is not drift. helm.sh/resource-policy
+          # is the one that exists today (values.yaml's crds.keep, on by
+          # default, which is what stops `helm uninstall` deleting every
+          # TelecomSecurityPolicy). Strip only the chart's extra keys --
+          # anything controller-gen DID emit is still compared, so a real
+          # schema change still fails here.
+          chart_annotations = chart.get("metadata", {}).get("annotations", {})
+          for key in ("helm.sh/resource-policy",):
+              chart_annotations.pop(key, None)
+
           if base != chart:
               print(
                   "charts/sentinel5g-operator/templates/crd.yaml has drifted from "

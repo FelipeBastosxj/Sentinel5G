@@ -38,6 +38,15 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   derived from the NATS wire go through a closed-set mapping, since anything
   that can reach an unauthenticated bus could otherwise drive unbounded
   Prometheus series growth.
+- A `ScoringPipelineReady` condition on every `TelecomSecurityPolicy`, plus a
+  `Scoring` column in `kubectl get tsp` and a `ScoringPipelineNotReady`
+  warning Event. The AI engine is deployed separately from the operator and
+  needs a trained model; skip that and nothing ever publishes a
+  `ThreatScoreEvent`, so every policy sits at `Phase: Monitoring` forever --
+  which is also exactly what a healthy, quiet cluster looks like. The
+  condition is the signal that tells the two apart. `SCORING_PIPELINE_GRACE`
+  (`config.scoringPipelineGrace`, default `10m`) covers an install where the
+  AI engine legitimately starts after the operator.
 
 ### Changed
 - **Breaking-ish default:** the operator and the AI engine
@@ -63,6 +72,13 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
 - `pkg/ebpf.Attach` now checks `--bpf-interface` resolves to a real
   interface *before* loading the BPF collection into the kernel, instead of
   after -- a typo'd interface name fails faster and without the wasted load.
+- CI's CRD drift check (`config/crd/bases` vs. the Helm chart's hand-copied
+  `templates/crd.yaml`) compared the two documents for raw equality, but the
+  chart legitimately adds `helm.sh/resource-policy: keep` (`crds.keep`, on by
+  default since the same unreleased cycle). The check therefore failed on
+  every run that touched either file, for a reason that was never drift. It
+  now ignores that one chart-added annotation and still compares everything
+  controller-gen actually emits.
 - `scripts/quickstart.sh` keeps helm's cache/config alongside its own
   kubeconfig instead of in `$HOME`, so it also works where `$HOME` isn't
   writable (a service account, a container running as an arbitrary uid).

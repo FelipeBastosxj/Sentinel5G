@@ -192,6 +192,12 @@ func main() {
 
 	index := sentinelcontroller.NewPolicyIndex()
 
+	// Shared between the watcher (which observes scores arriving) and the
+	// reconciler (which reports the ScoringPipelineReady condition), so a
+	// deployment missing its AI engine says so on every policy instead of
+	// sitting silently at Phase: Monitoring forever.
+	scoring := sentinelcontroller.NewScoringPipelineTracker(cfg.ScoringPipelineGrace)
+
 	reconciler := &sentinelcontroller.Reconciler{
 		Client:            mgr.GetClient(),
 		Log:               log.WithName("controller"),
@@ -199,6 +205,8 @@ func main() {
 		Blocklist:         blocklist,
 		Mesh:              meshAdapter,
 		DeEscalationDwell: cfg.DeEscalationDwell,
+		Scoring:           scoring,
+		Recorder:          mgr.GetEventRecorder("sentinel5g-operator"),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "TelecomSecurityPolicy")
@@ -214,6 +222,7 @@ func main() {
 		Blocklist:     blocklist,
 		Mesh:          meshAdapter,
 		BaseThreshold: cfg.ThreatScoreThreshold,
+		Scoring:       scoring,
 	}
 	if err := mgr.Add(watcher); err != nil {
 		log.Error(err, "unable to register threat score watcher")

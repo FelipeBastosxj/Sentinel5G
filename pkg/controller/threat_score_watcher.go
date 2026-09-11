@@ -52,6 +52,11 @@ type ThreatScoreWatcher struct {
 	Blocklist     ebpf.BlocklistUpdater
 	Mesh          mesh.Adapter
 	BaseThreshold float64
+
+	// Scoring records that the AI engine is actually publishing, backing the
+	// ScoringPipelineReady condition Reconciler writes onto every policy (see
+	// scoring_pipeline.go). Nil is fine -- the tracking is skipped.
+	Scoring *ScoringPipelineTracker
 }
 
 // Start implements manager.Runnable so the watcher's lifecycle is tied to
@@ -87,6 +92,9 @@ func (w *ThreatScoreWatcher) handle(ctx context.Context, event events.ThreatScor
 	// still proves the AI engine is publishing. See metrics.go.
 	ThreatScoresReceived.WithLabelValues(scoreSourceLabel(event.Model)).Inc()
 	ThreatScore.Observe(event.Score)
+	if w.Scoring != nil {
+		w.Scoring.Observe()
+	}
 
 	var pod corev1.Pod
 	if err := w.Get(ctx, types.NamespacedName{Namespace: event.Namespace, Name: event.PodName}, &pod); err != nil {

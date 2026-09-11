@@ -65,9 +65,24 @@ longer than a minute or two — the `nats` readyz check reports the reason.
 create yourself — these are deliberately not committed to the repo. Train
 one against your own traffic, or at minimum the real dataset pipeline in
 `docs/getting-started.md`'s "Train (or retrain) against the real dataset"
-section, before relying on `autoMitigate: true` anywhere. Skipping this step
-doesn't fail loudly: every policy just sits at `Phase: Monitoring` forever
-with nothing publishing a `ThreatScoreEvent`.
+section, before relying on `autoMitigate: true` anywhere.
+
+Skipping this step doesn't fail loudly — every policy just sits at
+`Phase: Monitoring` forever with nothing publishing a `ThreatScoreEvent` —
+so the operator reports it on the policies themselves. Confirm the scoring
+half is actually running before moving on:
+
+```sh
+kubectl get tsp -A
+# SCORING must read True. False + NoThreatScoresReceived means the operator
+# is subscribed but no score has ever arrived -- i.e. this step was skipped,
+# or the AI engine is running without a model.
+```
+
+It reports `False`/`AwaitingFirstScore` for the first `SCORING_PIPELINE_GRACE`
+(`config.scoringPipelineGrace`, default `10m`) after the operator starts,
+which covers an install where the AI engine comes up second. `kubectl
+describe tsp` carries the full reason and message.
 
 Set the same NATS auth/TLS env vars here as step 1 — `NATS_ALLOW_UNAUTHENTICATED`
 must not be set to `true` in a production deployment either.
@@ -80,6 +95,12 @@ Set `threatDetection.autoMitigate: false` on your first real
 closed-loop path minus the actual mitigation, so you can measure real
 false-positive rate before anything automated acts on it. Only flip
 `autoMitigate: true` per policy once you're satisfied.
+
+Measure it rather than eyeballing `.status.phase`: every one of those
+withheld mitigations increments
+`sentinel5g_threshold_crossings_total{outcome="alerting"}` on the operator's
+`/metrics`. See `docs/observability.md`'s "Measuring a detection-only
+pilot's false-positive rate" for the queries.
 
 ## 5. Opt into eBPF enforcement only after its preflight passes
 

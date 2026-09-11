@@ -57,6 +57,27 @@ sum(rate(sentinel5g_threat_scores_received_total[15m]))
 
 A cluster in that state has every policy parked at `Phase: Monitoring`
 forever, because nothing ever publishes a score for the operator to act on.
+You don't have to be scraping metrics to see it — the operator also reports
+it on the policies themselves:
+
+```sh
+kubectl get tsp -A
+# NAME               PHASE        SCORE   SCORING   AGE
+# protect-amf-core   Monitoring           False     42m
+```
+
+`SCORING` is the `ScoringPipelineReady` condition. `False` with reason
+`NoThreatScoresReceived` (see `kubectl describe tsp`) means the operator is
+subscribed to the threat-score subject but no score has *ever* arrived —
+almost always an AI engine that was never deployed, or one running without a
+model. `SCORING_PIPELINE_GRACE` (`config.scoringPipelineGrace`, default
+`10m`) is how long after startup it waits before saying so; inside that
+window the reason is `AwaitingFirstScore` instead.
+
+The condition is deliberately "has *ever* scored", not a liveness rate: quiet
+is the normal, healthy state of a network under no attack, so no rate
+distinguishes "no threats today" from "the AI engine is gone". Continuous
+liveness is what `sentinel5g_threat_scores_received_total` above is for.
 
 Health/readiness endpoints are served on `HEALTH_PROBE_BIND_ADDRESS`
 (`:8081` by default): `/healthz` and `/readyz`.
