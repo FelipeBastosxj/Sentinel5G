@@ -10,6 +10,54 @@ including out of the box:
 - `controller_runtime_reconcile_errors_total`
 - `workqueue_*` (depth, latency) for the `TelecomSecurityPolicy` controller
 
+It also registers its own metrics on that same registry and endpoint
+(`pkg/controller/metrics.go` — no second HTTP server, so nothing on the
+deployment side changes to scrape them):
+
+| Metric | Type | Labels | What it tells you |
+|---|---|---|---|
+| `sentinel5g_threat_scores_received_total` | counter | `source` | Every `ThreatScoreEvent` consumed from the bus. **Flat at zero means the scoring half of the system isn't running** — the AI engine was never deployed, or has no model. See "Is the scoring pipeline alive?" below. |
+| `sentinel5g_threat_score` | histogram | — | Distribution of received scores in `[0,1]`, for calibrating `THREAT_SCORE_THRESHOLD` against what your traffic actually produces. |
+| `sentinel5g_threshold_crossings_total` | counter | `namespace`, `policy`, `outcome` | A score crossed this policy's effective threshold. `outcome="alerting"` = withheld by `autoMitigate: false`; `outcome="mitigating"` = acted on. |
+| `sentinel5g_mitigations_total` | counter | `action`, `result` | Individual mitigation actions attempted (`ebpf_block`/`mesh_quarantine` × `success`/`error`). |
+| `sentinel5g_policy_phase` | gauge | `namespace`, `policy`, `phase` | `1` for each policy's current phase, `0` for its other phases — so `sum by (phase) (sentinel5g_policy_phase)` counts policies. |
+
+`source` on the first metric is a **closed set** (`model`, `rule`,
+`unknown`), not the raw `ThreatScoreEvent.model` string. That's deliberate:
+anything able to reach an unauthenticated `NATS_URL` can forge a
+`ThreatScoreEvent` (see `docs/integrations.md`), and a wire-supplied label
+value is an unbounded-cardinality hole in Prometheus.
+
+### Measuring a detection-only pilot's false-positive rate
+
+This is what `outcome="alerting"` exists for. Run the pilot with
+`autoMitigate: false` (see `docs/production-install.md`), and:
+
+```promql
+# Crossings per second that WOULD have mitigated, per policy.
+sum by (namespace, policy) (rate(sentinel5g_threshold_crossings_total{outcome="alerting"}[5m]))
+
+# As a fraction of everything scored — the number to judge before flipping
+# autoMitigate on.
+sum(rate(sentinel5g_threshold_crossings_total{outcome="alerting"}[5m]))
+  / sum(rate(sentinel5g_threat_scores_received_total[5m]))
+```
+
+Read it for what it is: every crossing during a pilot on traffic you believe
+to be benign is a false positive you would have acted on. It is not a
+validated detection rate — nothing here labels true positives, and
+`ROADMAP.md` is explicit that a load-testing harness is still open work.
+
+### Is the scoring pipeline alive?
+
+```promql
+# Zero over any window means nothing has ever scored.
+sum(rate(sentinel5g_threat_scores_received_total[15m]))
+```
+
+A cluster in that state has every policy parked at `Phase: Monitoring`
+forever, because nothing ever publishes a score for the operator to act on.
+
 Health/readiness endpoints are served on `HEALTH_PROBE_BIND_ADDRESS`
 (`:8081` by default): `/healthz` and `/readyz`.
 
@@ -67,7 +115,11 @@ included yet — see `ROADMAP.md`):
 Every automated mitigation is reflected onto the triggering
 `TelecomSecurityPolicy`'s `.status`:
 
-- `status.phase` (`Pending` → `Monitoring` → `Mitigating`/`Degraded`)
+- `status.phase` (`Pending` → `Monitoring` → `Alerting`/`Mitigating`/
+  `Degraded`). `Alerting` means the threshold was crossed but
+  `autoMitigate: false` withheld the action — a working detection-only
+  pilot, not a fault; `Degraded` is reserved for a genuine operator-side
+  failure (a mesh or eBPF action erroring)
 - `status.observedThreatScore` — the last score matched against this policy
 - `status.lastMitigationTime` — set only when an actual mitigation fired
 - `status.blockedSourceIPs` — every source IP this policy has *currently*

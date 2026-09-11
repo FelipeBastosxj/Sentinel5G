@@ -25,6 +25,19 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   withholds action, instead of the previous `Degraded` (which reads as "the
   operator is broken" and is now reserved for a genuine operator-side
   failure) — makes a detection-only pilot's false-positive rate legible.
+- Prometheus metrics for the operator itself (`pkg/controller/metrics.go`),
+  on the manager's existing `/metrics` endpoint -- it previously exposed only
+  controller-runtime's built-ins. `sentinel5g_threshold_crossings_total`'s
+  `outcome="alerting"` is the shadow-mode counter `ROADMAP.md` Phase 2.5
+  listed as still open inside the otherwise-closed `Alerting` item: it counts
+  exactly the crossings a detection-only pilot would have mitigated, so the
+  false-positive rate is measurable before turning `autoMitigate` on. Also
+  `sentinel5g_threat_scores_received_total` (flat at zero when the scoring
+  half of the system was never deployed), `sentinel5g_threat_score`,
+  `sentinel5g_mitigations_total` and `sentinel5g_policy_phase`. Label values
+  derived from the NATS wire go through a closed-set mapping, since anything
+  that can reach an unauthenticated bus could otherwise drive unbounded
+  Prometheus series growth.
 
 ### Changed
 - **Breaking-ish default:** the operator and the AI engine
@@ -50,6 +63,13 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
 - `pkg/ebpf.Attach` now checks `--bpf-interface` resolves to a real
   interface *before* loading the BPF collection into the kernel, instead of
   after -- a typo'd interface name fails faster and without the wasted load.
+- `scripts/quickstart.sh` keeps helm's cache/config alongside its own
+  kubeconfig instead of in `$HOME`, so it also works where `$HOME` isn't
+  writable (a service account, a container running as an arbitrary uid).
+- `scripts/quickstart.sh` now prints the `export KUBECONFIG=...` line (and
+  the real path of any CLI it installed) with its closing hints -- the
+  commands it suggested previously couldn't work as pasted, since the
+  script's kubeconfig is deliberately isolated from the user's shell.
 
 ### Fixed
 - `scripts/quickstart.sh` failed outright on a clone the running user
@@ -79,14 +99,6 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   host or VM: the daemon is up and the user simply isn't in the `docker`
   group. Both causes are now named, with the fix for each.
 
-### Changed
-- `scripts/quickstart.sh` keeps helm's cache/config alongside its own
-  kubeconfig instead of in `$HOME`, so it also works where `$HOME` isn't
-  writable (a service account, a container running as an arbitrary uid).
-- `scripts/quickstart.sh` now prints the `export KUBECONFIG=...` line (and
-  the real path of any CLI it installed) with its closing hints -- the
-  commands it suggested previously couldn't work as pasted, since the
-  script's kubeconfig is deliberately isolated from the user's shell.
 
 ## [0.2.2] - 2026-09-08
 

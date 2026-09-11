@@ -81,6 +81,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.Index.Remove(req.NamespacedName)
+			ForgetPolicyMetrics(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("get TelecomSecurityPolicy %s: %w", req.NamespacedName, err)
@@ -111,6 +112,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.Index.Put(&policy)
 		log.Info("policy is now under active monitoring")
 	}
+
+	// Set unconditionally, not only on a transition: a Reconcile triggered by
+	// anything else (a spec edit, a resync, an operator restart re-listing
+	// every policy) is also how a freshly-started process repopulates a gauge
+	// it lost with its previous in-memory registry.
+	SetPolicyPhase(policy.Namespace, policy.Name, policy.Status.Phase)
 
 	if policy.Status.Phase == securityv1alpha1.PolicyPhaseMitigating {
 		return r.tryDeEscalate(ctx, log, &policy)
@@ -185,6 +192,7 @@ func (r *Reconciler) tryDeEscalate(ctx context.Context, log logr.Logger, policy 
 		return ctrl.Result{}, fmt.Errorf("update status after de-escalating %s/%s: %w", policy.Namespace, policy.Name, err)
 	}
 	r.Index.Put(policy)
+	SetPolicyPhase(policy.Namespace, policy.Name, policy.Status.Phase)
 
 	log.Info("de-escalated policy after quiet dwell period",
 		"dwell", r.deEscalationDwell(), "unblockedIPs", unblockedCount, "meshReleaseAttempted", policy.Spec.Actions.IsolatePod)
@@ -236,6 +244,7 @@ func (r *Reconciler) finalize(ctx context.Context, log logr.Logger, policy *secu
 	}
 
 	r.Index.Remove(types.NamespacedName{Namespace: policy.Namespace, Name: policy.Name})
+	ForgetPolicyMetrics(policy.Namespace, policy.Name)
 	return ctrl.Result{}, nil
 }
 
