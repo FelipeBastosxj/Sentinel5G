@@ -11,7 +11,7 @@
 ## 💡 Key Features
 
 * **Kernel-Level Visibility (eBPF):** Non-intrusive packet and event inspection for 3GPP/SIP/SMPP protocols at the XDP/TC layer.
-* **AI-Driven Anomaly Detection:** Machine learning inference engine (ONNX Runtime) that learns a per-workload signaling baseline and flags deviations as zero-day candidates. The shipped model trains on a synthetic dataset (see [`docs/getting-started.md`](docs/getting-started.md)); validating against real GTP-U/SIP/SMPP traffic is tracked in [`ROADMAP.md`](ROADMAP.md).
+* **AI-Driven Anomaly Detection:** Machine learning inference engine (ONNX Runtime) that learns a per-workload signaling baseline and flags deviations as zero-day candidates. The published model trains on **real** GTP-U captured from a live Open5GS+UERANSIM core ([`docs/paper-data/real-dataset/`](docs/paper-data/real-dataset/README.md)) — read that directory's stated scope limits before treating it as a model of your own network. Paired with an explicit non-ML detector for the one anomaly class the autoencoder provably cannot catch; the measurement is in [`docs/paper-data/02-ai-training-inference.md`](docs/paper-data/02-ai-training-inference.md) §2.5.
 * **Closed-Loop Automation:** Automated network isolation and eBPF-level packet dropping triggered instantly upon anomaly detection.
 * **Kubernetes-Native:** Full declarative control via custom CRDs (`TelecomSecurityPolicy`).
 * **Zero-Trust Telecom Architecture:** Aligned with CISA and NIST guidelines for U.S. Critical Infrastructure Security.

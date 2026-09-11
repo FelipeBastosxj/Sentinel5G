@@ -10,6 +10,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # Covers both Dockerfile and Dockerfile.model in this directory -- the
+  # latter publishes the trained model artifact the AI engine chart's
+  # initContainer pulls, and pins busybox by digest for the same reason.
   - package-ecosystem: "docker"
     directory: "/cmd/ai-engine"
     schedule:

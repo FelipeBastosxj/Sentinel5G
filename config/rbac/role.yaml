@@ -27,6 +27,17 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # controller-runtime's mgr.GetEventRecorder writes through the NEWER
+  # events.k8s.io/v1 API, not the core one above -- so without this rule
+  # every Event the operator records is rejected with "events.events.k8s.io
+  # is forbidden" and only ever appears as an error in the operator's own
+  # log. That silently disabled the EBPFAttachFailed Event from the moment
+  # it was added; found by watching a real Event fail to land on a real
+  # cluster, not by reading the manifest. The core-group rule is kept
+  # because it costs nothing and covers any caller still on the legacy API.
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

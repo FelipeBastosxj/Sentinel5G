@@ -179,6 +179,30 @@ jobs:
         with:
           python-version: "3.11"
       - run: helm lint charts/sentinel5g-operator
+      - run: helm lint charts/sentinel5g-ai-engine
+      - name: AI engine chart refuses to render without a model
+        # The whole reason that chart exists: a deployment with no model comes
+        # up healthy and silently never publishes a ThreatScoreEvent, leaving
+        # every TelecomSecurityPolicy at Phase: Monitoring forever (ROADMAP.md
+        # Phase 2.5). The guard failing open would restore exactly that, so it
+        # gets a test rather than trust.
+        run: |
+          set -euo pipefail
+          if helm template x charts/sentinel5g-ai-engine \
+              --set model.image.repository=null >/dev/null 2>&1; then
+            echo "ERROR: the chart rendered with no model source configured" >&2
+            exit 1
+          fi
+          if helm template x charts/sentinel5g-ai-engine \
+              --set model.existingSecret=ai-engine-model >/dev/null 2>&1; then
+            echo "ERROR: the chart rendered with two mutually exclusive model sources" >&2
+            exit 1
+          fi
+          helm template x charts/sentinel5g-ai-engine >/dev/null
+          helm template x charts/sentinel5g-ai-engine \
+            --set model.image.repository=null \
+            --set model.existingSecret=ai-engine-model >/dev/null
+          echo "model source validation behaves as documented."
       - name: CRD drift check (config/crd/bases vs. the Helm chart's copy)
         # charts/sentinel5g-operator/templates/crd.yaml is a hand-copied
         # duplicate of config/crd/bases/...yaml (controller-gen's own

@@ -1,20 +1,25 @@
 # The AI engine (Layer 3) in-cluster, NATS worker mode, sitting alongside
-# the operator (charts/sentinel5g-operator) in the same namespace. Not part
-# of that Helm chart -- the operator is the only piece with one so far; this
-# is a plain manifest until/unless a proper chart is worth adding.
+# the operator in the same namespace.
 #
-# Needs a real trained model (models/autoencoder.onnx + .onnx.data +
-# .norm.json -- see cmd/ai-engine/scripts/train.py and export_onnx.py, or
-# docs/getting-started.md's "Bring up NATS JetStream + the AI engine" step
-# to produce one) delivered via a Secret, created imperatively -- NOT
-# committed to the repo as YAML:
+# SUPERSEDED for anything but a throwaway demo: charts/sentinel5g-ai-engine
+# is the supported way to deploy this. The chart obtains a model on its own
+# (a published artifact by default), mirrors the operator chart's NATS
+# auth/TLS knobs, and -- the reason it exists -- REFUSES to install without a
+# model rather than coming up healthy and silently never publishing a
+# ThreatScoreEvent. See docs/production-install.md step 3.
+#
+# This manifest is kept because it is the shortest path to a running engine
+# on a cluster you already have a model Secret for, and because
+# scripts/quickstart.sh's demo flow references it. It needs that Secret
+# created imperatively -- the artifacts are deliberately not committed:
 #
 #   kubectl create secret generic ai-engine-model -n sentinel5g-system \
 #     --from-file=autoencoder.onnx=cmd/ai-engine/models/autoencoder.onnx \
 #     --from-file=autoencoder.onnx.data=cmd/ai-engine/models/autoencoder.onnx.data \
 #     --from-file=autoencoder.norm.json=cmd/ai-engine/models/autoencoder.norm.json
 #
-# Run that (adjust paths if needed) before applying this file.
+# Produce one with `make ai-engine-train-real` first. Run that (adjust paths
+# if needed) before applying this file.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

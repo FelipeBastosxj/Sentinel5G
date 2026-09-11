@@ -1,0 +1,44 @@
+Sentinel5G AI engine (Layer 3) installed as {{ include "sentinel5g-ai-engine.fullname" . }}.
+
+Mode: {{ .Values.config.mode }}
+Model: {{ if .Values.model.image.repository }}{{ .Values.model.image.repository }}:{{ .Values.model.image.tag }} (pulled by an initContainer){{ else }}Secret/{{ .Values.model.existingSecret }}{{ end }}
+Bus:   {{ .Values.nats.url }}
+
+Check it is actually scoring -- this is the half of the system whose absence
+is otherwise silent:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "sentinel5g-ai-engine.fullname" . }}
+  kubectl get tsp -A     # the SCORING column must reach True
+
+The operator reports ScoringPipelineReady=False on every policy until the
+first ThreatScoreEvent arrives, so `kubectl get tsp` is the fastest check
+that this install is doing its job.
+
+{{- if .Values.nats.allowUnauthenticated }}
+
+WARNING: nats.allowUnauthenticated is true. Anything able to reach
+{{ .Values.nats.url }} can forge a ThreatScoreEvent and trigger a real
+mitigation. Intended for a throwaway demo cluster only -- see
+docs/production-install.md.
+{{- end }}
+{{- if eq .Values.config.mode "http" }}
+
+NOTE: config.mode is "http", which serves POST /v1/score for direct
+integration but does NOT consume the NATS events subject. The operator only
+ever reads scores off the bus, so closed-loop mitigation needs mode "nats".
+{{- end }}
+{{- if and .Values.serviceMonitor.enabled (not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1")) }}
+
+WARNING: serviceMonitor.enabled is true but the monitoring.coreos.com/v1
+ServiceMonitor CRD is not installed on this cluster, so no ServiceMonitor was
+created. Metrics are still reachable on the Service's "metrics" port.
+{{- end }}
+
+{{- if .Values.model.image.repository }}
+
+The default model is trained on roughly one hour of single-UE GTP-U traffic
+from one lab core (docs/paper-data/real-dataset/). It is a reproducible
+starting point, not a model of your network -- see docs/getting-started.md
+for retraining against your own traffic before relying on
+autoMitigate: true.
+{{- end }}

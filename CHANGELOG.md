@@ -73,6 +73,21 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   be read the same way production reads the wire. The dataset scripts now
   derive per-TEID rates from the `.pcap` files instead of the `tcpdump -tt
   -n` text dumps beside them -- the dumps carry no payload bytes, so no TEID.
+- `charts/sentinel5g-ai-engine`: a Helm chart for the AI engine, which had
+  none -- it was a plain manifest needing a hand-created Secret, and skipping
+  that step produced a deployment that came up healthy and silently never
+  published a `ThreatScoreEvent`. The chart **refuses to install** without a
+  model source rather than installing something that cannot work, and CI
+  asserts that guard rather than trusting it.
+- A published model artifact per release: `publish-model` in `release.yml`
+  trains from the committed real dataset and pushes a signed, multi-arch
+  `sentinel5g-model` image, which the new chart consumes via an
+  initContainer. `make ai-engine-train-real` is the same path locally; the
+  release summary records the model's `reference_error` and the dataset hash
+  so a published model is traceable to the data that produced it.
+- Both Helm charts are now published as OCI artifacts on release (the
+  existing job became a matrix), and `make helm-lint`/`helm-template` cover
+  both.
 
 ### Changed
 - **Breaking for a mixed deployment:** `struct signaling_event` grew from 24
@@ -127,6 +142,24 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
 - Two pre-existing `flake8` violations (`sentinel_ai/config.py:95`,
   `tests/test_config.py:35`) that failed `make ai-engine-lint` and CI's
   python job on every run.
+- **Kubernetes Events from the operator were never created.** The RBAC
+  granted `events` in the core API group, but controller-runtime's
+  `mgr.GetEventRecorder` writes through `events.k8s.io/v1` -- so every Event
+  was rejected with "events.events.k8s.io is forbidden" and surfaced only as
+  an error in the operator's own log. That silently disabled the
+  `EBPFAttachFailed` Event from the moment it was added. Found by watching a
+  real Event fail to land on a real cluster.
+- **`helm upgrade` left the operator running on its old configuration.** The
+  Deployment carried no ConfigMap checksum, and the operator reads its
+  settings once at startup -- so changing any `config.*` or `nats.*` value
+  updated the ConfigMap and nothing else, with the new values visible in
+  `kubectl get cm` and not in effect.
+- The AI engine image declared `USER sentinel5g` by name. Kubernetes cannot
+  verify a named user is non-root, so any pod spec with
+  `runAsNonRoot: true` refused to start it with
+  `CreateContainerConfigError`. Now numeric (`65532:65532`), matching every
+  other image here. It went unnoticed because
+  `deployments/quickstart/ai-engine.yaml` sets no securityContext at all.
 - `scripts/quickstart.sh` keeps helm's cache/config alongside its own
   kubeconfig instead of in `$HOME`, so it also works where `$HOME` isn't
   writable (a service account, a container running as an arbitrary uid).

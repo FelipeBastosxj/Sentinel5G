@@ -1,0 +1,131 @@
+{{- include "sentinel5g-ai-engine.validateModel" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel5g-ai-engine.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sentinel5g-ai-engine.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sentinel5g-ai-engine.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel5g-ai-engine.labels" . | nindent 8 }}
+      annotations:
+        # Restarts the pod when the config changes. The AI engine reads its
+        # settings once at startup (sentinel_ai/config.py), so without this a
+        # `helm upgrade` that only touches values would leave the running pod
+        # on the old configuration with nothing indicating it.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "sentinel5g-ai-engine.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.model.image.repository }}
+      initContainers:
+        # Copies the model out of a published artifact image into an emptyDir
+        # the app container mounts read-only. An initContainer rather than a
+        # second mount of the image itself: image volumes are a much newer
+        # Kubernetes feature than this chart's kubeVersion floor, and a plain
+        # copy works on every cluster.
+        - name: model
+          image: "{{ .Values.model.image.repository }}:{{ .Values.model.image.tag }}"
+          imagePullPolicy: {{ .Values.model.image.pullPolicy }}
+          command: ["/bin/cp"]
+          args: ["-r", "/models/.", "{{ .Values.model.mountPath }}"]
+          volumeMounts:
+            - name: model
+              mountPath: {{ .Values.model.mountPath }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      {{- end }}
+      containers:
+        - name: ai-engine
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "sentinel5g-ai-engine.fullname" . }}-config
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            {{- if .Values.nats.existingPasswordSecret }}
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nats.existingPasswordSecret }}
+                  key: password
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.config.metricsAddr | trimPrefix ":" | int }}
+            {{- if eq .Values.config.mode "http" }}
+            - name: http
+              containerPort: {{ .Values.config.httpAddr | trimPrefix ":" | int }}
+            {{- end }}
+          # The image's own HEALTHCHECK module, mode-aware: it probes /healthz
+          # in http mode and the metrics server in nats mode, since the
+          # latter has no HTTP app of its own. Reused here rather than
+          # hard-coding a path that would be wrong in one of the two modes.
+          livenessProbe:
+            exec:
+              command: ["python", "-m", "sentinel_ai.healthcheck"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: ["python", "-m", "sentinel_ai.healthcheck"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: model
+              mountPath: {{ .Values.model.mountPath }}
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: model
+          {{- if .Values.model.existingSecret }}
+          secret:
+            secretName: {{ .Values.model.existingSecret }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -45,6 +45,12 @@ pytest
 ```
 
 This produces `models/autoencoder.onnx` and `models/autoencoder.norm.json`.
+
+For an in-cluster deployment you don't have to train at all to get started:
+`charts/sentinel5g-ai-engine` pulls a published model artifact by default
+(`make ai-engine-train-real` is what builds it, from the committed real
+dataset). Train your own when you want a model of *your* traffic rather than
+one lab core's — see `docs/production-install.md` step 3.
 `generate_synthetic_dataset.py` fabricates traffic (it does not ship with,
 or claim to represent, real telecom captures) purely to exercise the
 pipeline end to end — see the module docstring and

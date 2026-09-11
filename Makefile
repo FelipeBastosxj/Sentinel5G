@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 IMG_OPERATOR  ?= ghcr.io/felipebastosxj/sentinel5g-operator:latest
 IMG_AI_ENGINE ?= ghcr.io/felipebastosxj/sentinel5g-ai-engine:latest
+IMG_MODEL     ?= ghcr.io/felipebastosxj/sentinel5g-model:latest
 
 .PHONY: all
 all: build test
@@ -69,6 +70,17 @@ ai-engine-train:
 	cd cmd/ai-engine && python scripts/generate_synthetic_dataset.py && \
 		python scripts/train.py && python scripts/export_onnx.py
 
+# Trains against the REAL captures committed under docs/paper-data/real-dataset/
+# rather than the synthetic generator above. This is what the release
+# workflow runs to build the published model artifact, so the artifact is
+# reproducible from the repository alone -- previously this path existed only
+# as loose commands in docs/getting-started.md.
+.PHONY: ai-engine-train-real
+ai-engine-train-real:
+	cd cmd/ai-engine && python scripts/build_real_dataset.py && \
+		python scripts/train.py --dataset data/real_dataset.npz --output models/autoencoder.pt && \
+		python scripts/export_onnx.py --weights models/autoencoder.pt --dataset data/real_dataset.npz
+
 ## --- Containers -------------------------------------------------------------
 
 .PHONY: docker-build-operator
@@ -79,15 +91,27 @@ docker-build-operator:
 docker-build-ai-engine:
 	docker build -t $(IMG_AI_ENGINE) cmd/ai-engine
 
+# The model as its own OCI artifact, consumed by charts/sentinel5g-ai-engine's
+# initContainer. Needs cmd/ai-engine/models/ populated first -- run
+# ai-engine-train-real above.
+.PHONY: docker-build-model
+docker-build-model:
+	docker build -f cmd/ai-engine/Dockerfile.model -t $(IMG_MODEL) cmd/ai-engine
+
 ## --- Helm / Kustomize ---------------------------------------------------
 
+# Both charts, not just the operator's: the AI engine chart is what makes a
+# deployment able to score at all, so leaving it out of `make ci` would mean
+# the piece most likely to be misconfigured is the one nothing validates.
 .PHONY: helm-lint
 helm-lint:
 	helm lint charts/sentinel5g-operator
+	helm lint charts/sentinel5g-ai-engine
 
 .PHONY: helm-template
 helm-template:
 	helm template sentinel5g charts/sentinel5g-operator
+	helm template sentinel5g-ai-engine charts/sentinel5g-ai-engine
 
 ## --- Everything -------------------------------------------------------------
 
