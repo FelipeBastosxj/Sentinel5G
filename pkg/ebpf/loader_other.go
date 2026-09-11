@@ -30,5 +30,7 @@ func (l *Loader) Close() error { return nil }
 // Deliberately does not implement EventSource (pkg/ebpf/blocklist.go): there
 // is no ring buffer to read on a platform Attach() always fails on, so
 // callers' type assertion for EventSource fails cleanly here rather than
-// needing a "not supported" error path of its own.
+// needing a "not supported" error path of its own. That also means methods
+// added to EventSource -- SignalingEvents, SignalRate, TunnelRate -- never
+// need a counterpart here; the omission is the design, not an oversight.
 var _ BlocklistUpdater = (*Loader)(nil)

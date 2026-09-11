@@ -4,8 +4,10 @@ package ebpf
 
 import (
 	"encoding/binary"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Regression guard for a real bug found via live testing (bpftool map dump
@@ -55,7 +57,7 @@ func TestPortScanEntryMatchesKernelValueSize(t *testing.T) {
 // 2-byte pad into VlanID — the struct's total size (and therefore the
 // ringbuf record size cilium/ebpf decodes) must not change.
 func TestRawSignalingEventMatchesKernelSize(t *testing.T) {
-	const kernelEventSize = 24 // bpf/packet_filter.c's struct signaling_event, packed+aligned(8).
+	const kernelEventSize = 32 // bpf/packet_filter.c's struct signaling_event, packed+aligned(8).
 	if got := binary.Size(rawSignalingEvent{}); got != kernelEventSize {
 		t.Fatalf("binary.Size(rawSignalingEvent{}) = %d, want %d (must match bpf/packet_filter.c's "+
 			"struct signaling_event exactly)", got, kernelEventSize)
@@ -66,7 +68,7 @@ func TestRawSignalingEventMatchesKernelSize(t *testing.T) {
 // rawSignalingEventV6 must stay byte-exact with bpf/packet_filter.c's
 // struct signaling_event_v6.
 func TestRawSignalingEventV6MatchesKernelSize(t *testing.T) {
-	const kernelEventSize = 48 // bpf/packet_filter.c's struct signaling_event_v6, packed+aligned(8).
+	const kernelEventSize = 56 // bpf/packet_filter.c's struct signaling_event_v6, packed+aligned(8).
 	if got := binary.Size(rawSignalingEventV6{}); got != kernelEventSize {
 		t.Fatalf("binary.Size(rawSignalingEventV6{}) = %d, want %d (must match bpf/packet_filter.c's "+
 			"struct signaling_event_v6 exactly)", got, kernelEventSize)
@@ -96,5 +98,129 @@ func TestAttachMissingObjectClassifiesAsNotFound(t *testing.T) {
 	}
 	if got := ClassifyAttachError(err); !strings.Contains(got, "was not found") {
 		t.Fatalf("ClassifyAttachError(%v) = %q, want it to classify as a missing object file", err, got)
+	}
+}
+
+// Same hand-synced-constant guard as the others, for the per-TEID rate map's
+// key. Confirmed against a real `bpftool map show` on Linux 6.14 (key 8B).
+func TestTunnelRateKeyMatchesKernelKeySize(t *testing.T) {
+	const kernelKeySize = 8 // bpf/packet_filter.c's struct tunnel_key.
+
+	if got := binary.Size(tunnelRateKey{}); got != kernelKeySize {
+		t.Fatalf("binary.Size(tunnelRateKey{}) = %d, want %d (must match bpf/packet_filter.c's struct tunnel_key exactly)", got, kernelKeySize)
+	}
+}
+
+// Confirmed via `bpftool map show` (key 24B) — unlike scan_key_v6, the C
+// struct declares its padding explicitly, so this needs only one pad field.
+func TestTunnelRateKeyV6MatchesKernelKeySize(t *testing.T) {
+	const kernelKeySize = 24 // bpf/packet_filter.c's struct tunnel_key_v6.
+
+	if got := binary.Size(tunnelRateKeyV6{}); got != kernelKeySize {
+		t.Fatalf("binary.Size(tunnelRateKeyV6{}) = %d, want %d (must match bpf/packet_filter.c's struct tunnel_key_v6 exactly)", got, kernelKeySize)
+	}
+}
+
+// The size assertions above prove the Go mirrors are the right *length*;
+// nothing proved the fields were in the right *order* until this. That
+// mattered enough to write once TEID and TunnelRate existed: they are two
+// same-typed uint32s at the tail of the struct, so transposing them would be
+// size-clean, compile cleanly, and produce a wrong tunnel rate for every
+// event — exactly the kind of silent cross-language mismatch this package's
+// other tests exist to prevent. Every field gets a distinct sentinel so a
+// swap of any pair fails.
+func TestDecodeSignalingEventFieldOrder(t *testing.T) {
+	sample := make([]byte, 32)
+	binary.LittleEndian.PutUint64(sample[0:], 1_000_000_000) // timestamp_ns: 1s since boot
+	binary.LittleEndian.PutUint32(sample[8:], 0x04030201)    // saddr
+	binary.LittleEndian.PutUint32(sample[12:], 0x08070605)   // daddr
+	binary.LittleEndian.PutUint16(sample[16:], 2152)         // dest_port
+	binary.LittleEndian.PutUint16(sample[18:], 300)          // payload_size
+	sample[20] = 1                                           // protocol: SignalProtoGTPU
+	sample[21] = 0                                           // malformed
+	binary.LittleEndian.PutUint16(sample[22:], 42)           // vlan_id
+	binary.LittleEndian.PutUint32(sample[24:], 0x00004d84)   // teid
+	binary.LittleEndian.PutUint32(sample[28:], 31)           // tunnel_rate
+
+	boot := time.Unix(1700000000, 0).UTC()
+	l := &Loader{bootTime: boot}
+
+	evt, err := l.decodeSignalingEvent(sample)
+	if err != nil {
+		t.Fatalf("decodeSignalingEvent: %v", err)
+	}
+
+	if want := boot.Add(time.Second); !evt.ObservedAt.Equal(want) {
+		t.Errorf("ObservedAt = %v, want %v", evt.ObservedAt, want)
+	}
+	if got, want := evt.SourceIP.String(), "1.2.3.4"; got != want {
+		t.Errorf("SourceIP = %s, want %s", got, want)
+	}
+	if got, want := evt.DestIP.String(), "5.6.7.8"; got != want {
+		t.Errorf("DestIP = %s, want %s", got, want)
+	}
+	if evt.DestPort != 2152 {
+		t.Errorf("DestPort = %d, want 2152", evt.DestPort)
+	}
+	if evt.PayloadSize != 300 {
+		t.Errorf("PayloadSize = %d, want 300", evt.PayloadSize)
+	}
+	if evt.Protocol != SignalProtoGTPU {
+		t.Errorf("Protocol = %d, want %d", evt.Protocol, SignalProtoGTPU)
+	}
+	if evt.Malformed {
+		t.Error("Malformed = true, want false")
+	}
+	if evt.VLANID != 42 {
+		t.Errorf("VLANID = %d, want 42", evt.VLANID)
+	}
+	// The pair this test exists for.
+	if evt.TEID != 0x00004d84 {
+		t.Errorf("TEID = %#x, want %#x", evt.TEID, 0x00004d84)
+	}
+	if evt.TunnelRate != 31 {
+		t.Errorf("TunnelRate = %d, want 31", evt.TunnelRate)
+	}
+}
+
+// The IPv6 counterpart, where the two tail uint32s sit at offsets 48 and 52.
+func TestDecodeSignalingEventV6FieldOrder(t *testing.T) {
+	sample := make([]byte, 56)
+	binary.LittleEndian.PutUint64(sample[0:], 2_000_000_000)
+	copy(sample[8:], net.ParseIP("2001:db8::1").To16())
+	copy(sample[24:], net.ParseIP("2001:db8::2").To16())
+	binary.LittleEndian.PutUint16(sample[40:], 5060)
+	binary.LittleEndian.PutUint16(sample[42:], 128)
+	sample[44] = 2 // SignalProtoSIP
+	sample[45] = 1 // malformed
+	binary.LittleEndian.PutUint16(sample[46:], 7)
+	binary.LittleEndian.PutUint32(sample[48:], 0xdeadbeef)
+	binary.LittleEndian.PutUint32(sample[52:], 4096)
+
+	boot := time.Unix(1700000000, 0).UTC()
+	l := &Loader{bootTime: boot}
+
+	evt, err := l.decodeSignalingEventV6(sample)
+	if err != nil {
+		t.Fatalf("decodeSignalingEventV6: %v", err)
+	}
+
+	if got, want := evt.SourceIP.String(), "2001:db8::1"; got != want {
+		t.Errorf("SourceIP = %s, want %s", got, want)
+	}
+	if got, want := evt.DestIP.String(), "2001:db8::2"; got != want {
+		t.Errorf("DestIP = %s, want %s", got, want)
+	}
+	if evt.DestPort != 5060 || evt.PayloadSize != 128 {
+		t.Errorf("DestPort/PayloadSize = %d/%d, want 5060/128", evt.DestPort, evt.PayloadSize)
+	}
+	if evt.Protocol != SignalProtoSIP || !evt.Malformed || evt.VLANID != 7 {
+		t.Errorf("Protocol/Malformed/VLANID = %d/%v/%d, want %d/true/7", evt.Protocol, evt.Malformed, evt.VLANID, SignalProtoSIP)
+	}
+	if evt.TEID != 0xdeadbeef {
+		t.Errorf("TEID = %#x, want %#x", evt.TEID, 0xdeadbeef)
+	}
+	if evt.TunnelRate != 4096 {
+		t.Errorf("TunnelRate = %d, want 4096", evt.TunnelRate)
 	}
 }

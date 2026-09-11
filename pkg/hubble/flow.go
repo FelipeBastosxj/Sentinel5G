@@ -60,11 +60,23 @@ const (
 // maintained PodIPIndex because bpf/packet_filter.c's ring buffer records
 // carry only a raw IP address, not endpoint identity.
 //
-// PayloadSize, RatePerSecond, Malformed, and VLANID are left at their zero
-// value: Hubble's flow summaries don't carry the underlying packet's
-// payload byte count, a windowed rate (that's this project's own
-// scan_rate/signal_rate accounting, which has no Hubble equivalent),
-// protocol-framing validation, or an exposed VLAN tag.
+// PayloadSize, RatePerSecond, Malformed, VLANID, TEID, and
+// TunnelRatePerSecond are left at their zero value: Hubble's flow summaries
+// don't carry the underlying packet's payload byte count, a windowed rate
+// (that's this project's own scan_rate/signal_rate/tunnel_rate accounting,
+// which has no Hubble equivalent), protocol-framing validation, or an
+// exposed VLAN tag.
+//
+// TEID is worth being explicit about, because a zero there is a stronger
+// statement than the others: Hubble reports L3/L4 five-tuples and endpoint
+// identity, never the GTP-U tunnel header inside the UDP payload, so there
+// is no TEID to read even in principle. events.NormalizedEvent documents 0
+// as the "no tunnel identity" sentinel, and pkg/detect's GTP-U tunnel-flood
+// rule requires a non-zero TEID — so a Hubble-sourced event cannot trip that
+// detector by construction, not by coincidence. These events remain fully
+// valid and are still scored by the AI engine; they simply contribute a zero
+// tunnel rate, which is the honest encoding of "this capture path cannot see
+// tunnels".
 func FromFlow(f *flowpb.Flow) (events.NormalizedEvent, bool) {
 	udp := f.GetL4().GetUDP()
 	if udp == nil {

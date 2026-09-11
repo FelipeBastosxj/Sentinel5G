@@ -47,8 +47,29 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   condition is the signal that tells the two apart. `SCORING_PIPELINE_GRACE`
   (`config.scoringPipelineGrace`, default `10m`) covers an install where the
   AI engine legitimately starts after the operator.
+- GTP-U header parsing in `bpf/packet_filter.c` (3GPP TS 29.281 §5.1) and a
+  per-tunnel rate counter: new `tunnel_rate`/`tunnel_rate_v6` LRU maps keyed
+  by `(source IP, TEID)`, bounded by `MAX_TUNNEL_ENTRIES`. Until now nothing
+  in the project ever parsed a GTP-U header -- traffic was classified as
+  GTP-U purely because it was UDP to port 2152 -- and the only rate signal
+  was per source IP, which on a real N3 interface aggregates every
+  subscriber together because they all arrive from the peer gNB's address.
+  `NormalizedEvent` gains `teid` and `tunnelRatePerSecond` to carry it, and
+  `pkg/ebpf.Loader` gains a `TunnelRate()` lookup.
 
 ### Changed
+- **Breaking for a mixed deployment:** `struct signaling_event` grew from 24
+  to 32 bytes and `signaling_event_v6` from 48 to 56, so the compiled
+  `packet_filter.o` and the operator binary must be upgraded together. The
+  published operator image bakes the object in at build time, so this only
+  affects a deployment overriding `--bpf-object` with its own copy;
+  `pkg/ebpf.Attach` now refuses an object without the `tunnel_rate` map
+  rather than silently decoding every ring buffer record at the wrong length.
+- `malformed` now also fires for a packet on port 2152 whose GTP-U framing
+  fails to validate, where it previously only fired for a UDP header too
+  short to read. Traffic that is not protocol-conformant GTP-U but aimed at
+  the GTP-U port -- a plain UDP flood against the N3 socket, for instance --
+  is reclassified accordingly.
 - **Breaking-ish default:** the operator and the AI engine
   (`AI_ENGINE_MODE=nats`) now refuse to start against a NATS bus with no
   auth/TLS configured, unless `NATS_ALLOW_UNAUTHENTICATED=true`

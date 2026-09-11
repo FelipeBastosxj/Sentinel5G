@@ -84,6 +84,46 @@ each never lets any single port's counter reach the threshold). Real,
 useful visibility into probe traffic aimed at a single unexpected port; not
 general port-scan detection.
 
+### Per-tunnel (per-TEID) rate
+
+For GTP-U specifically, the per-source counter above is not just coarse — it
+is measuring the wrong thing. On a real N3 interface **every subscriber's
+user-plane traffic arrives from the same source IP**, the peer gNB/UPF, so
+aggregating by source collapses every UE into one number and one tunnel
+flooding is invisible inside it. That is the detection gap `ROADMAP.md`
+Phase 2.5 records: the only anomaly type that is simultaneously real GTP-U
+and observable here scored *below* the held-out normal baseline (0.0679 vs
+0.0811) and was missed at every production sensitivity threshold.
+
+So `parse_gtpu()` reads the GTP-U header itself (3GPP TS 29.281 §5.1) rather
+than inferring the protocol from the destination port: it validates
+version/PT, rejects path-management message types (Echo, Error Indication,
+End Marker — real GTP-U, but no user-plane payload and a legitimate TEID of
+0), extracts the TEID, and walks the optional sequence/N-PDU block plus a
+bounded extension-header chain. `tunnel_rate` (and `tunnel_rate_v6`) then
+counts packets per `(source IP, TEID)` in the same 1-second window, an LRU
+map bounded by `MAX_TUNNEL_ENTRIES`.
+
+The resulting count travels **inside** the `signaling_events` record rather
+than being looked up from userspace afterwards. That is deliberate: a
+userspace lookup races the window roll and can report `1` for the very packet
+the kernel counted as the three-thousandth, which would be worst precisely
+during the flood the counter exists to catch.
+
+Two things the parser changes beyond the new fields, both worth knowing
+before reading old measurements against new ones:
+
+- A packet on port 2152 whose GTP-U framing doesn't validate now sets
+  `malformed`. Previously that flag only ever fired for a UDP header too
+  short to read, so traffic like
+  `docs/paper-data/real-dataset/real_storm_udpflood.pcap` — 25,944 real
+  packets aimed at the real N3 port with no GTP header at all — was
+  classified as ordinary GTP-U.
+- The chain walk is `#pragma unroll`'ed to `GTPU_MAX_EXT_HEADERS` (4) and
+  every offset is bounded by `GTPU_MAX_HDR_BYTES`, which is what lets the
+  verifier prove the pointer arithmetic safe. A packet with a deeper chain is
+  reported as malformed rather than accepted with a wrong header length.
+
 A second, separate detector (`port_scan`/`track_port_scan()`) closes exactly
 that gap: it tracks a bounded, deduplicated set of the *distinct*
 destination ports each source has touched within a longer 30-second window

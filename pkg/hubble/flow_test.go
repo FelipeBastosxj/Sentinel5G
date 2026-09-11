@@ -161,3 +161,28 @@ func TestFromFlow_ZeroValueFieldsWithNoHubbleEquivalent(t *testing.T) {
 		t.Fatalf("expected fields with no Hubble flow equivalent to stay at zero value, got %+v", got)
 	}
 }
+
+// A Hubble flow has no GTP-U tunnel header to read, so every event this path
+// produces must leave the tunnel fields at their documented "no tunnel
+// identity" zero. That isn't cosmetic: pkg/detect's GTP-U tunnel-flood rule
+// gates on a non-zero TEID precisely so a capture path that cannot see
+// tunnels can never trip it, and this test is what keeps that guarantee from
+// silently becoming a coincidence.
+func TestFromFlow_LeavesTunnelFieldsNeutral(t *testing.T) {
+	evt, ok := FromFlow(&flowpb.Flow{
+		Time: timestamppb.New(time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)),
+		IP:   &flowpb.IP{Source: "10.42.0.7", Destination: "10.42.0.9"},
+		L4: &flowpb.Layer4{
+			Protocol: &flowpb.Layer4_UDP{UDP: &flowpb.UDP{DestinationPort: 2152, SourcePort: 55123}},
+		},
+	})
+	if !ok {
+		t.Fatal("expected a GTP-U flow to convert")
+	}
+	if evt.TEID != 0 {
+		t.Errorf("TEID = %d, want 0 (Hubble cannot observe a GTP-U tunnel header)", evt.TEID)
+	}
+	if evt.TunnelRatePerSecond != 0 {
+		t.Errorf("TunnelRatePerSecond = %v, want 0", evt.TunnelRatePerSecond)
+	}
+}

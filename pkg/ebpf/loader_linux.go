@@ -22,10 +22,12 @@ const (
 	blocklistMapName         = "blocklist"
 	signalRateMapName        = "signal_rate"
 	scanRateMapName          = "scan_rate"
+	tunnelRateMapName        = "tunnel_rate"
 	signalingEventsMapName   = "signaling_events"
 	blocklistV6MapName       = "blocklist_v6"
 	signalRateV6MapName      = "signal_rate_v6"
 	scanRateV6MapName        = "scan_rate_v6"
+	tunnelRateV6MapName      = "tunnel_rate_v6"
 	signalingEventsV6MapName = "signaling_events_v6"
 	xdpProgramName           = "xdp_packet_filter"
 	blockedValue             = uint8(1)
@@ -41,11 +43,13 @@ type Loader struct {
 	blocklist       *ebpf.Map
 	signalRate      *ebpf.Map
 	scanRate        *ebpf.Map
+	tunnelRate      *ebpf.Map
 	signalingEvents *ebpf.Map
 
 	blocklistV6       *ebpf.Map
 	signalRateV6      *ebpf.Map
 	scanRateV6        *ebpf.Map
+	tunnelRateV6      *ebpf.Map
 	signalingEventsV6 *ebpf.Map
 
 	// bootTime is wall-clock "now" minus CLOCK_MONOTONIC "now", read once at
@@ -103,6 +107,17 @@ func Attach(objPath, iface string) (*Loader, error) {
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, scanRateMapName)
 	}
 
+	// Also the guard against an operator binary loading a packet_filter.o
+	// compiled before per-TEID tracking existed: that object exports no
+	// tunnel_rate map and no longer matches rawSignalingEvent's size, so
+	// failing loudly here beats decoding every subsequent ring buffer record
+	// at the wrong length.
+	tunnelRate, ok := coll.Maps[tunnelRateMapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, tunnelRateMapName)
+	}
+
 	signalingEvents, ok := coll.Maps[signalingEventsMapName]
 	if !ok {
 		coll.Close()
@@ -125,6 +140,12 @@ func Attach(objPath, iface string) (*Loader, error) {
 	if !ok {
 		coll.Close()
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, scanRateV6MapName)
+	}
+
+	tunnelRateV6, ok := coll.Maps[tunnelRateV6MapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, tunnelRateV6MapName)
 	}
 
 	signalingEventsV6, ok := coll.Maps[signalingEventsV6MapName]
@@ -155,10 +176,12 @@ func Attach(objPath, iface string) (*Loader, error) {
 		blocklist:         blocklist,
 		signalRate:        signalRate,
 		scanRate:          scanRate,
+		tunnelRate:        tunnelRate,
 		signalingEvents:   signalingEvents,
 		blocklistV6:       blocklistV6,
 		signalRateV6:      signalRateV6,
 		scanRateV6:        scanRateV6,
+		tunnelRateV6:      tunnelRateV6,
 		signalingEventsV6: signalingEventsV6,
 		bootTime:          bootTime,
 	}, nil
@@ -240,6 +263,8 @@ type rawSignalingEvent struct {
 	Protocol    uint8
 	Malformed   uint8
 	VlanID      uint16
+	TEID        uint32
+	TunnelRate  uint32
 }
 
 // rawSignalingEventV6 is the byte-exact Go mirror of bpf/packet_filter.c's
@@ -254,6 +279,8 @@ type rawSignalingEventV6 struct {
 	Protocol    uint8
 	Malformed   uint8
 	VlanID      uint16
+	TEID        uint32
+	TunnelRate  uint32
 }
 
 // SignalingEvents implements EventSource: starts two background goroutines
@@ -310,22 +337,15 @@ func (l *Loader) readSignalingEvents(ctx context.Context, reader *ringbuf.Reader
 			continue // Transient read error: skip this record, keep reading.
 		}
 
-		var raw rawSignalingEvent
-		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
-			continue // Short/corrupt record: skip rather than crash the reader.
-		}
-
-		evt := SignalingEvent{
-			// raw.TimestampNs is nanoseconds since boot (bpf_ktime_get_ns());
-			// converting to int64 only overflows past ~292 years of uptime.
-			ObservedAt:  l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
-			SourceIP:    ipv4FromU32(raw.Saddr),
-			DestIP:      ipv4FromU32(raw.Daddr),
-			DestPort:    raw.DestPort,
-			PayloadSize: raw.PayloadSize,
-			Protocol:    SignalProtocol(raw.Protocol),
-			Malformed:   raw.Malformed != 0,
-			VLANID:      raw.VlanID,
+		evt, err := l.decodeSignalingEvent(record.RawSample)
+		if err != nil {
+			// Short/corrupt record: skip rather than crash the reader. The
+			// realistic cause of a *systematically* short record -- an
+			// operator running against a packet_filter.o compiled before
+			// struct signaling_event grew -- can't reach this path, because
+			// Attach refuses such an object outright over its missing
+			// tunnel_rate map. What's left here is genuine corruption.
+			continue
 		}
 
 		select {
@@ -349,23 +369,9 @@ func (l *Loader) readSignalingEventsV6(ctx context.Context, reader *ringbuf.Read
 			continue // Transient read error: skip this record, keep reading.
 		}
 
-		var raw rawSignalingEventV6
-		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &raw); err != nil {
-			continue // Short/corrupt record: skip rather than crash the reader.
-		}
-
-		evt := SignalingEvent{
-			ObservedAt: l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
-			// raw.Saddr/Daddr are already the raw 16 address bytes (not a
-			// uint32 register value like rawSignalingEvent.Saddr), so no
-			// byte-order round trip is needed the way ipv4FromU32 does one.
-			SourceIP:    net.IP(raw.Saddr[:]),
-			DestIP:      net.IP(raw.Daddr[:]),
-			DestPort:    raw.DestPort,
-			PayloadSize: raw.PayloadSize,
-			Protocol:    SignalProtocol(raw.Protocol),
-			Malformed:   raw.Malformed != 0,
-			VLANID:      raw.VlanID,
+		evt, err := l.decodeSignalingEventV6(record.RawSample)
+		if err != nil {
+			continue // See decodeSignalingEvent's caller for why this is rare.
 		}
 
 		select {
@@ -374,6 +380,59 @@ func (l *Loader) readSignalingEventsV6(ctx context.Context, reader *ringbuf.Read
 			return
 		}
 	}
+}
+
+// decodeSignalingEvent turns one raw signaling_events ring buffer record into
+// a SignalingEvent. Split out of readSignalingEvents purely so it can be
+// tested against a hand-built buffer: the struct-size assertions in
+// loader_linux_test.go prove the Go mirror is the right *length*, but nothing
+// proves the fields are in the right *order*, and TEID/TunnelRate are two
+// same-typed uint32s at the tail -- transposing them would be size-clean and
+// silent.
+func (l *Loader) decodeSignalingEvent(sample []byte) (SignalingEvent, error) {
+	var raw rawSignalingEvent
+	if err := binary.Read(bytes.NewReader(sample), binary.LittleEndian, &raw); err != nil {
+		return SignalingEvent{}, err
+	}
+
+	return SignalingEvent{
+		// raw.TimestampNs is nanoseconds since boot (bpf_ktime_get_ns());
+		// converting to int64 only overflows past ~292 years of uptime.
+		ObservedAt:  l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
+		SourceIP:    ipv4FromU32(raw.Saddr),
+		DestIP:      ipv4FromU32(raw.Daddr),
+		DestPort:    raw.DestPort,
+		PayloadSize: raw.PayloadSize,
+		Protocol:    SignalProtocol(raw.Protocol),
+		Malformed:   raw.Malformed != 0,
+		VLANID:      raw.VlanID,
+		TEID:        raw.TEID,
+		TunnelRate:  raw.TunnelRate,
+	}, nil
+}
+
+// decodeSignalingEventV6 is decodeSignalingEvent's IPv6 counterpart.
+func (l *Loader) decodeSignalingEventV6(sample []byte) (SignalingEvent, error) {
+	var raw rawSignalingEventV6
+	if err := binary.Read(bytes.NewReader(sample), binary.LittleEndian, &raw); err != nil {
+		return SignalingEvent{}, err
+	}
+
+	return SignalingEvent{
+		ObservedAt: l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
+		// raw.Saddr/Daddr are already the raw 16 address bytes (not a
+		// uint32 register value like rawSignalingEvent.Saddr), so no
+		// byte-order round trip is needed the way ipv4FromU32 does one.
+		SourceIP:    net.IP(raw.Saddr[:]),
+		DestIP:      net.IP(raw.Daddr[:]),
+		DestPort:    raw.DestPort,
+		PayloadSize: raw.PayloadSize,
+		Protocol:    SignalProtocol(raw.Protocol),
+		Malformed:   raw.Malformed != 0,
+		VLANID:      raw.VlanID,
+		TEID:        raw.TEID,
+		TunnelRate:  raw.TunnelRate,
+	}, nil
 }
 
 // signalRateEntry is the Go mirror of bpf/packet_filter.c's
@@ -445,6 +504,30 @@ type scanRateKeyV6 struct {
 	_        [4]byte
 }
 
+// tunnelRateKey is the byte-exact Go mirror of bpf/packet_filter.c's
+// `struct tunnel_key` — saddr (4 bytes) + teid (4 bytes), `packed,
+// aligned(4)`, no padding; 8 bytes, confirmed via `bpftool map show`
+// (key 8B). Both fields are NUMERIC here, not opaque bytes: cilium/ebpf
+// marshals with native endianness, Saddr is rebuilt with
+// binary.LittleEndian.Uint32 the same way SignalRate already does for
+// scanRateKey, and TEID is the host-order value the kernel produced with
+// bpf_ntohl() at parse time. Mixing those two conventions is exactly the
+// class of mismatch signalRateEntry's doc comment describes.
+type tunnelRateKey struct {
+	Saddr uint32
+	TEID  uint32
+}
+
+// tunnelRateKeyV6 is the byte-exact Go mirror of `struct tunnel_key_v6`;
+// 24 bytes, confirmed via `bpftool map show` (key 24B). Unlike scanRateKeyV6
+// above, the C side declares its padding explicitly, so only one padding
+// field is needed here and its size is readable straight off that struct.
+type tunnelRateKeyV6 struct {
+	Saddr [16]byte
+	TEID  uint32
+	_     uint32
+}
+
 // SignalRate returns the current window's packet count for (ip, destPort),
 // and false if there's no entry this window. destPort selects which kernel
 // map to consult: GTPU_PORT/SIP_PORT traffic is tracked in signal_rate
@@ -487,6 +570,42 @@ func (l *Loader) SignalRate(ip net.IP, destPort uint16) (count uint32, ok bool) 
 	key := scanRateKeyV6{DestPort: destPort}
 	copy(key.Saddr[:], v6)
 	if err := l.scanRateV6.Lookup(&key, &entry); err != nil {
+		return 0, false
+	}
+	return entry.Count, true
+}
+
+// TunnelRate returns the current window's packet count for the GTP-U tunnel
+// (ip, teid), and false if there's no entry in this window.
+//
+// Mirrors SignalRate, with one deliberate difference in how callers should
+// use it: pkg/ingestion does NOT call this. bpf/packet_filter.c carries
+// tunnel_rate inside the signaling_events record itself, so the value an
+// event reports is the one the kernel computed at the instant it saw the
+// packet. A userspace lookup races the 1-second window roll and can
+// legitimately return 1 for the very packet the kernel counted as the
+// three-thousandth — which would be worst precisely during the flood this
+// counter exists to catch. This method is for operational introspection
+// (and parity with SignalRate), not for the ingestion path.
+func (l *Loader) TunnelRate(ip net.IP, teid uint32) (count uint32, ok bool) {
+	var entry signalRateEntry
+
+	if v4 := ip.To4(); v4 != nil {
+		key := tunnelRateKey{Saddr: binary.LittleEndian.Uint32(v4), TEID: teid}
+		if err := l.tunnelRate.Lookup(&key, &entry); err != nil {
+			return 0, false
+		}
+		return entry.Count, true
+	}
+
+	v6, err := ipv6Key(ip)
+	if err != nil {
+		return 0, false
+	}
+
+	key := tunnelRateKeyV6{TEID: teid}
+	copy(key.Saddr[:], v6)
+	if err := l.tunnelRateV6.Lookup(&key, &entry); err != nil {
 		return 0, false
 	}
 	return entry.Count, true

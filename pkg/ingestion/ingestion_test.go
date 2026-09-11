@@ -166,3 +166,56 @@ func TestFromSignalingEvent_PortScanPayloadSizeCarriesDistinctPortCount(t *testi
 		t.Fatalf("expected PayloadSize to pass through unchanged as the distinct-port count, got %d", got.PayloadSize)
 	}
 }
+
+// The tunnel fields come straight off the kernel record, NOT from a rate
+// lookup -- see FromSignalingEvent's comment. This test pins that: the rate
+// lookup below deliberately returns a value that would be wrong for the
+// tunnel, and the event must still carry the kernel's own count.
+func TestFromSignalingEvent_CarriesKernelTunnelRateNotALookup(t *testing.T) {
+	index := controller.NewPodIPIndex()
+	evt := ebpf.SignalingEvent{
+		ObservedAt: time.Unix(1700000000, 0).UTC(),
+		SourceIP:   net.ParseIP("10.42.0.7"),
+		DestIP:     net.ParseIP("10.42.0.9"),
+		DestPort:   2152,
+		Protocol:   ebpf.SignalProtoGTPU,
+		TEID:       0x00004d84,
+		TunnelRate: 3000,
+	}
+
+	// A per-source lookup that has already rolled its window: exactly the
+	// race the in-band tunnel rate exists to avoid.
+	rate := func(net.IP, uint16) (uint32, bool) { return 1, true }
+
+	got := FromSignalingEvent(evt, index, rate, "worker-node-1")
+
+	if got.TEID != 0x00004d84 {
+		t.Errorf("TEID = %#x, want %#x", got.TEID, 0x00004d84)
+	}
+	if got.TunnelRatePerSecond != 3000 {
+		t.Errorf("TunnelRatePerSecond = %v, want 3000 (the kernel's count, not the lookup's)", got.TunnelRatePerSecond)
+	}
+	if got.RatePerSecond != 1 {
+		t.Errorf("RatePerSecond = %v, want 1 (this one DOES come from the lookup)", got.RatePerSecond)
+	}
+}
+
+// Non-GTP-U traffic has no tunnel identity at all, and 0 is the schema's
+// sentinel for that -- not "tunnel number zero".
+func TestFromSignalingEvent_NonGTPUHasNoTunnelIdentity(t *testing.T) {
+	index := controller.NewPodIPIndex()
+	evt := ebpf.SignalingEvent{
+		ObservedAt: time.Unix(1700000000, 0).UTC(),
+		SourceIP:   net.ParseIP("10.42.0.7"),
+		DestIP:     net.ParseIP("10.42.0.9"),
+		DestPort:   5060,
+		Protocol:   ebpf.SignalProtoSIP,
+	}
+	rate := func(net.IP, uint16) (uint32, bool) { return 12, true }
+
+	got := FromSignalingEvent(evt, index, rate, "worker-node-1")
+
+	if got.TEID != 0 || got.TunnelRatePerSecond != 0 {
+		t.Fatalf("expected no tunnel identity for SIP, got teid=%d rate=%v", got.TEID, got.TunnelRatePerSecond)
+	}
+}

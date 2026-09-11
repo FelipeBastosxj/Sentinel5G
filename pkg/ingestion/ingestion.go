@@ -66,6 +66,15 @@ func FromSignalingEvent(evt ebpf.SignalingEvent, podIndex *controller.PodIPIndex
 		RatePerSecond: ratePerSecond,
 		Malformed:     evt.Malformed,
 		VLANID:        evt.VLANID,
+		// Deliberately NOT a rateLookup call. RatePerSecond above has to be
+		// looked up because the kernel doesn't carry it in the record;
+		// TunnelRate the kernel does carry, computed at the instant it saw
+		// this exact packet. Looking it up here instead would race the
+		// 1-second window roll and could report 1 for the packet the kernel
+		// counted as the three-thousandth — worst precisely during the flood
+		// this field exists to catch. See ebpf.Loader.TunnelRate.
+		TEID:                evt.TEID,
+		TunnelRatePerSecond: float64(evt.TunnelRate),
 	}
 }
 

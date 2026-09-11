@@ -114,6 +114,14 @@ func (b *Bridge) handle(w http.ResponseWriter, r *http.Request) {
 // syscall tracing carries — that's specific to the eBPF layer's own
 // protocol-framing validation), and VLANID (a Layer 2 frame detail
 // invisible to a syscall tracer).
+//
+// TEID and TunnelRatePerSecond are zero for a stronger reason than the
+// rest: a syscall tracer observes the read/write/sendto boundary, never the
+// bytes of a GTP-U tunnel header inside a UDP payload, so it structurally
+// cannot produce a TEID — this isn't an unimplemented field. Zero is the
+// documented "no tunnel identity" sentinel on events.NormalizedEvent, and
+// pkg/detect's GTP-U tunnel-flood rule requires a non-zero TEID, so a
+// Falco-sourced event can never trip that detector by construction.
 func (b *Bridge) FromAlert(alert Alert) events.NormalizedEvent {
 	fields := alert.OutputFields
 

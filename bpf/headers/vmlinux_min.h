@@ -78,6 +78,25 @@ struct udphdr {
 	__sum16 check;
 };
 
+/* GTP-U mandatory header, 3GPP TS 29.281 §5.1. Unlike every other struct in
+ * this file, this one is NOT something a host-BTF-derived vmlinux.h would
+ * have supplied either: the kernel's own equivalent (struct gtp1_header)
+ * lives in drivers/net/gtp.c, not in UAPI, so it isn't in BTF at all. It
+ * belongs here anyway for the same reason the others do — its layout is
+ * fixed by the 3GPP spec, not by any kernel's build config, so there is
+ * nothing for CO-RE to relocate.
+ *
+ * flags is version(3) | PT(1) | spare(1) | E(1) | S(1) | PN(1), MSB first.
+ * `length` counts the bytes AFTER these 8, which includes the optional
+ * sequence/N-PDU/next-extension block and any extension headers — it is not
+ * the payload size on its own. */
+struct gtpuhdr {
+	__u8 flags;
+	__u8 msg_type;
+	__be16 length;
+	__be32 teid;
+};
+
 /* Only the 4 bytes after the shared 12-byte dest/src MAC fields that
  * struct ethhdr already accounts for -- its h_proto field doubles as the
  * outer TPID (0x8100) when a tag is present, so this covers exactly what's
