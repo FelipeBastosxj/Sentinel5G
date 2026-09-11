@@ -126,6 +126,35 @@ struct {
 	__type(value, struct signal_rate_entry);
 } scan_rate SEC(".maps");
 
+// tunnel_key deliberately keys tunnel_rate by (source, TEID), and that
+// combination is the whole point of this map. On a real N3 interface every
+// subscriber's user-plane traffic arrives from the SAME source IP -- the
+// peer gNB/UPF -- so signal_rate's per-source counter aggregates every UE
+// together and cannot separate one tunnel flooding from ordinary combined
+// load. That is the measured gap ROADMAP.md Phase 2.5 records: the only
+// anomaly type that is simultaneously real GTP-U and observable here scored
+// BELOW the normal baseline (0.0679 vs 0.0811) and was missed at every
+// production threshold.
+//
+// saddr stays in the key alongside the TEID because a TEID is only unique
+// per GTP-U peer, never globally -- two gNBs can legitimately allocate the
+// same value, and merging them would attribute one peer's traffic to
+// another.
+struct tunnel_key {
+	__u32 saddr; // Network byte order, same treatment as blocklist's key.
+	__u32 teid;  // HOST byte order (bpf_ntohl'd once in parse_gtpu) --
+	              // see tunnelRateKey in pkg/ebpf/loader_linux.go.
+} __attribute__((packed, aligned(4))); // 8 bytes, confirmed via
+                                        // `bpftool map show` (key 8B).
+
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_TUNNEL_ENTRIES);
+	__type(key, struct tunnel_key);
+	__type(value, struct signal_rate_entry); // Reused as-is; no tunnel-specific fields.
+} tunnel_rate SEC(".maps");
+
 // port_scan_entry tracks a bounded, deduplicated set of the distinct
 // destination ports a source has touched within MULTIPORT_SCAN_WINDOW_NS.
 // Deliberately separate from scan_key/scan_rate above (which is keyed by
@@ -195,6 +224,26 @@ struct {
 	__type(value, struct signal_rate_entry);
 } scan_rate_v6 SEC(".maps");
 
+// tunnel_key_v6 mirrors tunnel_key at 128 bits. _pad is declared explicitly
+// rather than left to aligned(8)'s implicit round-up, so the struct's real
+// size is readable from this declaration alone -- scan_key_v6 above relies
+// on the implicit rounding, and its Go mirror needed two separate padding
+// fields to match (see scanRateKeyV6 in pkg/ebpf/loader_linux.go).
+struct tunnel_key_v6 {
+	__u8 saddr[16];
+	__u32 teid; // Host byte order, same as tunnel_key.
+	__u32 _pad;
+} __attribute__((packed, aligned(8))); // 24 bytes, confirmed via
+                                        // `bpftool map show` (key 24B).
+
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MAX_TUNNEL_ENTRIES);
+	__type(key, struct tunnel_key_v6);
+	__type(value, struct signal_rate_entry);
+} tunnel_rate_v6 SEC(".maps");
+
 // port_scan_v6 is port_scan's IPv6 counterpart; reuses port_scan_entry
 // as-is, keyed by in6_key instead of a raw __u32 saddr.
 struct {
@@ -219,9 +268,25 @@ struct signaling_event {
 	__u8 protocol;       // SIGNAL_PROTO_* from headers/common.h.
 	__u8 malformed;
 	__u16 vlan_id;        // 0 == untagged. Was two bytes of alignment
-	                       // padding (struct size is unchanged at 24 bytes)
-	                       // before VLAN support existed.
-} __attribute__((packed, aligned(8)));
+	                       // padding before VLAN support existed.
+	__u32 teid;           // GTP-U Tunnel Endpoint Identifier, host byte
+	                       // order. 0 means no valid GTP-U T-PDU header was
+	                       // parsed: a non-GTP-U protocol, a path-management
+	                       // message (which legitimately uses TEID 0), or a
+	                       // framing failure -- which also sets malformed.
+	__u32 tunnel_rate;    // Packets counted for (saddr, teid) in the current
+	                       // SIGNALING_RATE_WINDOW_NS, INCLUDING this one.
+	                       // Carried in-band rather than left for userspace
+	                       // to look up afterwards, because the 1-second
+	                       // window can roll between the packet and the
+	                       // lookup -- a userspace read can legitimately
+	                       // return 1 for the packet the kernel counted as
+	                       // the three-thousandth. 0 whenever teid is 0.
+} __attribute__((packed, aligned(8))); // 32 bytes; a multiple of 8, so
+                                        // aligned(8) adds no trailing
+                                        // padding. Mirrored byte-for-byte by
+                                        // rawSignalingEvent in
+                                        // pkg/ebpf/loader_linux.go.
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -230,7 +295,7 @@ struct {
 
 static __always_inline void emit_signaling_event(__u32 saddr, __u32 daddr, __u16 dest_port,
 						  __u16 payload_size, __u8 protocol, __u8 malformed,
-						  __u16 vlan_id)
+						  __u16 vlan_id, __u32 teid, __u32 tunnel_rate)
 {
 	struct signaling_event *evt = bpf_ringbuf_reserve(&signaling_events, sizeof(*evt), 0);
 	if (!evt)
@@ -244,6 +309,8 @@ static __always_inline void emit_signaling_event(__u32 saddr, __u32 daddr, __u16
 	evt->protocol = protocol;
 	evt->malformed = malformed;
 	evt->vlan_id = vlan_id;
+	evt->teid = teid;
+	evt->tunnel_rate = tunnel_rate;
 	bpf_ringbuf_submit(evt, 0);
 }
 
@@ -263,7 +330,9 @@ struct signaling_event_v6 {
 	__u8 protocol;
 	__u8 malformed;
 	__u16 vlan_id;
-} __attribute__((packed, aligned(8)));
+	__u32 teid;        // See struct signaling_event's teid/tunnel_rate
+	__u32 tunnel_rate; // comments; identical semantics at 128 bits.
+} __attribute__((packed, aligned(8))); // 56 bytes, no trailing padding.
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -272,7 +341,8 @@ struct {
 
 static __always_inline void emit_signaling_event_v6(const __u8 *saddr, const __u8 *daddr,
 						      __u16 dest_port, __u16 payload_size,
-						      __u8 protocol, __u8 malformed, __u16 vlan_id)
+						      __u8 protocol, __u8 malformed, __u16 vlan_id,
+						      __u32 teid, __u32 tunnel_rate)
 {
 	struct signaling_event_v6 *evt = bpf_ringbuf_reserve(&signaling_events_v6, sizeof(*evt), 0);
 	if (!evt)
@@ -286,12 +356,105 @@ static __always_inline void emit_signaling_event_v6(const __u8 *saddr, const __u
 	evt->protocol = protocol;
 	evt->malformed = malformed;
 	evt->vlan_id = vlan_id;
+	evt->teid = teid;
+	evt->tunnel_rate = tunnel_rate;
 	bpf_ringbuf_submit(evt, 0);
 }
 
 static __always_inline int is_signaling_port(__u16 dest_port_host)
 {
 	return dest_port_host == GTPU_PORT || dest_port_host == SIP_PORT;
+}
+
+// parse_gtpu extracts the TEID from a GTP-U packet and validates its framing.
+// Returns 1 when this is a well-formed GTP-U T-PDU (setting *teid_out), 0
+// otherwise -- the caller reports 0 as malformed=1, which is exactly what
+// struct signaling_event's malformed field already means ("the parser could
+// not fully validate the protocol framing", see pkg/events/types.go).
+//
+// Until this existed, nothing in the project ever parsed a GTP-U header:
+// traffic was classified as GTP-U purely because it was UDP to port 2152.
+// That is why docs/paper-data/real-dataset/real_storm_udpflood.pcap -- 25,944
+// packets of plain zero-filled UDP aimed at the real N3 port, with no GTP
+// header at all -- was labelled "GTP-U" throughout, and why the kernel's
+// malformed flag never fired for it.
+//
+// Deliberately two-stage. The TEID sits at a FIXED offset (bytes 4..7) in the
+// 8-byte mandatory header and needs no chain walk, so it is read first and
+// unconditionally. The optional block and extension-header walk below only
+// exist to validate the rest of the framing; a packet whose chain is too deep
+// to walk is still rate-tracked under its (correct) TEID and merely also
+// flagged malformed. Dropping tunnel attribution for a malformed packet would
+// be backwards -- malformed flood traffic is precisely the case that most
+// needs attributing to a tunnel.
+static __always_inline int parse_gtpu(void *gtp, void *data_end, __u32 *teid_out)
+{
+	struct gtpuhdr *gh = gtp;
+	if ((void *)(gh + 1) > data_end)
+		return 0; // Fewer than 8 payload bytes: not a GTP-U header at all.
+
+	// Version must be 1 and PT must be 1 (GTP, not the GTP' charging
+	// protocol). This check is what keeps a plain non-GTP datagram aimed at
+	// port 2152 from being read as a tunnel with a garbage TEID.
+	if ((gh->flags & GTPU_VERSION_PT_MASK) != GTPU_VERSION_1_PT_GTP)
+		return 0;
+
+	// Path management (Echo Request/Response, Error Indication, End Marker)
+	// is real GTP-U but carries no user-plane payload and legitimately uses
+	// TEID 0 -- nothing to rate a tunnel by, and not a framing error either,
+	// so the caller gets 0 here and reports teid 0 without malformed.
+	if (gh->msg_type != GTPU_MSG_TPDU)
+		return 0;
+
+	*teid_out = bpf_ntohl(gh->teid);
+
+	if (!(gh->flags & GTPU_EXT_FLAGS_MASK))
+		return 1; // No optional block: 8-byte header, nothing left to walk.
+
+	// Any of E/S/PN set means the sequence(2) + N-PDU(1) + next-extension-
+	// type(1) block is ALL present, including the fields whose own flag is
+	// clear (3GPP TS 29.281 §5.2.1). Every real capture in this repository
+	// has flags 0x34 -- E set, S and PN clear -- and therefore carries this
+	// block, so a parser that skipped it would mis-frame 100% of the real
+	// GTP-U here.
+	if ((void *)((__u8 *)gtp + 12) > data_end)
+		return 0;
+	__u8 next = *((__u8 *)gtp + 11);
+	__u32 off = 12;
+
+	#pragma unroll
+	for (int i = 0; i < GTPU_MAX_EXT_HEADERS; i++) {
+		if (next == 0)
+			break; // End of the chain.
+
+		// Bounds `off` to a compile-time-known range. Load-bearing for the
+		// verifier, not a sanity check: without it the offset below is an
+		// unbounded runtime value and the program is rejected outright.
+		if (off > GTPU_MAX_HDR_BYTES - 4)
+			return 0;
+
+		__u8 *ext = (__u8 *)gtp + off;
+		if ((void *)(ext + 1) > data_end)
+			return 0;
+
+		__u32 elen = (__u32)ext[0] * 4; // Length is in 4-octet units.
+		if (elen == 0)
+			return 0; // A zero-length extension would never terminate.
+		if (off + elen > GTPU_MAX_HDR_BYTES)
+			return 0;
+
+		__u8 *tail = (__u8 *)gtp + off + elen - 1;
+		if ((void *)(tail + 1) > data_end)
+			return 0;
+
+		next = *tail; // An extension header's last octet is the next type.
+		off += elen;
+	}
+
+	if (next != 0)
+		return 0; // Chain deeper than GTPU_MAX_EXT_HEADERS: unparseable.
+
+	return 1;
 }
 
 static __always_inline void track_signal_rate(__u32 saddr)
@@ -339,6 +502,31 @@ static __always_inline __u32 track_scan_rate(__u32 saddr, __u16 dest_port, __u64
 		entry->count += 1;
 	}
 	return prior_count;
+}
+
+// track_tunnel_rate returns the window count INCLUDING this packet, unlike
+// track_scan_rate which returns the PRIOR count because its caller needs an
+// edge trigger. The difference is deliberate: this value is written straight
+// into the emitted event, so it has to describe the packet being reported.
+static __always_inline __u32 track_tunnel_rate(__u32 saddr, __u32 teid, __u64 now)
+{
+	struct tunnel_key key = {.saddr = saddr, .teid = teid};
+	struct signal_rate_entry *entry = bpf_map_lookup_elem(&tunnel_rate, &key);
+
+	if (!entry) {
+		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
+		bpf_map_update_elem(&tunnel_rate, &key, &fresh, BPF_ANY);
+		return 1;
+	}
+
+	if (now - entry->window_start_ns > SIGNALING_RATE_WINDOW_NS) {
+		entry->window_start_ns = now;
+		entry->count = 1;
+		return 1;
+	}
+
+	entry->count += 1;
+	return entry->count;
 }
 
 // track_port_scan returns 1 exactly once — the packet whose port is the
@@ -433,6 +621,29 @@ static __always_inline __u32 track_scan_rate_v6(const struct in6_key *saddr6, __
 	return prior_count;
 }
 
+static __always_inline __u32 track_tunnel_rate_v6(const struct in6_key *saddr6, __u32 teid, __u64 now)
+{
+	struct tunnel_key_v6 key = {.teid = teid};
+	__builtin_memcpy(key.saddr, saddr6->addr, 16);
+
+	struct signal_rate_entry *entry = bpf_map_lookup_elem(&tunnel_rate_v6, &key);
+
+	if (!entry) {
+		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
+		bpf_map_update_elem(&tunnel_rate_v6, &key, &fresh, BPF_ANY);
+		return 1;
+	}
+
+	if (now - entry->window_start_ns > SIGNALING_RATE_WINDOW_NS) {
+		entry->window_start_ns = now;
+		entry->count = 1;
+		return 1;
+	}
+
+	entry->count += 1;
+	return entry->count;
+}
+
 static __always_inline __u32 track_port_scan_v6(const struct in6_key *saddr6, __u16 dest_port, __u64 now)
 {
 	struct port_scan_entry *entry = bpf_map_lookup_elem(&port_scan_v6, saddr6);
@@ -468,6 +679,13 @@ static __always_inline __u32 track_port_scan_v6(const struct in6_key *saddr6, __
 	return 0;
 }
 
+// Verified on Linux 6.14 with `bpftool prog load` + `bpftool prog show`:
+// xlated 9880B, jited 6029B, max stack depth 152 bytes -- comfortably under
+// the verifier's hard 512-byte limit (CLAUDE.md). The GTP-U parsing added
+// here cost ~2.9KB of xlated instructions and ~60 bytes of stack over the
+// previous revision (6936B / 4200B), almost all of it the #pragma unroll'ed
+// extension-header walk; re-measure and update these numbers if that loop's
+// depth (GTPU_MAX_EXT_HEADERS) ever changes.
 SEC("xdp")
 int xdp_packet_filter(struct xdp_md *ctx)
 {
@@ -516,7 +734,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		struct udphdr *udph6 = (void *)(ip6h + 1);
 		if ((void *)(udph6 + 1) > data_end) {
 			emit_signaling_event_v6(saddr6.addr, ip6h->daddr, 0, 0,
-						 SIGNAL_PROTO_UNKNOWN, 1, vlan_id);
+						 SIGNAL_PROTO_UNKNOWN, 1, vlan_id, 0, 0);
 			return XDP_PASS;
 		}
 
@@ -527,8 +745,21 @@ int xdp_packet_filter(struct xdp_md *ctx)
 			track_signal_rate_v6(&saddr6);
 
 			__u8 protocol6 = (dest_port6 == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
+			__u32 teid6 = 0, tunnel_rate6 = 0;
+			__u8 malformed6 = 0;
+
+			if (dest_port6 == GTPU_PORT) {
+				if (parse_gtpu((void *)(udph6 + 1), data_end, &teid6)) {
+					if (teid6 != 0)
+						tunnel_rate6 = track_tunnel_rate_v6(&saddr6, teid6,
+										     bpf_ktime_get_ns());
+				} else {
+					malformed6 = 1;
+				}
+			}
+
 			emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
-						 protocol6, 0, vlan_id);
+						 protocol6, malformed6, vlan_id, teid6, tunnel_rate6);
 		} else {
 			// Shared between both trackers below: they're always called
 			// together for this packet, so one bpf_ktime_get_ns() call
@@ -538,12 +769,12 @@ int xdp_packet_filter(struct xdp_md *ctx)
 			__u32 prior6 = track_scan_rate_v6(&saddr6, dest_port6, now6);
 			if (prior6 + 1 == SCAN_EMIT_THRESHOLD)
 				emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
-							 SIGNAL_PROTO_UNKNOWN, 0, vlan_id);
+							 SIGNAL_PROTO_UNKNOWN, 0, vlan_id, 0, 0);
 
 			if (track_port_scan_v6(&saddr6, dest_port6, now6))
 				emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6,
 							 MULTIPORT_SCAN_THRESHOLD, SIGNAL_PROTO_PORT_SCAN,
-							 0, vlan_id);
+							 0, vlan_id, 0, 0);
 		}
 
 		return XDP_PASS;
@@ -590,7 +821,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		// Too short to have a complete UDP header on an otherwise
 		// plausible signaling flow — a strong anomaly signal on its own,
 		// worth reporting even though we can't safely read dest_port.
-		emit_signaling_event(saddr, iph->daddr, 0, 0, SIGNAL_PROTO_UNKNOWN, 1, vlan_id);
+		emit_signaling_event(saddr, iph->daddr, 0, 0, SIGNAL_PROTO_UNKNOWN, 1, vlan_id, 0, 0);
 		return XDP_PASS;
 	}
 
@@ -601,7 +832,24 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		track_signal_rate(saddr);
 
 		__u8 protocol = (dest_port == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
-		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol, 0, vlan_id);
+		__u32 teid = 0, tunnel_rate = 0;
+		__u8 malformed = 0;
+
+		// Per-tunnel rate, the signal signal_rate structurally cannot
+		// provide: on a real N3 every UE shares one source IP, so the
+		// per-source counter above sees aggregate load and nothing else.
+		// See struct tunnel_key's comment.
+		if (dest_port == GTPU_PORT) {
+			if (parse_gtpu((void *)(udph + 1), data_end, &teid)) {
+				if (teid != 0)
+					tunnel_rate = track_tunnel_rate(saddr, teid, bpf_ktime_get_ns());
+			} else {
+				malformed = 1;
+			}
+		}
+
+		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol,
+				      malformed, vlan_id, teid, tunnel_rate);
 	} else {
 		// Off-signaling-port UDP: previously invisible here no matter its
 		// volume (is_signaling_port() gated all observation, not just
@@ -618,7 +866,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		__u32 prior_count = track_scan_rate(saddr, dest_port, now);
 		if (prior_count + 1 == SCAN_EMIT_THRESHOLD)
 			emit_signaling_event(saddr, iph->daddr, dest_port, payload_size,
-					      SIGNAL_PROTO_UNKNOWN, 0, vlan_id);
+					      SIGNAL_PROTO_UNKNOWN, 0, vlan_id, 0, 0);
 
 		// Distinct-port-count detector, separate from the flood check above
 		// — see track_port_scan()'s comment for what it catches that
@@ -628,7 +876,7 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		// pkg/ebpf/blocklist.go's SignalingEvent.PayloadSize doc.
 		if (track_port_scan(saddr, dest_port, now))
 			emit_signaling_event(saddr, iph->daddr, dest_port, MULTIPORT_SCAN_THRESHOLD,
-					      SIGNAL_PROTO_PORT_SCAN, 0, vlan_id);
+					      SIGNAL_PROTO_PORT_SCAN, 0, vlan_id, 0, 0);
 	}
 
 	return XDP_PASS;

@@ -67,6 +67,25 @@ type SignalingEvent struct {
 	// VLANID is the 802.1Q VLAN ID the packet was tagged with, or 0 for an
 	// untagged frame (see bpf/packet_filter.c's VLAN-unwrap comment).
 	VLANID uint16
+	// TEID is the GTP-U Tunnel Endpoint Identifier this packet belongs to
+	// (host byte order), or 0 when no valid GTP-U T-PDU header was parsed:
+	// a non-GTP-U protocol, a GTP-U path-management message (Echo, Error
+	// Indication, End Marker — which legitimately carry TEID 0), or a
+	// framing failure, which additionally sets Malformed.
+	TEID uint32
+	// TunnelRate is the kernel's packet count for (SourceIP, TEID) in the
+	// current 1-second window, INCLUDING this packet; 0 whenever TEID is 0.
+	//
+	// This is the per-subscriber signal RatePerSecond structurally cannot
+	// provide. On a real N3 interface every UE's user-plane traffic arrives
+	// from the same source IP (the peer gNB/UPF), so a per-source counter
+	// only ever sees aggregate load — see struct tunnel_key in
+	// bpf/packet_filter.c, and ROADMAP.md Phase 2.5's detection gap.
+	//
+	// Carried in the ring buffer record rather than looked up from userspace
+	// afterwards; Loader.TunnelRate's doc comment explains why that
+	// distinction matters.
+	TunnelRate uint32
 }
 
 // EventSource is implemented by BlocklistUpdaters that can also stream
@@ -90,6 +109,13 @@ type EventSource interface {
 	// need different keying). Callers holding a SignalingEvent should pass
 	// its own DestPort, not a guess.
 	SignalRate(ip net.IP, destPort uint16) (count uint32, ok bool)
+	// TunnelRate returns the current window's packet count for the GTP-U
+	// tunnel (ip, teid). Note that pkg/ingestion deliberately does NOT use
+	// this to populate an event -- SignalingEvent.TunnelRate already carries
+	// the kernel's own count for that exact packet. See Loader.TunnelRate in
+	// loader_linux.go for why a userspace lookup is the wrong source there,
+	// and what this is for instead.
+	TunnelRate(ip net.IP, teid uint32) (count uint32, ok bool)
 }
 
 // isIPv4 reports whether ip should be treated as an IPv4 address for the

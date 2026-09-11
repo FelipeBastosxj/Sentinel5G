@@ -26,11 +26,52 @@
 /* 3GPP GTP-U (user plane tunneling, e.g. N3/N9 interfaces). */
 #define GTPU_PORT 2152
 
+/* GTP-U flags-byte decode, 3GPP TS 29.281 §5.1. */
+#define GTPU_VERSION_PT_MASK 0xF0  /* version(3) + PT(1) */
+#define GTPU_VERSION_1_PT_GTP 0x30 /* version == 1 && PT == 1 (GTP, not GTP') */
+#define GTPU_EXT_FLAGS_MASK 0x07   /* E|S|PN: any set => 4 optional bytes follow */
+
+/* T-PDU is the only GTP-U message type carrying user-plane payload. Echo
+ * Request/Response (1/2), Error Indication (26) and End Marker (254) are
+ * path management: real GTP-U, but nothing to rate a tunnel by, and they
+ * legitimately carry TEID 0. */
+#define GTPU_MSG_TPDU 0xFF
+
+/* How deep parse_gtpu() walks the extension-header chain. Every real N3
+ * packet in docs/paper-data/real-dataset/ carries exactly ONE extension
+ * header (PDU Session Container, type 0x85, 4 bytes) — measured by parsing
+ * all 1,889 packets of real_normal.pcap, not assumed. 3GPP allows more (NR
+ * RAN Container 0x81, Long PDCP PDU Number 0x82, UDP Port 0x40), so 4 is
+ * headroom over a realistic worst case of 2-3. The loop is #pragma
+ * unroll'ed into straight-line code with no BPF helper call, so each extra
+ * iteration costs a handful of instructions at runtime but doubles the
+ * verifier's state exploration at load time — which is why this is 4 and
+ * not 16. A packet with a deeper chain is treated as unparseable
+ * (malformed=1) rather than accepted with a wrong header length. */
+#define GTPU_MAX_EXT_HEADERS 4
+
+/* Hard cap on total GTP-U header bytes (mandatory 8 + optional 4 + chain).
+ * Load-bearing for the verifier, not just policy: it bounds the
+ * runtime-variable offset the chain walk uses, which is what lets the
+ * verifier prove every dereference in parse_gtpu() is in range. 64 is far
+ * above the 16 bytes every real capture in this repository uses. */
+#define GTPU_MAX_HDR_BYTES 64
+
 /* SIP signaling (VoIP/IMS control plane). */
 #define SIP_PORT 5060
 
 #define MAX_BLOCKLIST_ENTRIES 65536
 #define MAX_RATE_ENTRIES 65536
+
+/* Bounded capacity of tunnel_rate/tunnel_rate_v6 (see packet_filter.c).
+ * Sized separately from MAX_RATE_ENTRIES because per-tunnel cardinality is a
+ * different quantity: on a real N3 interface the number of active PDU
+ * sessions can far exceed the number of distinct source IPs — that
+ * asymmetry is the entire reason the map exists. LRU eviction bounds the
+ * memory regardless of key cardinality; this just sets where that bound
+ * sits. At 65536 entries of (8-byte key + 16-byte value) this is ~1.6MB for
+ * IPv4 and ~2.6MB for the 24-byte-keyed IPv6 twin. */
+#define MAX_TUNNEL_ENTRIES 65536
 
 /* Rolling window used by track_signal_rate()/track_scan_rate() to bucket
  * packet counts. */

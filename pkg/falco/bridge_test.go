@@ -249,3 +249,30 @@ func TestBridge_Handle_PublishesToNATS(t *testing.T) {
 		t.Fatalf("expected 200 from a valid Falco alert POST, got %d", resp.StatusCode)
 	}
 }
+
+// Falco traces syscalls; it never sees the bytes of a GTP-U header inside a
+// UDP payload, so it structurally cannot produce a TEID. pkg/detect's GTP-U
+// tunnel-flood rule gates on a non-zero TEID exactly so this capture path
+// can't trip it — this test keeps that a guarantee rather than a coincidence.
+func TestFromAlert_LeavesTunnelFieldsNeutral(t *testing.T) {
+	b := &Bridge{NodeName: "worker-node-1"}
+
+	evt := b.FromAlert(Alert{
+		Rule: "Unexpected UDP traffic",
+		OutputFields: map[string]interface{}{
+			"fd.sip":   "10.42.0.7",
+			"fd.dip":   "10.42.0.9",
+			"fd.dport": float64(2152),
+		},
+	})
+
+	if evt.Protocol != events.ProtocolGTPU {
+		t.Fatalf("expected the port-based GTP-U classification, got %q", evt.Protocol)
+	}
+	if evt.TEID != 0 {
+		t.Errorf("TEID = %d, want 0 (a syscall tracer cannot read a tunnel header)", evt.TEID)
+	}
+	if evt.TunnelRatePerSecond != 0 {
+		t.Errorf("TunnelRatePerSecond = %v, want 0", evt.TunnelRatePerSecond)
+	}
+}

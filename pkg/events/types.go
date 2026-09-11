@@ -63,6 +63,23 @@ type NormalizedEvent struct {
 	// VLANID is the 802.1Q VLAN ID the packet was tagged with, or 0 for an
 	// untagged frame.
 	VLANID uint16 `json:"vlanId"`
+
+	// TEID is the GTP-U Tunnel Endpoint Identifier the packet belongs to,
+	// or 0 when the capture path could not determine one. 0 is the explicit
+	// "no tunnel identity" sentinel, and consumers MUST read it that way
+	// rather than as tunnel number zero: the non-eBPF capture paths
+	// (pkg/hubble, pkg/falco) can never produce a TEID at all, so they
+	// always emit 0.
+	TEID uint32 `json:"teid"`
+
+	// TunnelRatePerSecond is the eBPF-side rolling rate for this
+	// (SourceIP, TEID) tuple, as opposed to RatePerSecond's per-SourceIP
+	// aggregate. The distinction is the point: on a real N3 interface every
+	// subscriber's user-plane traffic arrives from the same source IP (the
+	// peer gNB/UPF), so RatePerSecond alone cannot isolate one tunnel
+	// flooding from ordinary combined load — the measured detection gap in
+	// ROADMAP.md Phase 2.5. Always 0 when TEID is 0.
+	TunnelRatePerSecond float64 `json:"tunnelRatePerSecond"`
 }
 
 // ThreatScoreEvent is produced by the AI engine after scoring one or more
@@ -82,6 +99,13 @@ type ThreatScoreEvent struct {
 	Score float64 `json:"score"`
 
 	// Model identifies the scoring model/version (e.g. "autoencoder-v1").
+	// A "rule:" prefix means the score came from a deterministic, non-ML
+	// detector (pkg/detect) rather than the autoencoder — e.g.
+	// "rule:gtpu-tunnel-flood". Consumers that need to tell the two apart
+	// should match on that prefix; everything else about the event, and the
+	// entire pkg/controller.ThreatScoreWatcher path it drives, is
+	// deliberately identical for both, so a rule-sourced score is subject to
+	// exactly the same policy/sensitivity/autoMitigate gating as an ML one.
 	Model string `json:"model"`
 
 	DetectedAt time.Time `json:"detectedAt"`

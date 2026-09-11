@@ -37,9 +37,44 @@ set of fields.
 | `destPort`        | uint16      | Destination port. |
 | `protocol`        | enum        | One of `GTP-U`, `SIP`, `SMPP`, `HTTP2`, `PORT_SCAN`, `UNKNOWN`. `PORT_SCAN` is deliberately folded into the AI engine's `proto_unknown` one-hot feature (see `cmd/ai-engine/sentinel_ai/features.py`) rather than given its own feature dimension, to avoid changing `FEATURE_VECTOR_SIZE` and breaking the shipped ONNX model's input shape — it's still distinguishable from a genuinely unknown protocol via the other features (`payload_size_norm` in particular; see `payloadSize`'s note above). |
 | `payloadSize`     | uint32      | Signaling payload size in bytes, except for `protocol == "PORT_SCAN"`, where this instead carries the distinct-destination-port count that triggered the scan detection (see `bpf/packet_filter.c`'s `port_scan`/`track_port_scan()`). |
-| `ratePerSecond`   | float64     | eBPF-side rolling rate for this `(sourceIp, protocol)` tuple. |
+| `ratePerSecond`   | float64     | eBPF-side rolling rate for this `(sourceIp, protocol)` tuple. See `tunnelRatePerSecond` below for why this one is not sufficient on its own. |
 | `malformed`       | bool        | True when the eBPF parser could not validate protocol framing. |
 | `vlanId`          | uint16      | 802.1Q VLAN ID the packet was tagged with, or `0` for an untagged frame. Not yet a model feature (see `cmd/ai-engine/sentinel_ai/features.py`) — ingested but unused by scoring for now. |
+| `teid`            | uint32      | GTP-U Tunnel Endpoint Identifier, host byte order. **`0` is the explicit "no tunnel identity" sentinel, never tunnel number zero** — set when the capture path parsed no valid GTP-U T-PDU header: a non-GTP-U protocol, a path-management message (Echo/Error Indication/End Marker, which legitimately use TEID 0), a framing failure (which also sets `malformed`), or a capture path that cannot see tunnels at all. `pkg/hubble` and `pkg/falco` always emit `0`; see below. |
+| `tunnelRatePerSecond` | float64 | eBPF-side rolling rate for this `(sourceIp, teid)` tuple, as opposed to `ratePerSecond`'s per-`sourceIp` aggregate. Always `0` when `teid` is `0`. |
+
+### Why `teid`/`tunnelRatePerSecond` exist alongside `ratePerSecond`
+
+They are not a refinement of the same measurement; they are a different
+measurement. On a real N3 interface **every subscriber's user-plane traffic
+arrives from the same source IP** — the peer gNB/UPF — so a per-source
+counter can only ever report aggregate load, and one tunnel flooding is
+invisible inside it. That is the measured gap in `ROADMAP.md` Phase 2.5: the
+only anomaly type that is simultaneously real GTP-U and observable by
+`bpf/packet_filter.c` scored *below* the held-out normal baseline (0.0679 vs
+0.0811) and was missed at every production sensitivity threshold.
+
+`bpf/packet_filter.c` now parses the GTP-U header itself (3GPP TS 29.281
+§5.1 — version/PT validation, the optional sequence/N-PDU block, and a
+bounded extension-header walk) rather than inferring "this is GTP-U" from
+the destination port alone. Two consequences beyond the new fields:
+
+- A packet on port 2152 whose GTP-U framing doesn't validate now sets
+  `malformed`, which previously only ever fired for a UDP header too short
+  to read.
+- `tunnelRatePerSecond` is carried **in the kernel's own ring buffer record**,
+  not looked up from userspace afterwards. A lookup races the 1-second window
+  roll and can report `1` for the very packet the kernel counted as the
+  three-thousandth — worst precisely during the flood the field exists to
+  catch.
+
+Capture paths other than eBPF cannot produce these fields *in principle*, not
+merely "not yet": `pkg/hubble` reads Cilium flow summaries (L3/L4 five-tuples
+and endpoint identity, never the tunnel header inside the payload), and
+`pkg/falco` traces syscalls (it observes the read/write boundary, never the
+payload bytes). Both always emit `0`, and the deterministic GTP-U
+tunnel-flood detector requires a non-zero `teid` — so those paths cannot trip
+it by construction.
 
 ## `ThreatScoreEvent`
 
@@ -52,7 +87,7 @@ Produced by the AI engine after scoring one or more `NormalizedEvent`s.
 | `podName`         | string      | Copied from the scored event. |
 | `sourceIp`        | string      | Copied from the scored event. |
 | `score`           | float64     | Reconstruction-error-derived anomaly score, normalized to `[0.0, 1.0]`. |
-| `model`           | string      | Scoring model/version, e.g. `autoencoder-v1`. |
+| `model`           | string      | Scoring model/version, e.g. `autoencoder-v1`. A **`rule:` prefix** means the score came from a deterministic, non-ML detector rather than the autoencoder (e.g. `rule:gtpu-tunnel-flood`). Everything else about the event — and the entire `ThreatScoreWatcher` path it drives — is identical for both, so a rule-sourced score goes through exactly the same policy/sensitivity/`autoMitigate` gating. |
 | `detectedAt`      | RFC3339 time | When the AI engine produced this score. |
 
 ## Feature vector (AI engine internal)
