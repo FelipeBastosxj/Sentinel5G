@@ -70,6 +70,34 @@ type OperatorConfig struct {
 	// this is a quiet-period timer, not a "sustained low score" check).
 	DeEscalationDwell time.Duration
 
+	// GTPUTunnelFloodEnabled turns on the deterministic, non-ML GTP-U
+	// tunnel-flood detector (pkg/detect). On by default: it exists because
+	// the autoencoder provably cannot catch this class -- a real in-tunnel
+	// flood reconstructs BETTER than normal traffic, so no threshold on its
+	// score separates them (ROADMAP.md Phase 2.5) -- and a detector shipped
+	// off closes nothing. It still goes through full policy gating, so a
+	// policy with autoMitigate: false only ever reaches Phase: Alerting.
+	GTPUTunnelFloodEnabled bool
+
+	// GTPUTunnelFloodPPS is the per-TUNNEL packets-per-second threshold.
+	// Per tunnel, not per source: on a real N3 every subscriber shares the
+	// peer gNB's source IP, so a per-source threshold would have to sit
+	// above their combined load -- which is exactly the aggregation that
+	// hides a single-tunnel flood.
+	//
+	// Reasoned, not empirically tuned against a production N3 interface --
+	// the same honesty caveat bpf/headers/common.h's SCAN_EMIT_THRESHOLD
+	// carries, and for the same reason: the real captures this project has
+	// were taken through a WSL2 tunnel that capped at ~60 pkt/s, which is a
+	// property of that environment rather than of what an attacker can
+	// sustain. See docs/paper-data/02-ai-training-inference.md.
+	GTPUTunnelFloodPPS uint32
+
+	// GTPUTunnelFloodCooldown is the minimum interval between events for one
+	// (source IP, TEID) pair -- a cost control, so a sustained flood doesn't
+	// publish thousands of identical scores per second.
+	GTPUTunnelFloodCooldown time.Duration
+
 	// ScoringPipelineGrace is how long after startup the operator waits
 	// before reporting ScoringPipelineReady=False on every policy (see
 	// pkg/controller's scoring_pipeline.go). It only covers the window where
@@ -97,6 +125,21 @@ func Load() (OperatorConfig, error) {
 	}
 
 	scoringPipelineGrace, err := parseDurationEnv("SCORING_PIPELINE_GRACE", 10*time.Minute)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	tunnelFloodEnabled, err := parseBoolEnv("GTPU_TUNNEL_FLOOD_ENABLED", true)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	tunnelFloodPPS, err := parseUint32Env("GTPU_TUNNEL_FLOOD_PPS", 1000)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	tunnelFloodCooldown, err := parseDurationEnv("GTPU_TUNNEL_FLOOD_COOLDOWN", 30*time.Second)
 	if err != nil {
 		return OperatorConfig{}, err
 	}
@@ -136,10 +179,22 @@ func Load() (OperatorConfig, error) {
 
 		DeEscalationDwell:    deEscalationDwell,
 		ScoringPipelineGrace: scoringPipelineGrace,
+
+		GTPUTunnelFloodEnabled:  tunnelFloodEnabled,
+		GTPUTunnelFloodPPS:      tunnelFloodPPS,
+		GTPUTunnelFloodCooldown: tunnelFloodCooldown,
 	}
 
 	if cfg.ThreatScoreThreshold < 0 || cfg.ThreatScoreThreshold > 1 {
 		return OperatorConfig{}, fmt.Errorf("THREAT_SCORE_THRESHOLD must be within [0,1], got %f", cfg.ThreatScoreThreshold)
+	}
+
+	// Refused rather than silently treated as "not configured": a zero
+	// threshold would make every single GTP-U packet a flood, and the
+	// resulting mitigation would be immediate and total. Set
+	// GTPU_TUNNEL_FLOOD_ENABLED=false to turn the detector off.
+	if cfg.GTPUTunnelFloodEnabled && cfg.GTPUTunnelFloodPPS == 0 {
+		return OperatorConfig{}, fmt.Errorf("GTPU_TUNNEL_FLOOD_PPS must be greater than 0 when GTPU_TUNNEL_FLOOD_ENABLED is true")
 	}
 
 	if !cfg.NATSAllowUnauthenticated && !natsHasCredentials(cfg) {
@@ -190,6 +245,21 @@ func parseBoolEnv(key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("invalid %s: %w", key, err)
 	}
 	return parsed, nil
+}
+
+func parseUint32Env(key string, fallback uint32) (uint32, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	// ParseUint with an explicit 32-bit size, so an out-of-range value is a
+	// startup error naming the variable rather than a silent wraparound into
+	// an absurdly low packets-per-second threshold.
+	parsed, err := strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return uint32(parsed), nil
 }
 
 func parseDurationEnv(key string, fallback time.Duration) (time.Duration, error) {

@@ -13,6 +13,9 @@ data:
   THREAT_SCORE_THRESHOLD: {{ .Values.config.threatScoreThreshold | quote }}
   MESH_ADAPTER: {{ .Values.config.meshAdapter | quote }}
   SCORING_PIPELINE_GRACE: {{ .Values.config.scoringPipelineGrace | quote }}
+  GTPU_TUNNEL_FLOOD_ENABLED: {{ .Values.config.gtpuTunnelFlood.enabled | quote }}
+  GTPU_TUNNEL_FLOOD_PPS: {{ .Values.config.gtpuTunnelFlood.packetsPerSecond | quote }}
+  GTPU_TUNNEL_FLOOD_COOLDOWN: {{ .Values.config.gtpuTunnelFlood.cooldown | quote }}
   NATS_URL: {{ .Values.nats.url | quote }}
   NATS_EVENTS_SUBJECT: {{ .Values.nats.eventsSubject | quote }}
   NATS_THREATS_SUBJECT: {{ .Values.nats.threatsSubject | quote }}

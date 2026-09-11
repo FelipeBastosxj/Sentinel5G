@@ -209,3 +209,70 @@ func TestApplyPolicy_AboveThresholdWithAutoMitigateBlocksAndQuarantines(t *testi
 		t.Fatalf("expected BlockedSourceIPs to stay deduplicated after redelivery, got %v", got.Status.BlockedSourceIPs)
 	}
 }
+
+// A rule-sourced score (pkg/detect) must travel the exact same path as an ML
+// one -- no bypass of policy matching, sensitivity, or autoMitigate. This
+// test is what keeps that a property rather than an assumption, since the
+// watcher has no code branch for it at all.
+//
+// It also pins the strict-comparison detail the detector depends on: at LOW
+// sensitivity the effective threshold clamps to exactly 1.00 and applyPolicy
+// compares `score < threshold`, so a rule score of 1.0 fires and anything
+// below it silently would not.
+func TestApplyPolicy_RuleSourcedScoreFiresEvenAtLowSensitivity(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityLow, true, true, true)
+	pod := newTestPod(policy.Namespace, "upf-0")
+	w, blocklist, meshAdapter := newWatcherFixture(t, policy, pod)
+
+	event := events.ThreatScoreEvent{
+		Namespace: policy.Namespace,
+		PodName:   pod.Name,
+		SourceIP:  "203.0.113.7",
+		Score:     1.0,
+		Model:     "rule:gtpu-tunnel-flood",
+	}
+
+	if err := w.applyPolicy(context.Background(), policy, event); err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+
+	if len(blocklist.blocked) != 1 || len(meshAdapter.quarantined) != 1 {
+		t.Fatalf("expected the rule score to mitigate at low sensitivity, got blocked=%v quarantined=%v", blocklist.blocked, meshAdapter.quarantined)
+	}
+
+	var got securityv1alpha1.TelecomSecurityPolicy
+	if err := w.Get(context.Background(), nnFor(policy), &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status.Phase != securityv1alpha1.PolicyPhaseMitigating {
+		t.Fatalf("expected Mitigating, got %q", got.Status.Phase)
+	}
+}
+
+// The counterpart, and the one that matters for a pilot: a deterministic
+// detector must NOT override autoMitigate: false.
+func TestApplyPolicy_RuleSourcedScoreStillRespectsDetectionOnly(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, false, true, true)
+	pod := newTestPod(policy.Namespace, "upf-0")
+	w, blocklist, meshAdapter := newWatcherFixture(t, policy, pod)
+
+	err := w.applyPolicy(context.Background(), policy, events.ThreatScoreEvent{
+		Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "203.0.113.7",
+		Score: 1.0, Model: "rule:gtpu-tunnel-flood",
+	})
+	if err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+
+	if len(blocklist.blocked) != 0 || len(meshAdapter.quarantined) != 0 {
+		t.Fatalf("a rule score bypassed autoMitigate: false: blocked=%v quarantined=%v", blocklist.blocked, meshAdapter.quarantined)
+	}
+
+	var got securityv1alpha1.TelecomSecurityPolicy
+	if err := w.Get(context.Background(), nnFor(policy), &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status.Phase != securityv1alpha1.PolicyPhaseAlerting {
+		t.Fatalf("expected Alerting, got %q", got.Status.Phase)
+	}
+}

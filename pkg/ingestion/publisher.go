@@ -3,11 +3,13 @@ package ingestion
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/controller"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/detect"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
 )
@@ -25,6 +27,38 @@ type Publisher struct {
 	Subject  string
 	NodeName string
 	Log      logr.Logger
+
+	// TunnelFlood is the deterministic GTP-U tunnel-flood detector
+	// (pkg/detect). It runs here, inline on the event this Publisher just
+	// built, rather than as a second NATS consumer on Subject: a separate
+	// consumer would compete with the AI engine's own durable queue group,
+	// double the bus load, and gain nothing -- the decision needs only the
+	// single event in hand.
+	//
+	// Running it inside Publisher also puts it on the right side of leader
+	// election. Publisher is deliberately NOT leader-gated (see
+	// NeedLeaderElection below) because each replica reads its own node's
+	// ring buffer; a leader-gated detector would be blind to every
+	// non-leader node's tunnels.
+	//
+	// Nil disables it, the same convention Blocklist/Mesh use elsewhere.
+	TunnelFlood *detect.GTPUFloodDetector
+
+	// ThreatsSubject is where TunnelFlood's scores are published -- the same
+	// subject the AI engine publishes to, consumed by the same
+	// pkg/controller.ThreatScoreWatcher, so a rule-sourced score is subject
+	// to identical policy/sensitivity/autoMitigate gating.
+	ThreatsSubject string
+
+	// Now returns the current time; nil uses time.Now. Overridden in tests.
+	Now func() time.Time
+}
+
+func (p *Publisher) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
 }
 
 // Start implements manager.Runnable. The eBPF ring buffer is drained
@@ -54,6 +88,25 @@ func (p *Publisher) Start(ctx context.Context) error {
 			if err := bus.PublishNormalizedEvent(p.Subject, normalized); err != nil {
 				p.Log.Error(err, "failed to publish normalized event",
 					"sourceIp", normalized.SourceIP, "destPort", normalized.DestPort)
+			}
+
+			// Published regardless of whether the NormalizedEvent above
+			// succeeded: the two are independent statements, and losing a
+			// real mitigation signal because a telemetry publish failed would
+			// be the wrong trade.
+			if p.TunnelFlood == nil {
+				continue
+			}
+			score, fired := p.TunnelFlood.Evaluate(normalized, p.now())
+			if !fired {
+				continue
+			}
+			p.Log.Info("gtpu tunnel flood detected",
+				"sourceIp", normalized.SourceIP, "teid", normalized.TEID,
+				"tunnelRatePerSecond", normalized.TunnelRatePerSecond)
+			if err := bus.PublishThreatScore(p.ThreatsSubject, score); err != nil {
+				p.Log.Error(err, "failed to publish tunnel flood threat score",
+					"sourceIp", normalized.SourceIP, "teid", normalized.TEID)
 			}
 		case <-ctx.Done():
 			return nil
