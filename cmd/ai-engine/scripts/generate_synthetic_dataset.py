@@ -37,15 +37,40 @@ def _random_time_of_day(rng: random.Random, base_time: datetime) -> datetime:
     return base_time + timedelta(seconds=rng.uniform(0, _SECONDS_PER_DAY))
 
 
+def _tunnel(rng: random.Random, protocol: str, rate: float) -> tuple[int, float]:
+    """Gives GTP-U events a plausible tunnel identity, and everything else
+    none.
+
+    Not cosmetic: since `has_teid` became a feature, generating GTP-U with a
+    zero TEID would teach the model that "normal" GTP-U has no tunnel, which
+    is the exact opposite of what the real captures show (every real GTP-U
+    packet in docs/paper-data/real-dataset/ carries one) and would invert the
+    feature's meaning.
+
+    Per-tunnel rate is modelled as a share of the source's rate rather than a
+    second independent draw, because that is the real relationship: one
+    source IP carries many tunnels, so a tunnel's own rate is at most the
+    source's and usually well below it.
+    """
+    if protocol != "GTP-U":
+        return 0, 0.0
+    teid = rng.randint(1, 0xFFFFFF)
+    return teid, max(1.0, rate * rng.uniform(0.2, 1.0))
+
+
 def _normal_event(rng: random.Random, base_time: datetime) -> NormalizedEvent:
     protocol = rng.choice(_PROTOCOLS_NORMAL)
+    rate = max(0.0, rng.gauss(20, 8))
+    teid, tunnel_rate = _tunnel(rng, protocol, rate)
     return NormalizedEvent(
         protocol=protocol,
         dest_port=_PORTS_NORMAL[protocol],
         payload_size=max(0, int(rng.gauss(256, 64))),
-        rate_per_second=max(0.0, rng.gauss(20, 8)),
+        rate_per_second=rate,
         malformed=False,
         observed_at=_random_time_of_day(rng, base_time),
+        teid=teid,
+        tunnel_rate_per_second=tunnel_rate,
     )
 
 
@@ -54,13 +79,17 @@ def _anomalous_event(rng: random.Random, base_time: datetime) -> NormalizedEvent
 
     if kind == "storm":
         protocol = rng.choice(["GTP-U", "SIP"])
+        rate = rng.uniform(800, 4500)
+        teid, tunnel_rate = _tunnel(rng, protocol, rate)
         return NormalizedEvent(
             protocol=protocol,
             dest_port=_PORTS_NORMAL[protocol],
             payload_size=max(0, int(rng.gauss(256, 64))),
-            rate_per_second=rng.uniform(800, 4500),
+            rate_per_second=rate,
             malformed=False,
             observed_at=_random_time_of_day(rng, base_time),
+            teid=teid,
+            tunnel_rate_per_second=tunnel_rate,
         )
 
     if kind == "malformed":

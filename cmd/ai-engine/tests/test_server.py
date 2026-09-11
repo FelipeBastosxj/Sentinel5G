@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
 from sentinel_ai.config import Settings
+from sentinel_ai.features import FEATURE_VECTOR_SIZE
 from sentinel_ai.model import Autoencoder, export_onnx
 from sentinel_ai.server import ScoringEngine, create_app, run_nats_worker
 
@@ -16,9 +17,9 @@ def _real_engine(tmp_path: Path) -> ScoringEngine:
     # A real (untrained) exported model is enough here -- these tests exercise
     # the HTTP/NATS wrapping layer around ScoringEngine, not scoring accuracy
     # (see tests/test_inference.py for that).
-    model = Autoencoder(input_dim=12)
+    model = Autoencoder(input_dim=FEATURE_VECTOR_SIZE)
     model_path = tmp_path / "autoencoder.onnx"
-    export_onnx(model, model_path, input_dim=12)
+    export_onnx(model, model_path, input_dim=FEATURE_VECTOR_SIZE)
     return ScoringEngine(str(model_path))
 
 
@@ -93,7 +94,7 @@ def _settings(**overrides) -> Settings:
         http_addr="0.0.0.0:8090",
         mode="nats",
         model_path="unused-in-these-tests",
-        feature_vector_size=12,
+        feature_vector_size=FEATURE_VECTOR_SIZE,
         nats_url="nats://127.0.0.1:4222",
         nats_stream_name="SENTINEL5G",
         nats_events_subject="sentinel5g.events.normalized",
@@ -206,3 +207,50 @@ def test_run_nats_worker_handler_naks_on_publish_failure(tmp_path: Path):
     msg.ack.assert_not_awaited()
     assert _nats_events_total("publish_failed") == before + 1
     msg.term.assert_not_awaited()
+
+
+def test_scoring_engine_refuses_a_stale_model_dimension(tmp_path):
+    """A model exported before FEATURE_VECTOR_SIZE changed must fail at
+    startup, not per event.
+
+    Without the guard, onnxruntime raises inside run_nats_worker's handler on
+    every single message -- an exception log, a nak, five redeliveries, and a
+    silently dropped event, forever, with nothing anywhere saying the model
+    is simply the wrong shape.
+    """
+    stale_path = tmp_path / "stale.onnx"
+    export_onnx(
+        Autoencoder(input_dim=FEATURE_VECTOR_SIZE - 1),
+        stale_path,
+        input_dim=FEATURE_VECTOR_SIZE - 1,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        ScoringEngine(str(stale_path))
+
+    message = str(excinfo.value)
+    # The message has to name the fix, not just the mismatch.
+    assert "export_onnx" in message
+    assert str(FEATURE_VECTOR_SIZE) in message
+
+
+def test_score_endpoint_accepts_the_tunnel_fields(tmp_path: Path):
+    """The HTTP endpoint must be able to exercise the tunnel features; if it
+    silently dropped them every request would score as "no tunnel identity".
+    """
+    client = TestClient(create_app(_real_engine(tmp_path)))
+
+    response = client.post(
+        "/v1/score",
+        json={
+            "protocol": "GTP-U",
+            "destPort": 2152,
+            "payloadSize": 300,
+            "ratePerSecond": 60.0,
+            "teid": 19844,
+            "tunnelRatePerSecond": 60.0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert 0.0 <= response.json()["score"] <= 1.0

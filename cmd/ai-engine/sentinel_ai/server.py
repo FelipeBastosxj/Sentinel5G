@@ -24,7 +24,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 
 from .config import Settings, load_settings, require_nats_credentials_if_unauthenticated_disallowed
-from .features import NormalizedEvent, extract_features
+from .features import FEATURE_VECTOR_SIZE, NormalizedEvent, extract_features
 from .metrics import NATS_EVENTS_TOTAL, SCORE_LATENCY_SECONDS
 
 logger = logging.getLogger("sentinel_ai.server")
@@ -38,7 +38,31 @@ class ScoringEngine:
     def __init__(self, model_path: str):
         self._session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
         self._input_name = self._session.get_inputs()[0].name
+        self._check_input_dimension(model_path)
         self._reference_error = self._load_reference_error(model_path)
+
+    def _check_input_dimension(self, model_path: str) -> None:
+        """Refuses a model whose input shape doesn't match this build's
+        feature vector, at startup rather than per event.
+
+        Without this, a model exported before FEATURE_VECTOR_SIZE changed
+        fails inside onnxruntime on every single scored event -- which in
+        NATS worker mode means an exception log, a nak, five redeliveries and
+        a silently dropped event, repeated forever, with nothing anywhere
+        saying "your model is the wrong shape". This turns that into one
+        legible crash naming the fix, the same posture pkg/config.Load takes
+        for a bad THREAT_SCORE_THRESHOLD.
+        """
+        input_dim = self._session.get_inputs()[0].shape[-1]
+        if isinstance(input_dim, int) and input_dim != FEATURE_VECTOR_SIZE:
+            raise ValueError(
+                f"model at {model_path} expects a {input_dim}-dimensional input but this build "
+                f"extracts {FEATURE_VECTOR_SIZE} features. A model exported before the "
+                f"tunnel-rate features were added must be re-exported: from cmd/ai-engine/, "
+                f"`python scripts/build_real_dataset.py && python scripts/train.py --dataset "
+                f"data/real_dataset.npz && python scripts/export_onnx.py --dataset "
+                f"data/real_dataset.npz`"
+            )
 
     @staticmethod
     def _load_reference_error(model_path: str) -> float:
@@ -69,6 +93,12 @@ class ScoreRequest(BaseModel):
     payloadSize: int = 0
     ratePerSecond: float = 0.0
     malformed: bool = False
+    # Mirrors pkg/events.NormalizedEvent's JSON names, so the HTTP endpoint
+    # can exercise the tunnel features rather than always scoring as if the
+    # traffic had no tunnel identity. Defaults match the "unknown tunnel"
+    # sentinel.
+    teid: int = 0
+    tunnelRatePerSecond: float = 0.0
 
 
 class ScoreResponse(BaseModel):

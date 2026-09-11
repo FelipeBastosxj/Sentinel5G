@@ -92,5 +92,6 @@ def require_nats_credentials_if_unauthenticated_disallowed(settings: Settings) -
             "refusing to start AI_ENGINE_MODE=nats with an unauthenticated NATS connection: "
             "set NATS_CREDENTIALS_FILE, NATS_USERNAME+NATS_PASSWORD, or "
             "NATS_TLS_CERT_FILE+NATS_TLS_KEY_FILE, or set NATS_ALLOW_UNAUTHENTICATED=true "
-            'to opt into it explicitly (see docs/integrations.md\'s "Securing the NATS message bus")'
+            "to opt into it explicitly (see docs/integrations.md's "
+            '"Securing the NATS message bus")'
         )

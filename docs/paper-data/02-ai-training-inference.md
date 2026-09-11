@@ -152,6 +152,12 @@ limits.
 
 ## 2.4 Real dataset at scale: retraining and threshold validation
 
+> **Superseded in part by §2.5** (2026-09-11), which re-measures this
+> section's central finding after `bpf/packet_filter.c` gained a real GTP-U
+> parser and per-TEID rate tracking. This section is left exactly as
+> measured — it is the historical result, not a draft — and §2.5 says which
+> of its statements changed and why.
+
 **Measured** on 2026-09-07, closing `ROADMAP.md` Phase 1's "replace the
 synthetic training dataset with real traffic, and validate sensitivity
 thresholds against it" — against a live Open5GS+UERANSIM core in the same
@@ -252,3 +258,168 @@ those 700 packets would produce a real event under the fix. The fix targets
 a different, real pattern (a flood against one specific off-signaling
 port), not the classic multi-port low-and-slow scan this capture models;
 general port-scan detection remains open (`ROADMAP.md` Phase 2).
+
+## 2.5 Closing the in-tunnel-flood gap: per-TEID rate and a non-ML detector
+
+**Measured** on 2026-09-11 against commit `6102a6d`, on a native Linux host
+(kernel 6.14) rather than the WSL2 environment §2.2 and §2.4 used. §2.4
+stays as written — it is the historical measurement, not a draft — and this
+section is what changed since.
+
+§2.4's finding was that the only anomaly type simultaneously (a) real GTP-U
+and (b) observable by `bpf/packet_filter.c` scored *below* the held-out
+normal baseline (0.0679 vs 0.0811), missed at every production threshold,
+recall 0/3,348. `ROADMAP.md` Phase 2.5 named three candidate fixes:
+per-tunnel features, a different model, or an explicit non-ML detector.
+Two of the three were built. Only one of them closed the gap, and which one
+is the finding.
+
+### 2.5.1 The captures, parsed rather than asserted
+
+Until now nothing in this project had ever parsed a GTP-U header — traffic
+was called GTP-U because it was UDP to port 2152. `bpf/packet_filter.c` now
+parses it (3GPP TS 29.281 §5.1), and `cmd/ai-engine/scripts/pcap_gtpu.py`
+mirrors that parser so the committed captures can be read the same way.
+Reproduce with `python -m pytest tests/test_gtpu_parse.py` from
+`cmd/ai-engine/`:
+
+| Capture | n | GTP-U framing, **parsed** | TEID(s) | `malformed` |
+|---|---|---|---|---|
+| `real_normal` | 1,889 | Valid T-PDU, flags `0x34` (E set), one PDU Session Container ext hdr | `0x00004d84` | no |
+| `real_storm_pingflood` | 3,348 | Valid T-PDU, same shape | **`0x00004d84` — the same tunnel** | no |
+| `real_storm_udpflood` | 25,944 | **None.** Zero-filled payload, GTP version 0 | — | **yes** |
+| `real_malformed` | 700 | Payloads 0–8 B; short of, or failing, the mandatory header | — | **yes** |
+| `real_scan` | 708 | n/a (not port 2152) | — | no |
+
+Two corrections to earlier sections fall out of this, and both were
+previously stated as caveats rather than measurements:
+
+- `real-dataset/README.md` said *"this project's captures were never
+  GTP-U-header-parsed, before or after this file"*. They are now.
+- §2.4's table listed `real_storm_udpflood` and `real_malformed` under a
+  `malformed` flag that "is not what the kernel's own flag detects". It is
+  now: both are flagged, because the kernel validates GTP-U framing rather
+  than trusting the port.
+
+**The load-bearing limitation, stated before any numbers:** normal traffic
+and the in-tunnel flood were captured from the same UE and therefore carry
+**the same TEID**. On this dataset per-TEID rate is numerically identical to
+per-source rate. Per-tunnel features can be shown *correct* here; they
+cannot be shown *discriminative*. That needs a multi-UE capture, which this
+dataset does not contain (`ROADMAP.md` Phase 3).
+
+### 2.5.2 Retraining with tunnel features
+
+`FEATURE_VECTOR_SIZE` went 12 → 14 (`tunnel_rate_norm`, `has_teid`), the
+autoencoder's hidden layer 8 → 12 to keep the original compression ratio,
+and the model was retrained on the pcap-derived dataset. Reproduce from
+`cmd/ai-engine/`:
+
+```sh
+python scripts/build_real_dataset.py
+python scripts/train.py --dataset data/real_dataset.npz --output models/autoencoder.pt
+python scripts/export_onnx.py --weights models/autoencoder.pt --dataset data/real_dataset.npz
+python scripts/evaluate_model.py --source real
+```
+
+| Metric | §2.4 (12 features) | Now (14 features) |
+|---|---|---|
+| ROC AUC | 0.9449 | **0.9680** |
+| Recall @ high (0.68) | 0.728 | **0.896** |
+| Recall @ medium (0.85) | 0.709 | **0.896** |
+| Recall @ low (1.00) | 0.693 | **0.896** |
+| False positives, all tiers | 0 | 0 |
+
+Per-category scores from the retrained model (held-out normal is the same
+378-sample, seed-42, 80/20 split `evaluate_model.py` uses):
+
+| Category | n | Per-tunnel rate (min/mean/max) | Score (min/mean/max) |
+|---|---|---|---|
+| Normal (held out) | 378 | 1 / 6.6 / 18 | 0.2338 / 0.2403 / 0.2501 |
+| **Storm — in-tunnel flood** | 3,348 | 1 / 31 / 63 | **0.2442 / 0.2469 / 0.2498** |
+| Storm — direct UDP flood | 25,944 | — (no tunnel) | 1.0000 / 1.0000 / 1.0000 |
+| Malformed — tiny payload | 700 | — | 1.0000 / 1.0000 / 1.0000 |
+| Scan — off-port probe | 708 | — | 1.0000 / 1.0000 / 1.0000 |
+| Kernel-malformed, exact | 1,535 | — | 1.0000 / 1.0000 / 1.0000 |
+
+**Read the improvement honestly, because it is not the improvement it looks
+like.** The AUC and recall gains come almost entirely from `has_teid`: every
+category that isn't protocol-real GTP-U now scores a flat 1.0, because the
+model can finally tell "GTP-U with a valid tunnel" from "something aimed at
+port 2152". That is a genuine fix to a real mislabelling, and it is not the
+gap §2.4 was about.
+
+For the in-tunnel flood the model moved in the right direction and stopped
+short. It previously scored *below* normal (0.0679 vs 0.0811) — an anomaly
+that reconstructed better than ordinary traffic, which no threshold can
+separate at all. It now scores *above* normal (0.2469 vs 0.2403). But the
+margin is 0.0066, entirely inside normal's own range (0.2338–0.2501), so
+**recall at every production threshold is still 0/3,348**. The 3,348 false
+negatives in the confusion matrix at all three tiers are exactly this
+capture, and nothing else: it is now the only anomaly category the model
+misses.
+
+The honest reading: the retrain fixed the sign of the error, not the
+magnitude. On a dataset where every packet shares one TEID and the flood
+peaks at 63 pkt/s — inside normal traffic's own variance — no reconstruction
+error can do better. That is a property of the data, and it is why the third
+option existed.
+
+### 2.5.3 The deterministic detector
+
+`pkg/detect.GTPUFloodDetector` compares the per-tunnel rate against a
+threshold directly. Reproduce with `python scripts/score_real_capture.py`
+from `cmd/ai-engine/`:
+
+```
+=== NORMAL (baseline PDU-session traffic) ===
+packets=1889 duration=348.11s observed_rate=5.43 pkt/s
+tunnels (TEIDs)=['0x4d84']
+per-source rate  peak=18  |  per-tunnel rate  peak=18
+model score min=0.2338 max=0.2501 mean=0.2403
+deterministic detector at 25 pkt/s per tunnel: 0 event(s)
+
+=== IN-TUNNEL FLOOD (flood ping through uesimtun0) ===
+packets=3348 duration=55.04s observed_rate=60.83 pkt/s
+tunnels (TEIDs)=['0x4d84']
+per-source rate  peak=63  |  per-tunnel rate  peak=63
+model score min=0.2442 max=0.2498 mean=0.2469
+deterministic detector at 25 pkt/s per tunnel: 2 event(s)
+```
+
+Threshold sensitivity across the same two captures — events emitted, after
+the detector's 30s per-tunnel cooldown:
+
+| `GTPU_TUNNEL_FLOOD_PPS` | Events on normal (348s) | Events on flood (55s) |
+|---|---|---|
+| 19 | 0 | 2 |
+| 25 | 0 | 2 |
+| 50 | 0 | 2 |
+| 64 | 0 | **0** |
+| 1000 (shipped default) | 0 | **0** |
+
+Anywhere from 19 to 50 pkt/s the detector separates these two captures
+cleanly: **0 events across 1,889 packets of real normal traffic, and a real
+mitigation on the flood the model misses entirely.** The gap is closed by a
+rate comparison, not by the model.
+
+**Three caveats, none of them small:**
+
+1. **The shipped default of 1,000 pkt/s fires on none of this.** That is
+   deliberate and it is also the honest limitation: these captures top out
+   at 63 pkt/s because the WSL2 tunnel they came from could not go faster,
+   not because that is what an attacker can sustain against a real N3
+   interface. A default tuned to *this* capture would be tuned to an
+   artifact. Reproducing the table above needs
+   `GTPU_TUNNEL_FLOOD_PPS=25`, and choosing a real value needs a capture
+   from a real link — the same open follow-up §2.4 already recorded.
+2. **Separation here is not proof of per-tunnel value.** With one TEID in
+   the dataset, a per-*source* threshold of 25 would separate these captures
+   identically. What per-TEID keying buys — isolating one flooding
+   subscriber among many sharing the gNB's source IP — is the architectural
+   argument (`docs/architecture.md`) and is *not* demonstrated by this
+   measurement. A multi-UE capture is what would demonstrate it.
+3. **Two events, not 3,348.** The detector emits once per tunnel per 30s
+   cooldown, so "2 events over a 55s flood" is the designed behaviour, not
+   partial detection. Recall is best read per incident here, not per packet:
+   1 incident, caught, versus the model's 0.

@@ -32,7 +32,9 @@ def test_refuses_nats_mode_with_no_credentials_and_not_opted_in():
 
 
 def test_allows_nats_mode_when_explicitly_opted_in():
-    require_nats_credentials_if_unauthenticated_disallowed(_settings(nats_allow_unauthenticated=True))
+    require_nats_credentials_if_unauthenticated_disallowed(
+        _settings(nats_allow_unauthenticated=True)
+    )
 
 
 @pytest.mark.parametrize(
