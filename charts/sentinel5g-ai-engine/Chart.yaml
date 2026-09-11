@@ -1,0 +1,20 @@
+apiVersion: v2
+name: sentinel5g-ai-engine
+description: >-
+  Sentinel5G AI engine (Layer 3): unsupervised autoencoder inference over
+  ONNX, scoring normalized telecom signaling events off the NATS bus.
+type: application
+version: 0.2.2
+appVersion: "0.2.2"
+kubeVersion: ">=1.26.0-0"
+home: https://github.com/FelipeBastosxj/Sentinel5G
+sources:
+  - https://github.com/FelipeBastosxj/Sentinel5G
+keywords:
+  - security
+  - 5g
+  - telecom
+  - anomaly-detection
+  - onnx
+maintainers:
+  - name: The Sentinel5G Authors

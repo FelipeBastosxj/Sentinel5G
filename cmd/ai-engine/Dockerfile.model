@@ -1,0 +1,45 @@
+# The trained model, published as its own OCI artifact so a plain
+# `helm install` of charts/sentinel5g-ai-engine produces a system that
+# actually scores.
+#
+# Why this image exists at all: the AI engine needs autoencoder.onnx +
+# .onnx.data + .norm.json, and those are deliberately not committed to the
+# repository (.gitignore). Before this, obtaining them meant training locally
+# and hand-creating a Secret -- and skipping that step produced a deployment
+# that came up healthy and silently never published a ThreatScoreEvent, which
+# is the failure ROADMAP.md Phase 2.5 describes.
+#
+# It carries no application code. The chart consumes it as an initContainer
+# that copies /models into an emptyDir, which is why the base is busybox
+# (for /bin/cp) rather than the distroless/static the Go images use -- that
+# has no shell utilities at all. Pinned to a multi-arch manifest-list digest
+# like every other base image here; .github/dependabot.yml keeps it current.
+#
+# Build context is cmd/ai-engine/, and models/ must already be populated:
+#   make ai-engine-train-real
+#   docker build -f cmd/ai-engine/Dockerfile.model -t sentinel5g-model cmd/ai-engine
+# The release workflow does both steps from the committed real dataset, so
+# the published artifact is reproducible from the repository alone.
+FROM busybox:1.37-uclibc@sha256:8d7b1636e974e0adfd8d945955fca609304f0a56c18799dfd032d6e661382d84
+
+# Fails the build rather than publishing an empty artifact: a model image
+# with no model would reintroduce exactly the silent no-op this exists to
+# prevent, one layer further down.
+COPY models/autoencoder.onnx models/autoencoder.onnx.data models/autoencoder.norm.json /models/
+
+# Readable by any uid, since the chart's initContainer runs as whatever the
+# pod's securityContext dictates and never as root.
+RUN chmod 0444 /models/*
+
+# 65532, matching every other image in this repository (the operator's
+# distroless nonroot uid, and cmd/ai-engine/Dockerfile's own sentinel5g
+# user). Declared here rather than left to the chart: a pod with
+# runAsNonRoot: true refuses to start a container whose image has no non-root
+# USER, and that failure surfaces as CreateContainerConfigError with the
+# initContainer never running -- a confusing way to discover a base image
+# default.
+USER 65532:65532
+
+LABEL org.opencontainers.image.title="Sentinel5G model" \
+      org.opencontainers.image.description="Trained autoencoder (ONNX) for the Sentinel5G AI engine, built from docs/paper-data/real-dataset/." \
+      org.opencontainers.image.source="https://github.com/FelipeBastosxj/Sentinel5G"

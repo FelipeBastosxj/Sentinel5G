@@ -1,0 +1,150 @@
+image:
+  repository: ghcr.io/felipebastosxj/sentinel5g-ai-engine
+  # Must match an actual published tag (release.yml tags images with the
+  # full ref name, "v0.2.2", not "0.2.2") -- same convention as the operator
+  # chart, and the same ImagePullBackOff if you get it wrong.
+  tag: "v0.2.2"
+  pullPolicy: IfNotPresent
+
+# Scoring is stateless and the NATS worker subscribes as part of a queue
+# group ("sentinel5g-ai-engine-workers"), so replicas > 1 load-balances the
+# subject across pods rather than having each replica conflict on the same
+# durable consumer. Raise this for throughput.
+replicaCount: 1
+
+# How the AI engine obtains its trained model (autoencoder.onnx +
+# .onnx.data + .norm.json). Exactly one of the two sources below must be
+# set; the chart refuses to render otherwise, deliberately. A deployment
+# with no model comes up "healthy" and silently never publishes a
+# ThreatScoreEvent -- ROADMAP.md Phase 2.5 describes that failure, and
+# failing the install instead is the entire point of this chart.
+model:
+  # A published model artifact, pulled as an initContainer that copies the
+  # files into an emptyDir. The default: the release pipeline trains from
+  # the committed real dataset (docs/paper-data/real-dataset/) and publishes
+  # the result, so a plain `helm install` produces a system that actually
+  # scores.
+  #
+  # Read what that model is before trusting it in production: it is trained
+  # on roughly one hour of single-UE GTP-U traffic from one lab core, which
+  # is a reproducible starting point, NOT a model of your network. See
+  # docs/paper-data/real-dataset/README.md for its stated scope limits and
+  # docs/getting-started.md for retraining against your own traffic.
+  image:
+    repository: ghcr.io/felipebastosxj/sentinel5g-model
+    tag: "v0.2.2"
+    pullPolicy: IfNotPresent
+
+  # Bring your own model instead: the name of an existing Secret with keys
+  # autoencoder.onnx, autoencoder.onnx.data and autoencoder.norm.json.
+  # Mutually exclusive with model.image above -- set this and clear
+  # model.image.repository.
+  #
+  #   kubectl create secret generic ai-engine-model -n sentinel5g-system \
+  #     --from-file=autoencoder.onnx=cmd/ai-engine/models/autoencoder.onnx \
+  #     --from-file=autoencoder.onnx.data=cmd/ai-engine/models/autoencoder.onnx.data \
+  #     --from-file=autoencoder.norm.json=cmd/ai-engine/models/autoencoder.norm.json
+  existingSecret: ""
+
+  # Where the model lands in the container. MODEL_PATH is derived from this.
+  mountPath: /app/models
+
+serviceAccount:
+  create: true
+  name: ""
+
+config:
+  # "nats" (a JetStream worker, the in-cluster deployment mode) or "http"
+  # (a FastAPI server exposing POST /v1/score, for direct integration and
+  # debugging). The operator only ever consumes scores off the bus, so
+  # anything wanting closed-loop mitigation needs "nats".
+  mode: nats
+  logLevel: info
+  # Only used when mode is "http".
+  httpAddr: ":8090"
+  # In "nats" mode there is no HTTP app of its own, so /metrics gets a
+  # dedicated prometheus_client server here. In "http" mode /metrics is
+  # served by the main app instead and this is ignored.
+  metricsAddr: ":9090"
+
+nats:
+  # The same bus the operator is pointed at -- they have to match, or the
+  # engine scores events nobody consumes. This chart does not bundle NATS;
+  # bring your own (see the operator chart's nats.url comment).
+  url: nats://sentinel5g-nats:4222
+  eventsSubject: sentinel5g.events.normalized
+  threatsSubject: sentinel5g.threats.scored
+  streamName: SENTINEL5G
+
+  # Auth/TLS, all optional and all mirroring the operator chart's own knobs.
+  # credentialsFile/tlsCAFile/tlsCertFile/tlsKeyFile are in-container paths;
+  # this chart doesn't template a volume for the underlying secret, so mount
+  # it yourself via extraVolumes/extraVolumeMounts below and point these at
+  # where it lands.
+  credentialsFile: ""
+  username: ""
+  # Name of an existing Secret with a "password" key, wired via secretKeyRef
+  # rather than a plaintext ConfigMap value.
+  existingPasswordSecret: ""
+  tlsCAFile: ""
+  tlsCertFile: ""
+  tlsKeyFile: ""
+
+  # The AI engine refuses to start in nats mode against a bus with none of
+  # the fields above set, unless this is explicitly true. Anything that can
+  # reach an unauthenticated NATS_URL can forge a ThreatScoreEvent and
+  # trigger a real mitigation -- true is for a demo cluster you control end
+  # to end, never a production install.
+  allowUnauthenticated: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Applied at pod level. fsGroup is load-bearing when model.image is used: the
+# emptyDir the initContainer copies into is root-owned by default, so a
+# non-root writer can't create files in it and the init container fails with
+# a bare "Permission denied". 65532 matches the uid every image in this
+# repository runs as.
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 65532
+
+# Extra volumes/mounts, for NATS credentials or TLS material referenced by
+# the nats.* file paths above.
+extraVolumes: []
+extraVolumeMounts: []
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Optional PodDisruptionBudget. maxUnavailable (not minAvailable) is the
+# safer default at replicaCount: 1 -- minAvailable: 1 on a single-replica
+# Deployment blocks voluntary eviction entirely. Same reasoning, and the same
+# mutual exclusivity, as the operator chart's.
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+  minAvailable: null
+
+# ServiceMonitor for Prometheus Operator. Guarded on
+# Capabilities.APIVersions.Has, so enabling it without the
+# monitoring.coreos.com/v1 CRD renders nothing (with a warning in NOTES.txt)
+# rather than failing the apply -- same behaviour as the operator chart.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  additionalLabels: {}

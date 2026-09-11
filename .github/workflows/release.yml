@@ -283,7 +283,7 @@ jobs:
           cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.ghcr_manifest_digest }}"
           cosign sign --yes "docker.io/${{ steps.vars.outputs.dockerhub_owner }}/${{ matrix.component }}@${{ steps.manifests.outputs.dockerhub_manifest_digest }}"
 
-  # Publishes charts/sentinel5g-operator as an OCI artifact to GHCR --
+  # Publishes both Helm charts as OCI artifacts to GHCR --
   # `helm install oci://ghcr.io/.../charts/sentinel5g-operator --version
   # X.Y.Z` becomes possible without cloning the repo first, the same gap
   # README.md's "No hosted chart repository is published yet" flags. GHCR
@@ -293,8 +293,12 @@ jobs:
   # based chart repository. Independent of build-scan-push/manifest above
   # (no `needs`): a chart-only release doesn't have to wait on image builds.
   publish-chart:
-    name: Publish Helm chart (OCI)
+    name: Publish Helm charts (OCI)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chart: [sentinel5g-operator, sentinel5g-ai-engine]
     steps:
       - uses: actions/checkout@v4
 
@@ -306,10 +310,10 @@ jobs:
         run: |
           set -euo pipefail
           tag_version="${GITHUB_REF_NAME#v}"
-          chart_version="$(grep -m1 '^version:' charts/sentinel5g-operator/Chart.yaml | awk '{print $2}')"
+          chart_version="$(grep -m1 '^version:' charts/${{ matrix.chart }}/Chart.yaml | awk '{print $2}')"
           if [ "$tag_version" != "$chart_version" ]; then
             echo "ERROR: tag $GITHUB_REF_NAME (version $tag_version) does not match" >&2
-            echo "charts/sentinel5g-operator/Chart.yaml's version: $chart_version" >&2
+            echo "charts/${{ matrix.chart }}/Chart.yaml's version: $chart_version" >&2
             echo "Bump Chart.yaml's version (and appVersion) to match before tagging a release." >&2
             exit 1
           fi
@@ -334,8 +338,8 @@ jobs:
         id: push
         run: |
           set -euo pipefail
-          helm package charts/sentinel5g-operator --destination /tmp
-          push_out="$(helm push /tmp/sentinel5g-operator-*.tgz "oci://ghcr.io/${{ steps.vars.outputs.owner }}/charts" 2>&1)"
+          helm package charts/${{ matrix.chart }} --destination /tmp
+          push_out="$(helm push /tmp/${{ matrix.chart }}-*.tgz "oci://ghcr.io/${{ steps.vars.outputs.owner }}/charts" 2>&1)"
           echo "$push_out" >&2
           digest="$(grep -oE 'Digest: sha256:[0-9a-f]{64}' <<<"$push_out" | grep -oE 'sha256:[0-9a-f]{64}')"
           [ -n "$digest" ] || { echo "failed to parse a digest from helm push output" >&2; exit 1; }
@@ -346,4 +350,92 @@ jobs:
 
       - name: Sign the chart (keyless)
         run: |
-          cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/charts/sentinel5g-operator@${{ steps.push.outputs.digest }}"
+          cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/charts/${{ matrix.chart }}@${{ steps.push.outputs.digest }}"
+
+  # Trains a model from the committed real dataset and publishes it as its
+  # own image, so `helm install` of charts/sentinel5g-ai-engine produces a
+  # deployment that actually scores.
+  #
+  # This closes ROADMAP.md Phase 2.5's remaining "no way to obtain a model"
+  # item. The artifacts (autoencoder.onnx + .onnx.data + .norm.json) are
+  # deliberately not committed, so before this the only way to get them was
+  # to train locally and hand-create a Secret -- and skipping that produced a
+  # deployment that came up healthy and silently never published a
+  # ThreatScoreEvent.
+  #
+  # Reproducible from the repository alone: docs/paper-data/real-dataset/ is
+  # committed, scripts/build_real_dataset.py is deterministic, and train.py
+  # is seeded. Independent of the image jobs (no `needs`) for the same reason
+  # publish-chart is.
+  publish-model:
+    name: Publish the trained model artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercase image owner
+        id: vars
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the AI engine with its training extras
+        # torch is training-time only and deliberately not in the serving
+        # image's dependencies (see cmd/ai-engine/pyproject.toml).
+        run: pip install -e "./cmd/ai-engine[train]"
+
+      - name: Train and export from the committed real dataset
+        run: make ai-engine-train-real
+
+      - name: Record what was trained
+        # The reference_error and the dataset hash go into the run summary so
+        # a published model is traceable back to the exact data that produced
+        # it -- otherwise "which model is this" has no answer after the fact.
+        run: |
+          set -euo pipefail
+          {
+            echo "### Model artifact"
+            echo
+            echo '```json'
+            cat cmd/ai-engine/models/autoencoder.norm.json
+            echo '```'
+            echo
+            echo "Dataset sha256: $(sha256sum cmd/ai-engine/data/real_dataset.npz | cut -d' ' -f1)"
+            echo "Captures sha256: $(cat docs/paper-data/real-dataset/*.pcap | sha256sum | cut -d' ' -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build and push the model image
+        id: push
+        # Multi-arch like every other published image. The model artifact
+        # itself is architecture-independent, but the busybox base the chart's
+        # initContainer runs `cp` from is not, so an amd64-only manifest would
+        # fail to schedule on the arm64 nodes the other images already support.
+        uses: docker/build-push-action@v6
+        with:
+          context: cmd/ai-engine
+          file: cmd/ai-engine/Dockerfile.model
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ steps.vars.outputs.owner }}/sentinel5g-model:${{ github.ref_name }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the model artifact (keyless)
+        run: |
+          cosign sign --yes "ghcr.io/${{ steps.vars.outputs.owner }}/sentinel5g-model@${{ steps.push.outputs.digest }}"

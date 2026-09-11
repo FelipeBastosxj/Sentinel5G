@@ -1,0 +1,24 @@
+# Always rendered, like the operator chart's -- gives /metrics (and, in http
+# mode, /v1/score) a stable in-cluster DNS name regardless of whether
+# anything consumes it via ServiceMonitor, a plain scrape_config, or
+# `kubectl port-forward`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel5g-ai-engine.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sentinel5g-ai-engine.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "sentinel5g-ai-engine.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: metrics
+      port: {{ .Values.config.metricsAddr | trimPrefix ":" | int }}
+      targetPort: metrics
+    {{- if eq .Values.config.mode "http" }}
+    - name: http
+      port: {{ .Values.config.httpAddr | trimPrefix ":" | int }}
+      targetPort: http
+    {{- end }}

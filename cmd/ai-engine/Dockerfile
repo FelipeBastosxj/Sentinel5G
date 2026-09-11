@@ -30,9 +30,19 @@ ENV AI_ENGINE_HTTP_ADDR=0.0.0.0:8090 \
     AI_ENGINE_MODE=http \
     MODEL_PATH=/app/models/autoencoder.onnx
 
-RUN useradd --system --no-create-home --uid 65532 sentinel5g \
-    && chown -R sentinel5g /app
-USER sentinel5g
+RUN useradd --system --no-create-home --uid 65532 --user-group sentinel5g \
+    && chown -R 65532:65532 /app
+# NUMERIC, not the "sentinel5g" name this used to carry. Kubernetes cannot
+# verify that a named user is non-root without reading the image's
+# /etc/passwd, which it doesn't do -- so a pod spec with
+# `runAsNonRoot: true` refuses to start this image outright, with
+# CreateContainerConfigError and "image has non-numeric user (sentinel5g),
+# cannot verify user is non-root". That went unnoticed because
+# deployments/quickstart/ai-engine.yaml sets no securityContext at all;
+# charts/sentinel5g-ai-engine does, as any hardened deployment would.
+# The useradd above stays, so the uid still has a real passwd entry inside
+# the container.
+USER 65532:65532
 
 EXPOSE 8090
 

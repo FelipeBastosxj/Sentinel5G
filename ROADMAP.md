@@ -178,9 +178,12 @@ honest gap between that and installing Sentinel5G on a cluster that
 carries real traffic — raised by the first person to ask "can I put this
 in production?", and answered here rather than in a thread. Nothing in
 this section is a bug in what's built; it's what's missing *around* it.
-The two load-bearing items are the detection gap and the load-testing
-harness (Phase 3 below): until both move, automated mitigation on real
-traffic is a false-positive risk without the compensating benefit.
+The two load-bearing items were the detection gap and the load-testing
+harness (Phase 3 below): until both moved, automated mitigation on real
+traffic was a false-positive risk without the compensating benefit. The
+detection gap is now closed (see its entry for what did and did not close
+it, and for what remains unvalidated); the load-testing harness is still
+open.
 
 - [x] **The operator hard-exits when NATS is unreachable.** Fixed:
       `pkg/events.Connector` connects in the background with retry/backoff
@@ -193,17 +196,25 @@ traffic is a false-positive risk without the compensating benefit.
       ordered checklist (NATS auth/TLS first, `crds.keep`, a real model for
       the AI engine, detection-only rollout via the new `Alerting` phase,
       eBPF preflight, ServiceMonitor).
-- [ ] **The AI engine has no chart, and no way to obtain a model.**
-      `deployments/quickstart/ai-engine.yaml` is a plain manifest, and it
-      needs `autoencoder.onnx` + `.onnx.data` + `.norm.json` delivered
-      through a hand-created Secret; those artifacts are deliberately not
-      committed. Skip that and nothing ever publishes a
-      `ThreatScoreEvent`: every policy sits at `Phase: Monitoring`
-      forever, with no signal anywhere that the scoring half of the
-      system was never deployed. Options, roughly in order of usefulness:
-      a published model artifact per release, a chart that takes it as a
-      required value, or at minimum a readiness condition on the operator
-      meaning "subscribed, but no scores have ever arrived".
+- [x] **The AI engine has no chart, and no way to obtain a model.** Fixed,
+      with all three of the options this item listed rather than the
+      cheapest, because they cover different failures:
+      `charts/sentinel5g-ai-engine` is the chart, and it *refuses to
+      install* without a model source instead of installing something that
+      cannot work; `release.yml`'s `publish-model` job trains from the
+      committed real dataset and publishes a signed, multi-arch artifact the
+      chart pulls by default (`make ai-engine-train-real` locally); and the
+      operator now reports a `ScoringPipelineReady` condition — visible as
+      the `Scoring` column in `kubectl get tsp`, plus a
+      `ScoringPipelineNotReady` warning Event — so a deployment that got a
+      model some other way and still isn't scoring says so too. The
+      condition is deliberately "has *ever* scored", not a liveness rate:
+      quiet is the normal state of a network under no attack, so no rate
+      separates "no threats today" from "the AI engine is gone".
+      Verified end to end on a real cluster: install → initContainer
+      delivers the model → a published `NormalizedEvent` is scored →
+      `Phase: Mitigating`. That exercise also surfaced three real defects
+      nothing else had caught — see CHANGELOG's Fixed section.
 - [x] **`helm uninstall` deletes every `TelecomSecurityPolicy`.** Fixed:
       the CRD template now carries `helm.sh/resource-policy: keep` by
       default (new `crds.keep: true` value) — `helm uninstall` leaves the
@@ -235,21 +246,67 @@ traffic is a false-positive risk without the compensating benefit.
       (`api/v1alpha1/telecomsecuritypolicy_types.go`) is set instead of
       `Degraded` when the threshold is crossed but `autoMitigate: false`
       withholds action — `Degraded` is now reserved for a genuine
-      operator-side failure. A Prometheus counter for shadow-mode
-      false-positive-rate measurement is still open, not yet added.
-- [ ] **Close the in-tunnel-flood detection gap.** Restating Phase 1's
-      §2.4 finding as open work rather than a closed measurement: the
-      only anomaly type that is simultaneously real GTP-U and observable
-      by `bpf/packet_filter.c` today scores *below* the held-out normal
-      baseline (0.0679 vs 0.0811) and is missed at every production
-      sensitivity threshold — recall 0/3,348. This is the single biggest
-      reason not to trust automated mitigation on real traffic yet.
-      Likely needs different features (per-tunnel/per-TEID rate rather
-      than per-source only), a different model, or an explicit non-ML
-      detector for this class.
+      operator-side failure. The Prometheus counter for shadow-mode
+      false-positive-rate measurement this item left open is now added:
+      `sentinel5g_threshold_crossings_total{outcome="alerting"}` counts
+      exactly the mitigations a detection-only pilot withheld, so its rate
+      over traffic believed benign is the false-positive rate an operator is
+      being asked to accept. Four more operator metrics landed with it (the
+      operator previously exposed only controller-runtime's built-ins) — see
+      `docs/observability.md`, including the queries.
+- [x] **Close the in-tunnel-flood detection gap.** Closed, and which of
+      the three candidate fixes actually did it is the finding — full
+      write-up in `docs/paper-data/02-ai-training-inference.md` §2.5.
+
+      The root cause turned out to be structural, not a tuning problem.
+      `bpf/packet_filter.c` had never parsed a GTP-U header at all: traffic
+      was GTP-U because it was UDP to port 2152, and the only rate signal
+      was per source IP — which on a real N3 interface aggregates every
+      subscriber together, since they all arrive from the peer gNB's
+      address. It now parses the header (3GPP TS 29.281 §5.1) and tracks a
+      per-`(source, TEID)` rate, carried in-band on every event.
+
+      Per-tunnel features plus a retrain moved the model but did not close
+      the gap. ROC AUC went 0.9449 → 0.9680 and recall 0.693-0.728 → 0.896,
+      almost entirely from the new `has_teid` feature finally separating
+      traffic that merely *targets* port 2152 from real tunnels. The
+      in-tunnel flood itself went from scoring *below* normal (0.0679 vs
+      0.0811) to just above it (0.2469 vs 0.2403) — the right direction,
+      but a margin of 0.0066 inside normal's own range, so recall is still
+      0/3,348. Those are now the only false negatives left in the matrix.
+
+      What closed it is the third option: `pkg/detect`, an explicit non-ML
+      GTP-U tunnel-flood rule, on by default and subject to the same
+      policy/sensitivity/`autoMitigate` gating as an ML score. Across the
+      same two real captures at 25 pkt/s per tunnel: **0 events over 1,889
+      packets of normal traffic, and a real mitigation on the flood the
+      model misses entirely.**
+
+      Two limits are recorded rather than smoothed over, and both are open
+      work below: the committed captures contain a **single TEID**, so
+      per-tunnel rate is numerically identical to per-source rate on them
+      (correctness shown, discriminative value not); and they cap at 63
+      pkt/s because of the WSL2 tunnel they came from, so the shipped
+      1000 pkt/s default fires on none of them.
 
 ## Phase 3 — Scale & multi-cluster
 
+- [ ] **A multi-UE capture, and a non-WSL2 throughput ceiling.** Both halves
+      of what Phase 2.5's detection work could not validate, and they need
+      the same lab. Every committed capture is single-UE and therefore
+      single-TEID (verified by parsing, pinned by
+      `cmd/ai-engine/tests/test_gtpu_parse.py`), so per-TEID keying's actual
+      purpose — isolating one flooding subscriber among many sharing the
+      gNB's source IP — is argued architecturally and not yet measured. And
+      the in-tunnel flood ceiling of ~63 pkt/s is a property of WSL2's
+      tunnel, not of what an attacker can sustain, which is what leaves
+      `GTPU_TUNNEL_FLOOD_PPS`'s default reasoned rather than tuned.
+- [ ] **Wire the AI engine into `scripts/quickstart.sh`'s e2e.** The script
+      publishes a forged `ThreatScoreEvent` straight onto NATS to trigger
+      mitigation, so CI's end-to-end test has never actually exercised
+      Layer 3. Now that a model artifact and a chart exist, it can install
+      the real thing instead — pending the first release that publishes
+      `sentinel5g-model`, since the quickstart runs from published images.
 - [ ] Multi-cluster policy propagation.
 - [ ] Load-testing harness for the <0.2ms/packet and mitigation-latency
       targets in `docs/observability.md`. Also where to settle two open

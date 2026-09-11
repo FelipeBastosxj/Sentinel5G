@@ -60,17 +60,48 @@ longer than a minute or two — the `nats` readyz check reports the reason.
 
 ## 3. Deploy the AI engine, with a real model
 
-`deployments/quickstart/ai-engine.yaml` needs a trained model
-(`autoencoder.onnx` + `.onnx.data` + `.norm.json`) delivered via a Secret you
-create yourself — these are deliberately not committed to the repo. Train
-one against your own traffic, or at minimum the real dataset pipeline in
-`docs/getting-started.md`'s "Train (or retrain) against the real dataset"
-section, before relying on `autoMitigate: true` anywhere.
+The AI engine has its own chart, separate from the operator's — it is a
+separate deployment with its own scaling and its own model:
 
-Skipping this step doesn't fail loudly — every policy just sits at
-`Phase: Monitoring` forever with nothing publishing a `ThreatScoreEvent` —
-so the operator reports it on the policies themselves. Confirm the scoring
-half is actually running before moving on:
+```sh
+helm install sentinel5g-ai-engine oci://ghcr.io/felipebastosxj/charts/sentinel5g-ai-engine \
+  --version 0.2.2 -n sentinel5g-system \
+  --set nats.url=nats://your-nats:4222 \
+  --set nats.username=sentinel5g --set nats.existingPasswordSecret=nats-creds
+```
+
+It needs a trained model (`autoencoder.onnx` + `.onnx.data` + `.norm.json`),
+and **the chart refuses to install without one** rather than coming up
+healthy and silently never scoring. Two ways to supply it:
+
+- **`model.image` (the default).** Each release publishes a signed model
+  artifact trained from the committed real dataset, and the chart pulls it
+  with an initContainer. Read what that model actually is before trusting it
+  in production: roughly one hour of single-UE GTP-U traffic from one lab
+  core (`docs/paper-data/real-dataset/README.md` states its scope limits).
+  It is a reproducible starting point, not a model of your network.
+- **`model.existingSecret`.** Your own model, trained against your own
+  traffic — the right answer before relying on `autoMitigate: true`
+  anywhere. See `docs/getting-started.md`'s "Train (or retrain) against the
+  real dataset" section, then:
+
+  ```sh
+  kubectl create secret generic ai-engine-model -n sentinel5g-system \
+    --from-file=autoencoder.onnx=cmd/ai-engine/models/autoencoder.onnx \
+    --from-file=autoencoder.onnx.data=cmd/ai-engine/models/autoencoder.onnx.data \
+    --from-file=autoencoder.norm.json=cmd/ai-engine/models/autoencoder.norm.json
+  helm install ... --set model.image.repository=null \
+    --set model.existingSecret=ai-engine-model
+  ```
+
+The two are mutually exclusive; setting both fails the render with a message
+saying so.
+
+The chart failing to render is only the first line of defence; an install
+that reaches a model but can't reach the bus, or one done by hand without the
+chart, still ends up publishing nothing. The operator reports that on the
+policies themselves. Confirm the scoring half is actually running before
+moving on:
 
 ```sh
 kubectl get tsp -A
@@ -84,8 +115,10 @@ It reports `False`/`AwaitingFirstScore` for the first `SCORING_PIPELINE_GRACE`
 which covers an install where the AI engine comes up second. `kubectl
 describe tsp` carries the full reason and message.
 
-Set the same NATS auth/TLS env vars here as step 1 — `NATS_ALLOW_UNAUTHENTICATED`
-must not be set to `true` in a production deployment either.
+The chart's `nats.*` values mirror the operator's one for one, including
+`allowUnauthenticated` — which must stay `false` here for the same reason it
+must there. Both halves have to point at the same bus and the same subjects,
+or the engine scores events nobody consumes.
 
 ## 4. Start in detection-only mode
 
