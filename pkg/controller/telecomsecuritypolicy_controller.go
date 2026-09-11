@@ -10,8 +10,12 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -54,6 +58,17 @@ type Reconciler struct {
 	// mitigation before tryDeEscalate reverses its active ones. Zero uses
 	// defaultDeEscalationDwell.
 	DeEscalationDwell time.Duration
+
+	// Scoring reports whether the AI engine has ever published a score, and
+	// backs the ScoringPipelineReady condition this reconciler writes onto
+	// every policy. Nil disables that condition entirely -- the convention
+	// tests without the full wiring already rely on for Blocklist/Mesh.
+	Scoring *ScoringPipelineTracker
+
+	// Recorder emits the ScoringPipelineNotReady warning Event, so the
+	// problem also shows up in `kubectl get events` and not only on the
+	// policy's own status. Nil skips the Event; the condition is still set.
+	Recorder clientgoevents.EventRecorder
 	// Now returns the current time; nil uses time.Now. Overridden in tests
 	// for deterministic dwell-time assertions without a real clock.
 	Now func() time.Time
@@ -119,11 +134,94 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// it lost with its previous in-memory registry.
 	SetPolicyPhase(policy.Namespace, policy.Name, policy.Status.Phase)
 
-	if policy.Status.Phase == securityv1alpha1.PolicyPhaseMitigating {
-		return r.tryDeEscalate(ctx, log, &policy)
+	scoringRetry, err := r.reportScoringPipeline(ctx, log, &policy)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	if policy.Status.Phase == securityv1alpha1.PolicyPhaseMitigating {
+		result, deEscalateErr := r.tryDeEscalate(ctx, log, &policy)
+		// Whichever wants to be woken sooner wins: de-escalation's remaining
+		// dwell and the scoring grace period are unrelated timers, and
+		// ctrl.Result carries only one RequeueAfter.
+		return withSoonerRequeue(result, scoringRetry), deEscalateErr
+	}
+
+	return withSoonerRequeue(ctrl.Result{}, scoringRetry), nil
+}
+
+// withSoonerRequeue folds an additional requeue delay into result, keeping
+// whichever fires first. A zero delay means "nothing to wait for".
+func withSoonerRequeue(result ctrl.Result, after time.Duration) ctrl.Result {
+	if after <= 0 {
+		return result
+	}
+	if result.RequeueAfter == 0 || after < result.RequeueAfter {
+		result.RequeueAfter = after
+	}
+	return result
+}
+
+// reportScoringPipeline writes the ScoringPipelineReady condition (see
+// scoring_pipeline.go for why it exists and why it's "ever scored" rather
+// than a liveness rate) and returns how long until the answer could change
+// on its own.
+//
+// Status is written only when the condition actually changes --
+// meta.SetStatusCondition leaves LastTransitionTime alone for a same-status
+// update, so comparing before/after is enough to avoid writing to the API
+// server on every resync of every policy.
+func (r *Reconciler) reportScoringPipeline(ctx context.Context, log logr.Logger, policy *securityv1alpha1.TelecomSecurityPolicy) (time.Duration, error) {
+	if r.Scoring == nil {
+		return 0, nil
+	}
+
+	reason, retryAfter := r.Scoring.Status()
+
+	condition := metav1.Condition{
+		Type:               ConditionScoringPipelineReady,
+		Reason:             reason,
+		ObservedGeneration: policy.Generation,
+	}
+	switch reason {
+	case ReasonScoresReceived:
+		condition.Status = metav1.ConditionTrue
+		condition.Message = "The AI engine has published at least one threat score."
+	case ReasonAwaitingFirstScore:
+		condition.Status = metav1.ConditionFalse
+		condition.Message = "Subscribed to the threat score subject; no score has arrived yet. Normal shortly after install."
+	default:
+		condition.Status = metav1.ConditionFalse
+		condition.Message = "Subscribed to the threat score subject, but no threat score has ever arrived. " +
+			"The AI engine (cmd/ai-engine) is deployed separately from this operator and needs a trained model; " +
+			"without it nothing publishes a score and this policy will stay in its current phase indefinitely. " +
+			"See docs/production-install.md."
+	}
+
+	existing := meta.FindStatusCondition(policy.Status.Conditions, ConditionScoringPipelineReady)
+	if existing != nil && existing.Status == condition.Status && existing.Reason == condition.Reason {
+		return retryAfter, nil
+	}
+
+	meta.SetStatusCondition(&policy.Status.Conditions, condition)
+	if err := r.Status().Update(ctx, policy); err != nil {
+		return 0, fmt.Errorf("update scoring pipeline condition for %s/%s: %w", policy.Namespace, policy.Name, err)
+	}
+	r.Index.Put(policy)
+
+	if reason == ReasonNoThreatScoresReceived {
+		log.Info("no threat score has ever arrived; the AI engine may not be deployed or may have no model")
+		if r.Recorder != nil {
+			// Recorded against the policy itself, not the operator's Pod (the
+			// way EBPFAttachFailed is): this is a statement about the policy
+			// being unenforceable, and it's the policy the operator is
+			// looking at when they ask why nothing has happened.
+			r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "ScoringPipelineNotReady", "Reconcile",
+				"No threat score has ever been received; the AI engine may not be deployed or may have no model")
+		}
+	}
+
+	return retryAfter, nil
 }
 
 // tryDeEscalate reverses a policy's active mitigations (eBPF unblock, mesh

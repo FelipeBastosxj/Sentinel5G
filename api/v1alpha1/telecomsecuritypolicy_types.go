@@ -126,6 +126,12 @@ type TelecomSecurityPolicyStatus struct {
 // +kubebuilder:resource:shortName=tsp
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Score",type=string,JSONPath=`.status.observedThreatScore`
+// Surfaces pkg/controller's ScoringPipelineReady condition directly in
+// `kubectl get tsp`. Without it, a deployment whose AI engine was never
+// installed looks identical to a healthy one -- every policy sits at
+// Phase: Monitoring with an empty Score, which is also what a healthy,
+// quiet cluster looks like (see ROADMAP.md Phase 2.5).
+// +kubebuilder:printcolumn:name="Scoring",type=string,JSONPath=`.status.conditions[?(@.type=="ScoringPipelineReady")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // TelecomSecurityPolicy is the Schema for the telecomsecuritypolicies API.

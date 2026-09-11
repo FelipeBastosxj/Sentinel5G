@@ -12,6 +12,7 @@ data:
   LEADER_ELECT: {{ .Values.config.leaderElect | quote }}
   THREAT_SCORE_THRESHOLD: {{ .Values.config.threatScoreThreshold | quote }}
   MESH_ADAPTER: {{ .Values.config.meshAdapter | quote }}
+  SCORING_PIPELINE_GRACE: {{ .Values.config.scoringPipelineGrace | quote }}
   NATS_URL: {{ .Values.nats.url | quote }}
   NATS_EVENTS_SUBJECT: {{ .Values.nats.eventsSubject | quote }}
   NATS_THREATS_SUBJECT: {{ .Values.nats.threatsSubject | quote }}
