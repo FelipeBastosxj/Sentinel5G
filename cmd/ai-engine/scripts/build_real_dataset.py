@@ -15,27 +15,34 @@ feature-extraction/rate-window logic production uses (see
 scripts/score_real_capture.py, whose window-reconstruction this reuses).
 "Malformed" and "scan" are different:
 
-- The kernel's actual `malformed` flag (packet_filter.c:172) only fires when
-  a UDP packet is too short to have a *complete UDP header* at all, and
-  always emits the exact same degenerate feature vector regardless of what
-  the truncated bytes contained (protocol=UNKNOWN, dest_port=0,
-  payload_size=0). A live capture of *that* case is a single constant point,
-  not a distribution — see `_kernel_malformed_samples` below, which
-  reproduces it exactly (jittered only in timestamp) rather than pretending
-  volume exists where the kernel provides none. The real_malformed.pcap
-  capture in this directory is a different, real phenomenon instead
-  (valid-header, near-zero-payload packets on the real signaling port) and
-  is folded in as its own labeled anomaly shape, not mislabeled as
-  kernel-malformed.
-- "Scan" (unknown-protocol/off-signaling-port probing) is structurally
-  invisible to bpf/packet_filter.c as it exists today: `is_signaling_port()`
-  gates both `track_signal_rate()` and `emit_signaling_event()`, so
-  non-2152/5060 UDP traffic is XDP_PASSed with no observation emitted at
-  all. real_scan.pcap is real, on-wire traffic, but no
-  currently-shipping code path would ever turn it into a NormalizedEvent in
-  production — included here for forward-looking model coverage only. See
-  docs/paper-data/02-ai-training-inference.md and ROADMAP.md for the
-  write-up of this as a real architecture gap, not a dataset footnote.
+- `malformed` now means more than it used to, and this script's labels moved
+  with it. It once fired only for a UDP packet too short to have a complete
+  UDP header — one constant degenerate feature vector, reproduced exactly by
+  `_kernel_malformed_samples` below rather than pretending a distribution
+  exists where the kernel provides none. Since bpf/packet_filter.c gained a
+  real GTP-U parser it ALSO fires for a packet on port 2152 whose GTP-U
+  framing fails to validate, and two captures here are exactly that. This
+  script therefore no longer asserts a label the wire didn't support:
+  real_storm_udpflood.pcap (25,944 packets of plain UDP at the N3 port, no
+  GTP header at all) and real_malformed.pcap (payloads shorter than the
+  8-byte mandatory header) are now parsed as malformed with no tunnel
+  identity, instead of being labelled well-formed GTP-U because they
+  happened to be addressed to port 2152.
+- "Scan" (unknown-protocol/off-signaling-port probing) was once structurally
+  invisible to bpf/packet_filter.c, since `is_signaling_port()` gated
+  observation as well as rate tracking. ROADMAP.md Phase 1's `scan_rate` and
+  Phase 2's `port_scan` detectors closed that. Read
+  docs/paper-data/02-ai-training-inference.md §2.4's own update before
+  assuming real_scan.pcap is representative of what those emit, because it
+  isn't: it sends each packet to an independently random port, which
+  essentially never repeats one enough times to cross either threshold.
+
+Everything here is derived from the committed `.pcap` files, not the
+`*_raw.txt` dumps beside them. That changed with per-TEID rates: the text
+dumps are `tcpdump -tt -n` output, carrying timestamps, ports and lengths
+but no payload bytes — and therefore no TEID. The packets were always
+there; they were simply unreadable through the dumps. See
+scripts/pcap_gtpu.py.
 
 Run from cmd/ai-engine/: python scripts/build_real_dataset.py
 """
@@ -51,6 +58,11 @@ import numpy as np
 
 from sentinel_ai.features import NormalizedEvent, extract_features
 
+try:  # Running as `python scripts/build_real_dataset.py` from cmd/ai-engine/.
+    from pcap_gtpu import Packet, read_udp_packets
+except ImportError:  # Imported as scripts.build_real_dataset (pytest).
+    from scripts.pcap_gtpu import Packet, read_udp_packets
+
 SIGNALING_RATE_WINDOW_S = 1.0  # bpf/headers/common.h SIGNALING_RATE_WINDOW_NS
 
 _REAL_DATASET_DIR = (
@@ -58,38 +70,19 @@ _REAL_DATASET_DIR = (
 )
 
 
-def _parse_raw_txt(path: Path) -> list[tuple[float, int, int]]:
-    """Parses a `tcpdump -r <pcap> -tt -n` text dump into
-    (epoch_timestamp, dest_port, udp_length) tuples, one per UDP packet line
-    (format: "<ts> IP <src>.<sport> > <dst>.<dport>: UDP, length <N>" —
-    same convention as docs/paper-data/normal_raw.txt).
-    """
-    events = []
-    for line in path.read_text().splitlines():
-        if " UDP, length " not in line:
-            continue
-        ts_str, rest = line.split(" ", 1)
-        dest_part = rest.split(" > ", 1)[1].split(":", 1)[0]
-        dest_port = int(dest_part.rsplit(".", 1)[1])
-        length = int(rest.rsplit("length ", 1)[1])
-        events.append((float(ts_str), dest_port, length))
-    return events
-
-
-def _signal_rate_series(packets: list[tuple[float, int, int]]) -> list[int]:
+def signal_rate_series(packets: list[Packet]) -> list[int]:
     """Reimplements bpf/packet_filter.c's track_signal_rate: per-capture,
-    single-window packet counter, reset when the window (1s) elapses —
-    identical logic to scripts/score_real_capture.py's version. All these
-    captures are single-source (one UE / one generator process), so a
-    single running window (rather than per-source-IP keying) is equivalent
-    to what the kernel map would show for that one source.
+    single-window packet counter, reset when the window (1s) elapses. All
+    these captures are single-source (one UE / one generator process), so a
+    single running window rather than per-source-IP keying is equivalent to
+    what the kernel map would show for that one source.
     """
     counts = []
     window_start = None
     count = 0
-    for ts, _dport, _length in packets:
-        if window_start is None or (ts - window_start) > SIGNALING_RATE_WINDOW_S:
-            window_start = ts
+    for packet in packets:
+        if window_start is None or (packet.timestamp - window_start) > SIGNALING_RATE_WINDOW_S:
+            window_start = packet.timestamp
             count = 1
         else:
             count += 1
@@ -97,24 +90,62 @@ def _signal_rate_series(packets: list[tuple[float, int, int]]) -> list[int]:
     return counts
 
 
-def _events_from_capture(
-    path: Path, protocol: str, malformed: bool, dest_port_override: int | None
+def tunnel_rate_series(packets: list[Packet]) -> list[int]:
+    """Reimplements bpf/packet_filter.c's track_tunnel_rate: a 1-second
+    window per (source IP, TEID), counting INCLUDING the current packet.
+
+    Unlike signal_rate_series above, this genuinely needs per-key state --
+    the entire reason the kernel map exists is that one source IP carries
+    many tunnels. A packet with no tunnel identity (teid == 0) contributes
+    nothing and receives 0, matching what the kernel emits.
+    """
+    state: dict[tuple[str, int], tuple[float, int]] = {}
+    counts = []
+    for packet in packets:
+        if packet.teid == 0:
+            counts.append(0)
+            continue
+        key = (packet.source_ip, packet.teid)
+        window_start, count = state.get(key, (None, 0))
+        if window_start is None or (packet.timestamp - window_start) > SIGNALING_RATE_WINDOW_S:
+            state[key] = (packet.timestamp, 1)
+            counts.append(1)
+        else:
+            state[key] = (window_start, count + 1)
+            counts.append(count + 1)
+    return counts
+
+
+def events_from_capture(
+    path: Path, protocol: str, dest_port_override: int | None
 ) -> list[NormalizedEvent]:
-    packets = _parse_raw_txt(path)
+    """Turns one committed capture into NormalizedEvents the way the
+    production path would.
+
+    `malformed` is no longer a caller-supplied label: it is whatever
+    pcap_gtpu's mirror of the kernel's own GTP-U validation decided, so this
+    script can no longer assert framing the wire doesn't support.
+    """
+    packets = read_udp_packets(path)
     if not packets:
-        raise RuntimeError(f"{path} contained no parseable UDP lines")
-    rates = _signal_rate_series(packets)
+        raise RuntimeError(f"{path} contained no parseable UDP packets")
+    rates = signal_rate_series(packets)
+    tunnel_rates = tunnel_rate_series(packets)
 
     events = []
-    for (ts, dest_port, length), rate in zip(packets, rates):
+    for packet, rate, tunnel_rate in zip(packets, rates, tunnel_rates):
         events.append(
             NormalizedEvent(
                 protocol=protocol,
-                dest_port=dest_port_override if dest_port_override is not None else dest_port,
-                payload_size=max(0, length - 8),  # UDP header is 8 bytes
+                dest_port=(
+                    dest_port_override if dest_port_override is not None else packet.dest_port
+                ),
+                payload_size=packet.payload_size,
                 rate_per_second=float(rate),
-                malformed=malformed,
-                observed_at=datetime.fromtimestamp(ts, tz=timezone.utc),
+                malformed=packet.malformed,
+                observed_at=datetime.fromtimestamp(packet.timestamp, tz=timezone.utc),
+                teid=packet.teid,
+                tunnel_rate_per_second=float(tunnel_rate),
             )
         )
     return events
@@ -151,36 +182,31 @@ def build(real_dataset_dir: Path, seed: int = 42) -> tuple[np.ndarray, np.ndarra
     # Reproducible sampling (kernel-malformed timestamp jitter), not a security context.
     rng = random.Random(seed)  # nosec B311
 
-    normal_events = _events_from_capture(
-        real_dataset_dir / "real_normal_raw.txt",
+    normal_events = events_from_capture(
+        real_dataset_dir / "real_normal.pcap",
         protocol="GTP-U",
-        malformed=False,
         dest_port_override=2152,
     )
 
     anomalous_events: list[NormalizedEvent] = []
-    anomalous_events += _events_from_capture(
-        real_dataset_dir / "real_storm_pingflood_raw.txt",
+    anomalous_events += events_from_capture(
+        real_dataset_dir / "real_storm_pingflood.pcap",
         protocol="GTP-U",
-        malformed=False,
         dest_port_override=2152,
     )
-    anomalous_events += _events_from_capture(
-        real_dataset_dir / "real_storm_udpflood_raw.txt",
+    anomalous_events += events_from_capture(
+        real_dataset_dir / "real_storm_udpflood.pcap",
         protocol="GTP-U",
-        malformed=False,
         dest_port_override=2152,
     )
-    anomalous_events += _events_from_capture(
-        real_dataset_dir / "real_malformed_raw.txt",
+    anomalous_events += events_from_capture(
+        real_dataset_dir / "real_malformed.pcap",
         protocol="GTP-U",
-        malformed=False,  # real, complete UDP header -- see module docstring
         dest_port_override=2152,
     )
-    anomalous_events += _events_from_capture(
-        real_dataset_dir / "real_scan_raw.txt",
+    anomalous_events += events_from_capture(
+        real_dataset_dir / "real_scan.pcap",
         protocol="UNKNOWN",
-        malformed=False,
         dest_port_override=None,  # keep each packet's real (random) dest port
     )
 

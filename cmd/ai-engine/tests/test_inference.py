@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from scripts.generate_synthetic_dataset import generate
+from sentinel_ai.features import FEATURE_VECTOR_SIZE
 from sentinel_ai.model import Autoencoder, export_onnx, reconstruction_error, train
 from sentinel_ai.server import ScoringEngine
 
@@ -33,11 +34,11 @@ def test_train_export_infer_pipeline_scores_anomalies_higher(tmp_path: Path):
 
 
 def test_scoring_engine_defaults_reference_error_when_sidecar_missing(tmp_path: Path):
-    model = Autoencoder(input_dim=12)
+    model = Autoencoder(input_dim=FEATURE_VECTOR_SIZE)
     model_path = tmp_path / "autoencoder_no_sidecar.onnx"
-    export_onnx(model, model_path, input_dim=12)
+    export_onnx(model, model_path, input_dim=FEATURE_VECTOR_SIZE)
 
     engine = ScoringEngine(str(model_path))
-    score = engine.score_features([0.0] * 12)
+    score = engine.score_features([0.0] * FEATURE_VECTOR_SIZE)
 
     assert 0.0 <= score <= 1.0

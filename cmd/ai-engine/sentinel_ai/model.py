@@ -24,18 +24,34 @@ class Autoencoder(nn.Module):
     signal turned into a threat score by sentinel_ai.server.ScoringEngine.
     """
 
-    def __init__(self, input_dim: int = FEATURE_VECTOR_SIZE, latent_dim: int = 4):
+    def __init__(
+        self, input_dim: int = FEATURE_VECTOR_SIZE, latent_dim: int = 4, hidden_dim: int = 12
+    ):
         super().__init__()
+        # hidden_dim tracks input_dim's growth on purpose. At the original
+        # 12-feature vector the first layer was 12 -> 8, a 1.5x compression;
+        # leaving it at 8 with 14 inputs makes it 1.75x, and the two features
+        # that widened the vector (tunnel_rate_norm, has_teid) would be
+        # competing for those eight units against five one-hot protocol
+        # dimensions -- exactly the wrong thing to under-weight, since they
+        # exist to catch what the model was measurably missing.
+        #
+        # The latent stays at 4: the bottleneck is what makes reconstruction
+        # error a usable anomaly signal, and widening it would weaken the
+        # detector rather than strengthen it. Note that changing hidden_dim
+        # changes the ONNX graph's weights but NOT its input shape -- only
+        # input_dim is a breaking change for a deployed model, so this
+        # dimension can be tuned freely later without a schema consequence.
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 8),
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(8, latent_dim),
+            nn.Linear(hidden_dim, latent_dim),
             nn.ReLU(),
         )
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 8),
+            nn.Linear(latent_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(8, input_dim),
+            nn.Linear(hidden_dim, input_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -25,14 +25,29 @@ in the other captures. These are real, on-wire packets hitting the real
 production port, at rates a real flood/DDoS against that port would produce
 — just not protocol-conformant GTP-U. Treat `rate_per_second` derived from
 this capture as real; treat "GTP-U protocol" as an approximation, not a
-verified-by-parsing claim (this project's captures were never GTP-U-header-
-parsed, before or after this file — see `score_real_capture.py`'s own
-docstring on `protocol="GTP-U"` being asserted from the capture filter, not
-parsed).
+verified-by-parsing claim (at the time this file was written, nothing in
+this project parsed GTP-U headers at all — `protocol="GTP-U"` was asserted
+from the capture filter).
+
+**Update, 2026-09-11 — now verified by parsing.** `bpf/packet_filter.c`
+parses GTP-U headers (3GPP TS 29.281 §5.1),
+`cmd/ai-engine/scripts/pcap_gtpu.py` mirrors that parser, and every capture
+here has been read through it; see
+`docs/paper-data/02-ai-training-inference.md` §2.5.1 for the per-capture
+table. Two statements above changed as a result: this capture carries no GTP
+header at all (GTP version 0, zero-filled payload), and `real_malformed.pcap`
+likewise fails validation — **both are now flagged `malformed`** instead of
+being carried through the pipeline as well-formed GTP-U.
 
 **Known scope limits, stated honestly rather than glossed over:**
 - Single UE, single session (source IP `127.0.0.1` for the whole PDU
-  session's traffic) — not a multi-subscriber capture.
+  session's traffic) — not a multi-subscriber capture. **Measured
+  consequence:** every packet in `real_normal.pcap` and
+  `real_storm_pingflood.pcap` carries the same TEID (`0x00004d84`), so
+  per-tunnel rate is numerically identical to per-source rate on this
+  dataset. Per-TEID features can be shown correct here but not
+  *discriminative*; that needs a multi-UE capture. Pinned by
+  `cmd/ai-engine/tests/test_gtpu_parse.py`.
 - No SIP/SMPP traffic: this Open5GS deployment does not run IMS (no SIP
   signaling ever traverses this core), and no SMPP infrastructure exists in
   this environment at all. Those two protocols remain synthetic-only in the

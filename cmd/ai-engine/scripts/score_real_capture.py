@@ -1,19 +1,24 @@
-"""Scores real, tcpdump-captured GTP-U traffic (docs/paper-data/normal.pcap,
-docs/paper-data/storm.pcap — from a live Open5GS+UERANSIM core in WSL2,
-2026-09-06) through the production feature-extraction and scoring code
-(sentinel_ai.features.extract_features, sentinel_ai.server.ScoringEngine)
-using the real trained model at cmd/ai-engine/models/autoencoder.onnx.
+"""Scores real, tcpdump-captured GTP-U traffic through the production
+feature-extraction and scoring code (sentinel_ai.features.extract_features,
+sentinel_ai.server.ScoringEngine) using the real trained model at
+cmd/ai-engine/models/autoencoder.onnx, and reports what the deterministic
+detector (pkg/detect) would have done with the same packets.
 
-This does not go through NATS/the operator's ingestion.Publisher — building
-and running that full distributed chain against this WSL2 environment was
-judged not worth the added moving parts for what's fundamentally a
-feature-extraction + inference question. Instead it reimplements
-bpf/packet_filter.c's track_signal_rate window logic (1s window, resets on
-elapse — see bpf/headers/common.h SIGNALING_RATE_WINDOW_NS) directly against
-the pcap's real per-packet timestamps, matching exactly what
-pkg/ingestion.FromSignalingEvent would have read from the kernel's
-signal_rate map for these same packets. Every other field (protocol,
-destPort, payloadSize, malformed) is read directly from the real capture.
+Reads the committed `.pcap` files directly rather than the `*_raw.txt`
+`tcpdump -tt -n` dumps beside them. That is not a cosmetic change: the text
+dumps carry timestamps, ports and lengths but no payload bytes, so no TEID —
+and the per-tunnel rate is the entire point of this comparison. The window
+reconstruction and GTP-U parsing are shared with
+scripts/build_real_dataset.py and scripts/pcap_gtpu.py rather than
+reimplemented a third time.
+
+This does not go through NATS or the operator's ingestion.Publisher:
+building that full distributed chain is not worth the moving parts for what
+is fundamentally a feature-extraction and inference question. Every field
+(protocol, destPort, payloadSize, malformed, teid) comes from the real
+capture, and the rate windows mirror bpf/packet_filter.c's
+track_signal_rate/track_tunnel_rate against the pcap's real per-packet
+timestamps.
 
 Run: python scripts/score_real_capture.py
 """
@@ -21,96 +26,97 @@ Run: python scripts/score_real_capture.py
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sentinel_ai.features import NormalizedEvent, extract_features  # noqa: E402
+from sentinel_ai.features import extract_features  # noqa: E402
 from sentinel_ai.server import ScoringEngine  # noqa: E402
 
-SIGNALING_RATE_WINDOW_S = 1.0  # bpf/headers/common.h SIGNALING_RATE_WINDOW_NS
+try:  # Running as `python scripts/score_real_capture.py` from cmd/ai-engine/.
+    from build_real_dataset import events_from_capture
+except ImportError:  # Imported as scripts.score_real_capture.
+    from scripts.build_real_dataset import events_from_capture
+
+# Mirrors pkg/detect's defaults closely enough to be comparable, but NOT the
+# shipped GTPU_TUNNEL_FLOOD_PPS default of 1000. These captures were taken
+# through a WSL2 tunnel that caps around 63 pkt/s, so the shipped default
+# fires on none of them -- which is the finding, not a bug. 25 sits above
+# this normal capture's observed maximum (18 pkt/s) and well below the
+# flood's median (31), and is what docs/paper-data/02-ai-training-inference.md
+# §2.5 reports against.
+DETECTOR_PPS = 25
+DETECTOR_COOLDOWN_S = 30.0
 
 
-def parse_pcap_udp_timestamps(raw_txt_path: Path) -> list[tuple[float, int]]:
-    """Returns (epoch_timestamp, udp_length) for each packet. Reads a
-    pre-captured `tcpdump -r <pcap> -tt -n` text dump (produced once, inside
-    WSL2 where tcpdump/the pcap actually live) rather than re-invoking
-    tcpdump here, since Windows has no tcpdump on PATH."""
-    events = []
-    for line in raw_txt_path.read_text().splitlines():
-        if " UDP, length " not in line:
-            continue
-        ts_str = line.split(" ", 1)[0]
-        length = int(line.rsplit("length ", 1)[1])
-        events.append((float(ts_str), length))
-    return events
-
-
-def signal_rate_series(packets: list[tuple[float, int]]) -> list[int]:
-    """Reimplements bpf/packet_filter.c's track_signal_rate: per-source,
-    single-window packet counter, reset when the window (1s) elapses.
-    Returns the window count associated with each packet, in order — this is
-    exactly the value pkg/ingestion.FromSignalingEvent would read from
-    ebpf.Loader.SignalRate() for that packet's observation.
+def detector_events(events, packets_per_second: int, cooldown_s: float) -> int:
+    """Mirrors pkg/detect.GTPUFloodDetector.Evaluate: fires when the protocol
+    is GTP-U, the TEID is non-zero, and the per-tunnel rate crosses the
+    threshold -- at most once per (source, TEID) per cooldown.
     """
-    counts = []
-    window_start = None
-    count = 0
-    for ts, _ in packets:
-        if window_start is None or (ts - window_start) > SIGNALING_RATE_WINDOW_S:
-            window_start = ts
-            count = 1
-        else:
-            count += 1
-        counts.append(count)
-    return counts
+    last_fired: dict[int, float] = {}
+    fired = 0
+    for event in events:
+        if event.protocol != "GTP-U" or event.teid == 0:
+            continue
+        if event.tunnel_rate_per_second < packets_per_second:
+            continue
+        timestamp = event.observed_at.timestamp()
+        previous = last_fired.get(event.teid)
+        if previous is not None and timestamp - previous < cooldown_s:
+            continue
+        last_fired[event.teid] = timestamp
+        fired += 1
+    return fired
 
 
-def score_window(
-    label: str, packets: list[tuple[float, int]], rates: list[int], engine: ScoringEngine
-) -> None:
-    scores = []
-    for (ts, udp_len), rate in zip(packets, rates):
-        event = NormalizedEvent(
-            protocol="GTP-U",
-            dest_port=2152,
-            payload_size=max(0, udp_len - 8),  # UDP header is 8 bytes
-            rate_per_second=float(rate),
-            malformed=False,
-            observed_at=datetime.fromtimestamp(ts, tz=timezone.utc),
-        )
-        scores.append(engine.score_features(extract_features(event)))
+def score_capture(label: str, events, engine: ScoringEngine) -> None:
+    scores = [engine.score_features(extract_features(e)) for e in events]
+    rates = [e.rate_per_second for e in events]
+    tunnel_rates = [e.tunnel_rate_per_second for e in events]
+    teids = {e.teid for e in events if e.teid}
 
-    duration = packets[-1][0] - packets[0][0] if len(packets) > 1 else 0.0
+    duration = events[-1].observed_at.timestamp() - events[0].observed_at.timestamp()
+
     print(f"\n=== {label} ===")
     print(
-        f"packets={len(packets)} duration={duration:.2f}s "
-        f"observed_rate={len(packets) / duration if duration else 0:.2f} pkt/s "
-        f"(track_signal_rate peak window count={max(rates)})"
+        f"packets={len(events)} duration={duration:.2f}s "
+        f"observed_rate={len(events) / duration if duration else 0:.2f} pkt/s"
+    )
+    print(f"tunnels (TEIDs)={sorted(hex(t) for t in teids) or 'none parsed'}")
+    print(
+        f"per-source rate  peak={max(rates):.0f}  |  "
+        f"per-tunnel rate  peak={max(tunnel_rates):.0f}"
     )
     print(
-        f"score min={min(scores):.4f} max={max(scores):.4f} "
-        f"mean={sum(scores) / len(scores):.4f} "
-        f"first={scores[0]:.4f} last={scores[-1]:.4f}"
+        f"model score min={min(scores):.4f} max={max(scores):.4f} "
+        f"mean={sum(scores) / len(scores):.4f}"
     )
-    return scores
+    print(
+        f"deterministic detector at {DETECTOR_PPS} pkt/s per tunnel: "
+        f"{detector_events(events, DETECTOR_PPS, DETECTOR_COOLDOWN_S)} event(s)"
+    )
 
 
 def main() -> None:
-    base = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "paper-data"
+    dataset_dir = (
+        Path(__file__).resolve().parent.parent.parent.parent
+        / "docs"
+        / "paper-data"
+        / "real-dataset"
+    )
     model_path = str(Path(__file__).resolve().parent.parent / "models" / "autoencoder.onnx")
-
     engine = ScoringEngine(model_path)
 
-    normal = parse_pcap_udp_timestamps(base / "normal_raw.txt")
-    storm = parse_pcap_udp_timestamps(base / "storm_raw.txt")
+    normal = events_from_capture(
+        dataset_dir / "real_normal.pcap", protocol="GTP-U", dest_port_override=2152
+    )
+    flood = events_from_capture(
+        dataset_dir / "real_storm_pingflood.pcap", protocol="GTP-U", dest_port_override=2152
+    )
 
-    normal_rates = signal_rate_series(normal)
-    storm_rates = signal_rate_series(storm)
-
-    score_window("NORMAL (baseline PDU-session ping, ~1 pkt/s)", normal, normal_rates, engine)
-    score_window("STORM (flood ping through uesimtun0)", storm, storm_rates, engine)
+    score_capture("NORMAL (baseline PDU-session traffic)", normal, engine)
+    score_capture("IN-TUNNEL FLOOD (flood ping through uesimtun0)", flood, engine)
 
 
 if __name__ == "__main__":

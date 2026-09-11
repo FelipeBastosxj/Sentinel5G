@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from sentinel_ai.features import FEATURE_VECTOR_SIZE, NormalizedEvent, extract_features
+from sentinel_ai.features import (
+    FEATURE_NAMES,
+    FEATURE_VECTOR_SIZE,
+    NormalizedEvent,
+    extract_features,
+)
 
 
 def _event(**overrides):
@@ -72,3 +77,70 @@ def test_from_dict_round_trip_matches_direct_construction():
     direct_event = _event(protocol="SIP", dest_port=5060, payload_size=512, rate_per_second=42.0)
 
     assert extract_features(from_dict_event) == extract_features(direct_event)
+
+
+def test_tunnel_features_are_the_last_two_dimensions():
+    """Index-pinned, because the ONNX model is trained against positions, not
+    names: reordering FEATURE_NAMES without retraining would silently feed
+    the model the wrong columns.
+    """
+    assert FEATURE_NAMES[-2:] == ["tunnel_rate_norm", "has_teid"]
+    assert FEATURE_VECTOR_SIZE == 14
+
+
+def test_has_teid_distinguishes_a_real_tunnel_from_port_2152_traffic():
+    """The feature that earns its dimension on the committed captures.
+
+    real_storm_udpflood.pcap is 25,944 packets of plain UDP aimed at the real
+    N3 port with no GTP header at all. Before the kernel parsed GTP-U, it was
+    indistinguishable from genuine tunneled traffic because "protocol" was
+    asserted from the destination port alone.
+    """
+    observed_at = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+    tunneled = NormalizedEvent(
+        protocol="GTP-U",
+        dest_port=2152,
+        payload_size=300,
+        rate_per_second=20.0,
+        malformed=False,
+        observed_at=observed_at,
+        teid=0x4D84,
+        tunnel_rate_per_second=20.0,
+    )
+    not_tunneled = NormalizedEvent(
+        protocol="GTP-U",
+        dest_port=2152,
+        payload_size=300,
+        rate_per_second=20.0,
+        malformed=False,
+        observed_at=observed_at,
+    )
+
+    assert extract_features(tunneled)[-1] == 1.0
+    assert extract_features(not_tunneled)[-1] == 0.0
+
+
+def test_tunnel_rate_is_clipped_into_the_unit_interval():
+    event = NormalizedEvent(
+        protocol="GTP-U",
+        dest_port=2152,
+        payload_size=300,
+        rate_per_second=0.0,
+        malformed=False,
+        observed_at=datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc),
+        teid=1,
+        tunnel_rate_per_second=10_000_000.0,
+    )
+    assert extract_features(event)[-2] == 1.0
+
+
+def test_from_dict_defaults_the_tunnel_fields():
+    """One-directional compatibility that matters during a rollout: an older
+    Go operator publishing without these keys still scores cleanly, as
+    "no tunnel identity", rather than raising.
+    """
+    event = NormalizedEvent.from_dict({"protocol": "GTP-U", "destPort": 2152})
+
+    assert event.teid == 0
+    assert event.tunnel_rate_per_second == 0.0
+    assert len(extract_features(event)) == FEATURE_VECTOR_SIZE

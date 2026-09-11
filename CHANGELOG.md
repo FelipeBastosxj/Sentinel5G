@@ -68,6 +68,11 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   (`GTPU_TUNNEL_FLOOD_PPS`, default 1000 packets/s on a single tunnel) is
   reasoned rather than validated against a production N3 interface; the same
   caveat `SCAN_EMIT_THRESHOLD` carries.
+- `cmd/ai-engine/scripts/pcap_gtpu.py`: a stdlib-only pcap reader and a
+  Python mirror of the kernel's GTP-U parser, so the committed captures can
+  be read the same way production reads the wire. The dataset scripts now
+  derive per-TEID rates from the `.pcap` files instead of the `tcpdump -tt
+  -n` text dumps beside them -- the dumps carry no payload bytes, so no TEID.
 
 ### Changed
 - **Breaking for a mixed deployment:** `struct signaling_event` grew from 24
@@ -82,6 +87,13 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   short to read. Traffic that is not protocol-conformant GTP-U but aimed at
   the GTP-U port -- a plain UDP flood against the N3 socket, for instance --
   is reclassified accordingly.
+- **Breaking for any deployed model:** `FEATURE_VECTOR_SIZE` went 12 -> 14
+  (`tunnel_rate_norm`, `has_teid`), which changes the ONNX graph's input
+  shape. Every existing `autoencoder.onnx` must be re-exported. The AI engine
+  now refuses to start against a mismatched model instead of failing per
+  event -- in NATS worker mode that was an exception log, a nak, five
+  redeliveries and a silently dropped event, repeated forever, with nothing
+  saying the model was simply the wrong shape.
 - **Breaking-ish default:** the operator and the AI engine
   (`AI_ENGINE_MODE=nats`) now refuse to start against a NATS bus with no
   auth/TLS configured, unless `NATS_ALLOW_UNAUTHENTICATED=true`
@@ -112,6 +124,9 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   every run that touched either file, for a reason that was never drift. It
   now ignores that one chart-added annotation and still compares everything
   controller-gen actually emits.
+- Two pre-existing `flake8` violations (`sentinel_ai/config.py:95`,
+  `tests/test_config.py:35`) that failed `make ai-engine-lint` and CI's
+  python job on every run.
 - `scripts/quickstart.sh` keeps helm's cache/config alongside its own
   kubeconfig instead of in `$HOME`, so it also works where `$HOME` isn't
   writable (a service account, a container running as an arbitrary uid).

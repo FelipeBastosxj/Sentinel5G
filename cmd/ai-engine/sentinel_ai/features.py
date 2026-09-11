@@ -25,6 +25,8 @@ FEATURE_NAMES = [
     "dest_port_norm",
     "hour_sin",
     "hour_cos",
+    "tunnel_rate_norm",
+    "has_teid",
 ]
 
 FEATURE_VECTOR_SIZE = len(FEATURE_NAMES)
@@ -36,7 +38,10 @@ _SIGNALING_PORTS = {2152, 5060}
 # deliberately NOT in _PROTOCOLS: any protocol not listed here already falls
 # into the proto_unknown one-hot bucket below, and adding a 5th protocol
 # dimension would grow FEATURE_VECTOR_SIZE, changing the shipped ONNX
-# model's input shape and requiring a retrain. A port-scan event is still
+# model's input shape and requiring a retrain. (tunnel_rate_norm/has_teid
+# below DID pay that cost, deliberately and once, for features the model
+# cannot do without -- see their comment. It is a reason to be deliberate
+# about the vector's width, not a rule that it may never change.) A port-scan event is still
 # distinguishable from a genuinely unknown protocol via the other features
 # (payload_size_norm in particular carries the distinct-port count for this
 # protocol, not a byte size — see NormalizedEvent.payload_size's docstring
@@ -47,6 +52,17 @@ _SIGNALING_PORTS = {2152, 5060}
 # scripts/generate_synthetic_dataset.py's generation parameters.
 _MAX_PAYLOAD_BYTES = 4096
 _MAX_RATE_PER_SECOND = 5000.0
+
+# Per-tunnel rate gets a much tighter clip than _MAX_RATE_PER_SECOND, and
+# that is the point rather than an oversight. A single GTP-U tunnel carries
+# ONE subscriber's traffic, so its interesting range sits orders of magnitude
+# below an aggregate per-source-IP rate. Clipping it at 5000 the way
+# rate_per_second does would squash every realistic per-tunnel value into the
+# bottom couple of percent of the feature's range -- which is precisely the
+# resolution loss that leaves rate_per_second_norm unable to separate a real
+# in-tunnel flood today (0.0679 vs an 0.0811 normal baseline, see
+# docs/paper-data/02-ai-training-inference.md §2.4).
+_MAX_TUNNEL_RATE_PER_SECOND = 2000.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +81,13 @@ class NormalizedEvent:
     rate_per_second: float
     malformed: bool
     observed_at: datetime
+    # Defaulted, and appended rather than inserted, for two reasons: a frozen
+    # dataclass requires defaulted fields last, and every existing
+    # construction site (the dataset scripts, the tests) keeps working
+    # unchanged while meaning exactly what it did before -- "no tunnel
+    # identity".
+    teid: int = 0
+    tunnel_rate_per_second: float = 0.0
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> "NormalizedEvent":
@@ -81,6 +104,10 @@ class NormalizedEvent:
             rate_per_second=float(data.get("ratePerSecond", 0.0)),
             malformed=bool(data.get("malformed", False)),
             observed_at=observed_at,
+            # .get defaults, not required keys: an older Go operator
+            # publishing without these still scores cleanly, as has_teid=0.
+            teid=int(data.get("teid", 0)),
+            tunnel_rate_per_second=float(data.get("tunnelRatePerSecond", 0.0)),
         )
 
 
@@ -97,6 +124,11 @@ def extract_features(event: NormalizedEvent) -> list[float]:
     hour = event.observed_at.hour + event.observed_at.minute / 60.0
     hour_angle = 2 * math.pi * hour / 24.0
 
+    tunnel_norm = (
+        min(max(event.tunnel_rate_per_second, 0.0), _MAX_TUNNEL_RATE_PER_SECOND)
+        / _MAX_TUNNEL_RATE_PER_SECOND
+    )
+
     features = protocol_one_hot + [
         payload_norm,
         rate_norm,
@@ -105,6 +137,17 @@ def extract_features(event: NormalizedEvent) -> list[float]:
         min(max(event.dest_port, 0), 65535) / 65535.0,
         math.sin(hour_angle),
         math.cos(hour_angle),
+        tunnel_norm,
+        # has_teid earns its own dimension independently of tunnel_rate_norm.
+        # Until the kernel parsed GTP-U headers, "protocol" was asserted from
+        # the destination port alone, so a plain UDP flood aimed at port 2152
+        # with no GTP header at all (25,944 packets of it in
+        # docs/paper-data/real-dataset/) was indistinguishable from genuine
+        # tunneled traffic. This gives the autoencoder a first-class encoding
+        # of "this really is a GTP-U tunnel", so normal becomes "GTP-U WITH a
+        # valid TEID" and the non-conformant class is anomalous for a reason
+        # rather than incidentally via its rate.
+        1.0 if event.teid != 0 else 0.0,
     ]
 
     if len(features) != FEATURE_VECTOR_SIZE:
