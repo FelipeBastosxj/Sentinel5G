@@ -56,6 +56,18 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   subscriber together because they all arrive from the peer gNB's address.
   `NormalizedEvent` gains `teid` and `tunnelRatePerSecond` to carry it, and
   `pkg/ebpf.Loader` gains a `TunnelRate()` lookup.
+- `pkg/detect`: a deterministic, non-ML GTP-U tunnel-flood detector, on by
+  default (`GTPU_TUNNEL_FLOOD_ENABLED`, `config.gtpuTunnelFlood` in the
+  chart). It exists because the autoencoder provably cannot catch this
+  class -- a real in-tunnel flood reconstructs *better* than normal traffic
+  (0.0679 vs an 0.0811 baseline), so no threshold on its score separates
+  them. It publishes an ordinary `ThreatScoreEvent` with score 1.0 and
+  `model: "rule:gtpu-tunnel-flood"`, which goes through exactly the same
+  policy/sensitivity/`autoMitigate` gating as an ML score -- a detection-only
+  pilot stays detection-only. The threshold
+  (`GTPU_TUNNEL_FLOOD_PPS`, default 1000 packets/s on a single tunnel) is
+  reasoned rather than validated against a production N3 interface; the same
+  caveat `SCAN_EMIT_THRESHOLD` carries.
 
 ### Changed
 - **Breaking for a mixed deployment:** `struct signaling_event` grew from 24

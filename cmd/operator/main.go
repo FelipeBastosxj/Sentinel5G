@@ -29,6 +29,7 @@ import (
 	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/config"
 	sentinelcontroller "github.com/FelipeBastosxj/Sentinel5G/pkg/controller"
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/detect"
 	sentinelebpf "github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/events"
 	"github.com/FelipeBastosxj/Sentinel5G/pkg/hubble"
@@ -159,6 +160,14 @@ func main() {
 			Subject:  cfg.NATSEventsSubject,
 			NodeName: nodeName,
 			Log:      log.WithName("ingestion-publisher"),
+			// Runs here, per node, rather than as a second NATS consumer --
+			// see Publisher.TunnelFlood's doc comment for both reasons.
+			TunnelFlood: detect.NewGTPUFloodDetector(detect.GTPUFloodConfig{
+				Enabled:          cfg.GTPUTunnelFloodEnabled,
+				PacketsPerSecond: cfg.GTPUTunnelFloodPPS,
+				Cooldown:         cfg.GTPUTunnelFloodCooldown,
+			}),
+			ThreatsSubject: cfg.NATSThreatsSubject,
 		}
 		if addErr := mgr.Add(publisher); addErr != nil {
 			log.Error(addErr, "unable to register ingestion publisher")
@@ -246,7 +255,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell, "logLevel", logLevel)
+	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell, "logLevel", logLevel,
+		"gtpuTunnelFloodEnabled", cfg.GTPUTunnelFloodEnabled, "gtpuTunnelFloodPPS", cfg.GTPUTunnelFloodPPS)
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager exited with an error")
 		os.Exit(1)

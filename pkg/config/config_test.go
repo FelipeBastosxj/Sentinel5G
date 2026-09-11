@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // clearNATSAuthEnv resets every env var natsHasCredentials/Load consult, so
 // a developer's own shell (or CI) having one of these set doesn't make the
@@ -73,5 +76,62 @@ func TestLoad_RejectsThreatScoreThresholdOutOfRange(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() with THREAT_SCORE_THRESHOLD=1.5 = nil error, want an error")
+	}
+}
+
+// A zero threshold would classify every GTP-U packet as a flood. Refusing to
+// start beats accepting it and mitigating everything.
+func TestLoad_RejectsAZeroTunnelFloodThreshold(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_TUNNEL_FLOOD_ENABLED", "true")
+	t.Setenv("GTPU_TUNNEL_FLOOD_PPS", "0")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to refuse a zero GTPU_TUNNEL_FLOOD_PPS while the detector is enabled")
+	}
+}
+
+// ...but a zero threshold with the detector off is not a misconfiguration,
+// it's simply unused.
+func TestLoad_AllowsAZeroTunnelFloodThresholdWhenDisabled(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_TUNNEL_FLOOD_ENABLED", "false")
+	t.Setenv("GTPU_TUNNEL_FLOOD_PPS", "0")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected Load to accept an unused zero threshold, got %v", err)
+	}
+}
+
+func TestLoad_TunnelFloodDefaults(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.GTPUTunnelFloodEnabled {
+		t.Error("expected the tunnel flood detector on by default")
+	}
+	if cfg.GTPUTunnelFloodPPS != 1000 {
+		t.Errorf("GTPUTunnelFloodPPS = %d, want 1000", cfg.GTPUTunnelFloodPPS)
+	}
+	if cfg.GTPUTunnelFloodCooldown != 30*time.Second {
+		t.Errorf("GTPUTunnelFloodCooldown = %v, want 30s", cfg.GTPUTunnelFloodCooldown)
+	}
+}
+
+// A value above uint32 must fail loudly rather than wrap into an absurdly
+// low threshold that would then fire on ordinary traffic.
+func TestLoad_RejectsAnOutOfRangeTunnelFloodThreshold(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_TUNNEL_FLOOD_PPS", "4294967296")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to reject a GTPU_TUNNEL_FLOOD_PPS above uint32")
 	}
 }

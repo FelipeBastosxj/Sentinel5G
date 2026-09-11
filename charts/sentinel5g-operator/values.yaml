@@ -79,6 +79,23 @@ config:
   # operator starts saying it hasn't seen a score.
   scoringPipelineGrace: 10m
 
+  # Deterministic (non-ML) GTP-U tunnel-flood detector (pkg/detect). Closes
+  # ROADMAP.md Phase 2.5's in-tunnel-flood gap, which the autoencoder
+  # provably cannot: a real in-tunnel flood reconstructs BETTER than normal
+  # traffic (0.0679 vs a 0.0811 baseline), so no threshold on the model's
+  # score can separate them. Publishes a ThreatScoreEvent with score 1.0 and
+  # model "rule:gtpu-tunnel-flood", which then goes through exactly the same
+  # policy/sensitivity/autoMitigate gating as an ML score -- a detection-only
+  # pilot stays detection-only.
+  gtpuTunnelFlood:
+    enabled: true
+    # Packets/second on a SINGLE tunnel (one TEID), not per source IP. NOT
+    # empirically validated against a production N3 interface -- see
+    # docs/paper-data/02-ai-training-inference.md and .env.example.
+    packetsPerSecond: 1000
+    # Minimum interval between events for one (source IP, TEID).
+    cooldown: 30s
+
 nats:
   # Set to the URL of an existing NATS JetStream deployment. This chart does
   # not bundle a NATS subchart; bring your own (e.g. the official `nats`

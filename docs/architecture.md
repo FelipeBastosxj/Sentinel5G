@@ -124,6 +124,22 @@ before reading old measurements against new ones:
   verifier prove the pointer arithmetic safe. A packet with a deeper chain is
   reported as malformed rather than accepted with a wrong header length.
 
+`pkg/detect` turns that per-tunnel rate into a decision. It is a
+deterministic rule, not a model, and that is the point: an in-tunnel flood
+reconstructs *better* than normal traffic under the autoencoder, so no
+threshold on reconstruction error can separate them, while a rate comparison
+separates them trivially. It runs inline in `pkg/ingestion.Publisher` — on
+the event that was just built, on every node, because `Publisher` is
+deliberately not leader-gated — rather than as a second NATS consumer
+competing with the AI engine's own durable queue group.
+
+What it emits is an ordinary `ThreatScoreEvent` on the ordinary subject,
+score `1.0`, `model: "rule:gtpu-tunnel-flood"`. There is no separate
+enforcement path: `pkg/controller.ThreatScoreWatcher` has no branch for it at
+all, so a rule-sourced score goes through the same policy matching,
+sensitivity tier, and `autoMitigate` gating as an ML score. A detection-only
+pilot stays detection-only.
+
 A second, separate detector (`port_scan`/`track_port_scan()`) closes exactly
 that gap: it tracks a bounded, deduplicated set of the *distinct*
 destination ports each source has touched within a longer 30-second window
