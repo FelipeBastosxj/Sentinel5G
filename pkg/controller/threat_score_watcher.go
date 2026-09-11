@@ -81,6 +81,13 @@ func (w *ThreatScoreWatcher) Start(ctx context.Context) error {
 func (w *ThreatScoreWatcher) handle(ctx context.Context, event events.ThreatScoreEvent) error {
 	log := w.Log.WithValues("namespace", event.Namespace, "pod", event.PodName, "sourceIp", event.SourceIP)
 
+	// Counted here, before the Pod lookup and policy matching below, on
+	// purpose: this is the "the scoring pipeline is alive" signal, and an
+	// event for a Pod that has since been deleted (dropped a few lines down)
+	// still proves the AI engine is publishing. See metrics.go.
+	ThreatScoresReceived.WithLabelValues(scoreSourceLabel(event.Model)).Inc()
+	ThreatScore.Observe(event.Score)
+
 	var pod corev1.Pod
 	if err := w.Get(ctx, types.NamespacedName{Namespace: event.Namespace, Name: event.PodName}, &pod); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -116,15 +123,24 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 		// Threshold crossed, action withheld by policy (detection-only pilot),
 		// not a failure -- PolicyPhaseDegraded is reserved for genuine
 		// operator-side failures (a mesh/eBPF action erroring below).
+		//
+		// This increment is the shadow-mode false-positive measurement
+		// ROADMAP.md Phase 2.5 asked for: one crossing that WOULD have
+		// mitigated had autoMitigate been on. See metrics.go.
+		ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "alerting").Inc()
 		latest.Status.Phase = securityv1alpha1.PolicyPhaseAlerting
 		return w.updateStatus(ctx, latest)
 	}
 
+	ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "mitigating").Inc()
+
 	if policy.Spec.Actions.EbpfBlock {
 		if ip := net.ParseIP(event.SourceIP); ip != nil {
 			if err := w.Blocklist.Block(ip); err != nil {
+				Mitigations.WithLabelValues("ebpf_block", "error").Inc()
 				return fmt.Errorf("ebpf block %s: %w", event.SourceIP, err)
 			}
+			Mitigations.WithLabelValues("ebpf_block", "success").Inc()
 			latest.Status.BlockedSourceIPs = appendUnique(latest.Status.BlockedSourceIPs, event.SourceIP)
 		}
 	}
@@ -132,8 +148,10 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 	if policy.Spec.Actions.IsolatePod {
 		if selector := firstMatchLabels(policy.Spec.TargetWorkloads); selector != nil {
 			if err := w.Mesh.Quarantine(ctx, policy.Namespace, selector); err != nil {
+				Mitigations.WithLabelValues("mesh_quarantine", "error").Inc()
 				return fmt.Errorf("mesh quarantine for %s/%s: %w", policy.Namespace, policy.Name, err)
 			}
+			Mitigations.WithLabelValues("mesh_quarantine", "success").Inc()
 		}
 	}
 
@@ -149,6 +167,11 @@ func (w *ThreatScoreWatcher) updateStatus(ctx context.Context, policy *securityv
 		return fmt.Errorf("update status for %s/%s: %w", policy.Namespace, policy.Name, err)
 	}
 	w.Index.Put(policy)
+	// Every phase change this watcher makes funnels through here, so the
+	// gauge is set in one place rather than at each of applyPolicy's three
+	// branches. The Reconciler sets it for the phases it owns (Pending ->
+	// Monitoring, and de-escalation back to Monitoring).
+	SetPolicyPhase(policy.Namespace, policy.Name, policy.Status.Phase)
 	return nil
 }
 
