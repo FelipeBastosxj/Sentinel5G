@@ -100,11 +100,11 @@ reaches the autoencoder:
 |-------|--------------------------|--------------|
 | 0-4   | `proto_{gtpu,sip,smpp,http2,unknown}` | One-hot protocol encoding. |
 | 5     | `payload_size_norm`      | `payloadSize` clipped to 4096 bytes, normalized to `[0,1]`. |
-| 6     | `rate_per_second_norm`   | `ratePerSecond` clipped to 5000/s, normalized to `[0,1]`. |
+| 6     | `untunneled_rate_norm`   | `ratePerSecond` clipped to 5000/s, normalized to `[0,1]` — **but only for an event with `teid == 0`**; for tunneled traffic it is `0.0` and index 10 carries the rate instead. The per-source rate is identical for every subscriber behind a gNB, so letting the model see it for tunneled packets scored innocent bystanders as anomalous during someone else's flood (`docs/paper-data/02-ai-training-inference.md` §2.6.5). |
 | 7     | `malformed`              | `1.0` if the eBPF parser flagged malformed framing. |
 | 8     | `dest_port_signaling`    | `1.0` if `destPort` is 2152 (GTP-U) or 5060 (SIP). |
 | 9     | `dest_port_norm`         | `destPort / 65535`. |
-| 10    | `tunnel_rate_norm`       | `tunnelRatePerSecond` clipped to 2000/s, normalized to `[0,1]`. A much tighter clip than `rate_per_second_norm`'s 5000 — a single tunnel carries one subscriber, so its interesting range sits orders of magnitude below an aggregate per-source rate, and clipping it the same way would squash every realistic value into the bottom couple of percent. |
+| 10    | `tunnel_rate_norm`       | `tunnelRatePerSecond` clipped to 2000/s, normalized to `[0,1]`. A much tighter clip than `untunneled_rate_norm`'s 5000 — a single tunnel carries one subscriber, so its interesting range sits orders of magnitude below an aggregate per-source rate, and clipping it the same way would squash every realistic value into the bottom couple of percent. |
 | 11    | `has_teid`               | `1.0` when `teid` is non-zero. Encodes "this really is a GTP-U tunnel" as a first-class feature, rather than leaving the model to infer it from the destination port — which is what made 25,944 packets of plain UDP aimed at port 2152 indistinguishable from genuine tunneled traffic. |
 
 This vector — not the raw event — is what the autoencoder is trained and

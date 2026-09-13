@@ -18,7 +18,7 @@ FEATURE_NAMES = [
     "proto_http2",
     "proto_unknown",
     "payload_size_norm",
-    "rate_per_second_norm",
+    "untunneled_rate_norm",
     "malformed",
     "dest_port_signaling",
     "dest_port_norm",
@@ -139,7 +139,26 @@ def extract_features(event: NormalizedEvent) -> list[float]:
     protocol_one_hot.append(1.0 if event.protocol not in _PROTOCOLS else 0.0)
 
     payload_norm = min(max(event.payload_size, 0), _MAX_PAYLOAD_BYTES) / _MAX_PAYLOAD_BYTES
-    rate_norm = min(max(event.rate_per_second, 0.0), _MAX_RATE_PER_SECOND) / _MAX_RATE_PER_SECOND
+
+    # The per-source rate is only allowed to speak for traffic that has no
+    # tunnel identity (SIP, SMPP, an off-port probe, a raw UDP flood at the
+    # GTP-U port). For a tunneled packet it is zeroed and tunnel_rate_norm
+    # below carries the rate instead. Measured, not stylistic
+    # (docs/paper-data/02-ai-training-inference.md §2.6.5): on a gNB where
+    # one subscriber floods, the per-source rate is identical for every
+    # innocent subscriber behind that gNB, and a model that saw it scored
+    # the bystanders' packets above the mitigation threshold -- 150 of 192
+    # in one training run. Zeroing it for tunneled traffic took that to 0 of
+    # 192 while keeping 91% of the flooding tunnel's own packets flagged;
+    # dropping the feature outright did the same but blinded the model to
+    # every untunneled storm. This is the per-source cross-attribution the
+    # per-TEID work removed from the detector, removed from the model too.
+    if event.teid != 0:
+        rate_norm = 0.0
+    else:
+        rate_norm = (
+            min(max(event.rate_per_second, 0.0), _MAX_RATE_PER_SECOND) / _MAX_RATE_PER_SECOND
+        )
 
     tunnel_norm = (
         min(max(event.tunnel_rate_per_second, 0.0), _MAX_TUNNEL_RATE_PER_SECOND)

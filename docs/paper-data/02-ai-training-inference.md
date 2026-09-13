@@ -574,3 +574,48 @@ identifies the flooding subscriber where per-source keying identifies the
 gNB; the shipped default threshold is reachable by an attacker by three
 orders of magnitude; and the model shipped before this section would have
 flagged every packet of real traffic it had not been trained on.
+
+### 2.6.5 Bystanders: the per-source rate, silenced for tunneled traffic
+
+§2.6.4's third point left open whether `rate_per_second` should remain a
+feature. Measured by ablation (retrain with the column masked, seed 42,
+same split; reproduce with the three-variant script the numbers below came
+from, `scripts/evaluate_model.py` for the pooled figures):
+
+| Variant | Bystanders ≥ 0.68 (of 192) | Flooding tunnel ≥ 0.68 (of 19,808) | Pooled recall @ high |
+|---|---|---|---|
+| A. `rate_per_second_norm` as it was | **150** | 18,246 (92%) | 0.907 |
+| B. feature removed (11 dims) | 0 | 12,640 (64%) | 0.802 |
+| C. **kept, but zeroed for any event with a TEID** | **0** | 18,079 (91%) | 0.904 |
+
+A's 150 is worse than the 36 reported in §2.6.4 from a different training
+run of the same design — the bystander effect is not just present but
+unstable across seeds, which is its own argument against shipping it. B
+fixes it at the cost of blinding the model to every *untunneled* storm
+(SIP, SMPP, an off-port probe — `rate_per_second` was their only rate
+signal), which is why pooled recall drops. C keeps that signal where it is
+meaningful and removes it where it is shared: for a tunneled packet the only
+rate that may speak is the tunnel's own.
+
+**C is what ships.** The feature is now `untunneled_rate_norm` (same index,
+same width — no ONNX shape change). Retrained, scored with real timestamps:
+
+| Capture | n | mean | ≥ 0.68 | = 1.0 |
+|---|---|---|---|---|
+| v2 multi-UE normal | 5,000 | 0.0021 | 0 | 0 |
+| **v2 bystander tunnels during the flood** | 192 | 0.0021 | **0** | 0 |
+| v2 flooding tunnel, 3,000 pkt/s | 19,808 | 0.9518 | **18,632 (94%)** | 18,394 |
+| v1 normal | 1,889 | 0.0604 | 0 | 0 |
+| v1 in-tunnel flood, 63 pkt/s | 3,348 | 0.0242 | 0 | 0 |
+
+Pooled: ROC AUC 0.982, recall 0.915 / 0.913 / 0.911, zero false positives.
+
+**What this does not fix, stated so it isn't assumed:** the score no longer
+implicates bystanders, but the *mitigation* still would. `ThreatScoreEvent`
+carries a source IP, `pkg/ebpf`'s blocklist is keyed by source IP, and on
+this topology that IP is the gNB's. A correctly-attributed score for TEID
+`0x8748` still results in `Block(127.0.0.1)` — all four subscribers. Making
+the action as precise as the detection needs a TEID-keyed drop path in
+`bpf/packet_filter.c` and a TEID on the wire event that drives it; that is
+a new eBPF map, a new action, and a CRD change, and it is recorded in
+`ROADMAP.md` Phase 3 rather than started here.

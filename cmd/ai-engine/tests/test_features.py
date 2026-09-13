@@ -158,3 +158,17 @@ def test_from_dict_defaults_the_tunnel_fields():
     assert event.teid == 0
     assert event.tunnel_rate_per_second == 0.0
     assert len(extract_features(event)) == FEATURE_VECTOR_SIZE
+
+
+def test_source_rate_is_silenced_for_tunneled_traffic():
+    """§2.6.5: the per-source rate is identical for every subscriber behind a
+    gNB, so letting the model see it for tunneled packets scores innocent
+    bystanders as anomalous during someone else's flood. For a packet with a
+    TEID the tunnel rate is the only rate that may speak.
+    """
+    tunneled = _event(teid=0x4D84, rate_per_second=3031.0, tunnel_rate_per_second=10.0)
+    untunneled = _event(protocol="SIP", dest_port=5060, rate_per_second=3031.0)
+
+    rate_index = FEATURE_NAMES.index("untunneled_rate_norm")
+    assert extract_features(tunneled)[rate_index] == 0.0
+    assert extract_features(untunneled)[rate_index] > 0.5
