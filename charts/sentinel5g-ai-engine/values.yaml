@@ -26,10 +26,11 @@ model:
   # scores.
   #
   # Read what that model is before trusting it in production: it is trained
-  # on roughly one hour of single-UE GTP-U traffic from one lab core, which
-  # is a reproducible starting point, NOT a model of your network. See
-  # docs/paper-data/real-dataset/README.md for its stated scope limits and
-  # docs/getting-started.md for retraining against your own traffic.
+  # on two short lab sessions of GTP-U from one Open5GS core (one UE for an
+  # hour, then four UEs for a few minutes) -- a reproducible starting point,
+  # NOT a model of your network. See docs/paper-data/real-dataset*/README.md
+  # for the stated scope limits and docs/getting-started.md for retraining
+  # against your own traffic.
   image:
     repository: ghcr.io/felipebastosxj/sentinel5g-model
     tag: "v0.2.2"

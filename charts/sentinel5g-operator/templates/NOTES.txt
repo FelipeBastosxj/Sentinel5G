@@ -8,13 +8,33 @@ Check status:
 
   kubectl get telecomsecuritypolicies -A
 
+The SCORING column is whether the AI engine has ever published a score. It
+reads False after {{ .Values.config.scoringPipelineGrace }} if the scoring
+half of the system isn't running -- the AI engine is a separate chart
+(charts/sentinel5g-ai-engine) and is NOT installed by this one:
+
+  helm install sentinel5g-ai-engine charts/sentinel5g-ai-engine -n {{ .Release.Namespace }} \
+    --set nats.url={{ .Values.nats.url }}
+
+Without it every policy sits at Phase: Monitoring forever, and until the
+SCORING column existed that looked identical to a healthy, quiet cluster.
+
 {{- if not .Values.ebpf.enabled }}
 
 NOTE: eBPF blocklist enforcement (EbpfBlock actions) is disabled
 (ebpf.enabled=false). The operator still reconciles policies and can drive
 mesh-layer isolation, but source-IP drops at the XDP layer are no-ops until
-you set ebpf.enabled=true and grant the manager container CAP_BPF/CAP_NET_ADMIN.
-See docs/integrations.md.
+you set ebpf.enabled=true (the chart then adds ebpf.capabilities -- CAP_BPF +
+CAP_NET_ADMIN by default; override on pre-5.8 kernels). See docs/integrations.md.
+{{- end }}
+
+GTP-U tunnel-flood detector (pkg/detect): {{ if .Values.config.gtpuTunnelFlood.enabled }}on, {{ .Values.config.gtpuTunnelFlood.packetsPerSecond }} pkt/s per tunnel -- a reasoned default, not one measured on your N3; tune it from a detection-only pilot (docs/production-install.md){{ else }}off{{ end }}.
+{{- if .Values.nats.allowUnauthenticated }}
+
+WARNING: nats.allowUnauthenticated is true. Anything able to reach
+{{ .Values.nats.url }} can forge a ThreatScoreEvent and trigger a real
+mitigation. Intended for a throwaway demo cluster only -- see
+docs/production-install.md.
 {{- end }}
 
 {{- if and .Values.serviceMonitor.enabled (not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1")) }}

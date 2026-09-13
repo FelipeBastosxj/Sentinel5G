@@ -11,11 +11,15 @@ needs instead is scattered across `docs/integrations.md`,
 **not** a script to paste — each step below links to where the actual detail
 lives, and expects you to make a real decision at several of them.
 
-See `ROADMAP.md`'s "Phase 2.5 — Production readiness" section for what's
-still an open gap at this stage, in particular **the in-tunnel-flood
-detection gap** (`docs/paper-data/02-ai-training-inference.md` §2.4) — read
-that before deciding how much to trust `autoMitigate: true` against real
-traffic.
+See `ROADMAP.md`'s "Phase 2.5 — Production readiness" section for what it
+closed and, more usefully, what it explicitly did *not* validate. The
+in-tunnel-flood detection gap (`docs/paper-data/02-ai-training-inference.md`
+§2.4) is closed — by a per-tunnel rate in the kernel and a deterministic
+detector (§2.5), with the model now catching floods above ~1,000 pkt/s on
+its own (§2.6) — but every threshold involved was calibrated on lab
+captures, not a production N3, and the mitigation is still keyed by source
+IP (step 5). Read §2.6 before deciding how much to trust
+`autoMitigate: true` against real traffic.
 
 ## 1. Bring your own NATS JetStream, with auth or TLS
 
@@ -77,13 +81,17 @@ healthy and silently never scoring. Two ways to supply it:
 - **`model.image` (the default).** Each release publishes a signed model
   artifact trained from the committed real dataset, and the chart pulls it
   with an initContainer. Read what that model actually is before trusting it
-  in production: roughly one hour of single-UE GTP-U traffic from one lab
-  core (`docs/paper-data/real-dataset/README.md` states its scope limits).
-  It is a reproducible starting point, not a model of your network.
+  in production: two short lab sessions of GTP-U on one Open5GS core — a
+  single UE for about an hour, then four UEs for a few minutes
+  (`docs/paper-data/real-dataset/`, `real-dataset-v2/`,
+  `test-environment.md` state the limits). It is a reproducible starting
+  point that has been shown not to flag traffic from a different day; it
+  is not a model of your network. The first release to publish it is the
+  one after `v0.2.2`; `model.image.tag` must name a tag that exists.
 - **`model.existingSecret`.** Your own model, trained against your own
   traffic — the right answer before relying on `autoMitigate: true`
-  anywhere. See `docs/getting-started.md`'s "Train (or retrain) against the
-  real dataset" section, then:
+  anywhere. See `docs/getting-started.md`'s "Training against real captures
+  instead" section, then:
 
   ```sh
   kubectl create secret generic ai-engine-model -n sentinel5g-system \
@@ -135,6 +143,19 @@ withheld mitigations increments
 `/metrics`. See `docs/observability.md`'s "Measuring a detection-only
 pilot's false-positive rate" for the queries.
 
+Two sources feed that counter, and the pilot is the place to tune both:
+
+- The autoencoder's score. Its thresholds (`THREAT_SCORE_THRESHOLD` ×
+  the policy's `sensitivity`) were validated against lab captures, not
+  your traffic — `docs/paper-data/02-ai-training-inference.md` is explicit
+  about what those captures do and don't cover.
+- The deterministic GTP-U tunnel-flood rule (`config.gtpuTunnelFlood`, on
+  by default, `docs/integrations.md`). Its `packetsPerSecond` default of
+  1,000 per *tunnel* is reasoned rather than measured against a production
+  N3; `sentinel5g_threat_scores_received_total{source="rule"}` tells you
+  how often it is the one firing, and the alerting counter tells you
+  whether that would have been right.
+
 ## 5. Opt into eBPF enforcement only after its preflight passes
 
 `ebpf.enabled: true` needs **all** of: the right `ebpf.interface` for the
@@ -151,14 +172,27 @@ Pod (`kubectl describe pod`/`kubectl get events -n sentinel5g-system`) — it
 degrades to mesh-isolation-only rather than crash-looping, but check for
 that event rather than assuming enforcement is active.
 
+Read what an eBPF block actually blocks before relying on it on an N3
+interface: the blocklist is keyed by **source IP**, and on N3 every
+subscriber's traffic arrives from the peer gNB's address. Detection is
+per tunnel (the probe parses GTP-U and rates each TEID separately); the
+drop is not, so a mitigation triggered by one flooding subscriber drops
+every subscriber behind that gNB. A TEID-keyed drop path is `ROADMAP.md`
+Phase 3. Until then, on N3 specifically, prefer `autoMitigate: false`
+plus your own action on the alert, or mesh isolation of the workload.
+
 ## 6. Wire up observability
 
-The metrics `Service` this chart renders is always there regardless of
-`serviceMonitor.enabled`; set `serviceMonitor.enabled: true` only if
-Prometheus Operator is actually installed on this cluster — if it isn't,
-the chart now renders no `ServiceMonitor` (with a warning in the post-install
-NOTES) instead of failing the install outright, but you still need a working
-scrape path either way. See `docs/observability.md` for the metrics exposed
+The metrics `Service` each chart renders is always there regardless of
+`serviceMonitor.enabled`; set `serviceMonitor.enabled: true` (on both
+charts — the AI engine's metrics port is `config.metricsAddr`, `:9090` in
+NATS mode) only if Prometheus Operator is actually installed on this
+cluster — if it isn't, the charts render no `ServiceMonitor` (with a warning
+in the post-install NOTES) instead of failing the install outright, but you
+still need a working scrape path either way. The one alert to wire before
+anything else: `sum(rate(sentinel5g_threat_scores_received_total[15m])) == 0`
+for longer than you'd tolerate, which is "the scoring half is dead" as a
+number. See `docs/observability.md` for the metrics exposed
 and the (currently unmeasured — see `ROADMAP.md` Phase 3) latency targets
 they're meant to validate against.
 

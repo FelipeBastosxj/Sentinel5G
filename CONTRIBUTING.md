@@ -38,15 +38,30 @@ docs(readme): update helm installation instructions
   `api/v1alpha1/*_types.go`, run `make manifests` (wraps `controller-gen`) to
   regenerate `zz_generated.deepcopy.go` and `config/crd/bases/*.yaml` — CI
   fails on drift between the Go types and that generated output, so don't
-  hand-edit either file. `charts/sentinel5g-operator/templates/crd.yaml` is
+  hand-edit either file. A new `PolicyPhase` constant also has to be added
+  to `pkg/controller/metrics.go`'s `allPolicyPhases`
+  (`TestAllPolicyPhases_CoversTheAPI` fails on drift). `charts/sentinel5g-operator/templates/crd.yaml` is
   a separate, still hand-copied file (see the note at its own top for why);
   update it to match `config/crd/bases/*.yaml`'s new content too.
 - **eBPF (`bpf/`):** `make -C bpf` must compile cleanly. Keep stack usage
   well under the 512-byte eBPF limit and stick to standard integer sizing
-  (`__u32`, `__u64`, `__u8`).
+  (`__u32`, `__u64`, `__u8`). If you touch any struct that crosses into Go
+  (`signaling_event`, a map key or value), the byte-exact mirror in
+  `pkg/ebpf/loader_linux.go` and the size assertions in
+  `loader_linux_test.go` change in the **same commit** — a mismatch
+  decodes silently, it doesn't fail — and load the object through a real
+  verifier (`sudo bpftool prog load bpf/packet_filter.o /sys/fs/bpf/x`)
+  to confirm it's accepted and to read back the stack depth and map sizes
+  the source comments cite.
+- **Cross-language schema (`pkg/events/types.go` ↔
+  `cmd/ai-engine/sentinel_ai/features.py` ↔ `docs/event-model.md`):** kept
+  in sync by hand; change all three together. Changing
+  `FEATURE_VECTOR_SIZE` changes the ONNX input shape, which invalidates
+  every deployed model — say so in the CHANGELOG under a breaking heading,
+  and re-export with `make ai-engine-train-real`.
 - **Python (`cmd/ai-engine`):** `black --check .`, `flake8`, `pytest`, all
   run from `cmd/ai-engine`. Public functions should carry type hints.
-- **Manifests (`config/`, `charts/`):** `helm lint charts/sentinel5g-operator`.
+- **Manifests (`config/`, `charts/`):** `make helm-lint` (both charts: the operator's and the AI engine's).
   If you change the CRD schema, update it in both `config/crd/bases/` and
   `charts/sentinel5g-operator/templates/crd.yaml` — see the note in that
   chart template for why they're not shared.
@@ -58,6 +73,9 @@ docs(readme): update helm installation instructions
   path-filtered via a `changes` job (`dorny/paths-filter`) — a PR touching
   only `cmd/ai-engine/` shows the other three as skipped, not failed; that's
   expected, not a CI problem. Editing `ci.yml` itself always runs every job.
+  `.github/workflows/e2e.yml` additionally runs `scripts/quickstart.sh`
+  against a real kind cluster with the operator, the AI engine chart and a
+  model all built from the PR (`SENTINEL5G_AI_ENGINE=true`).
 - CRD manifests must be updated if the API changed.
 - eBPF changes must be reviewed for kernel-version compatibility and stack
   usage, not just for compiling locally.
@@ -71,7 +89,13 @@ the provided bug report / feature request templates.
 
 `.github/workflows/release.yml` (triggered by pushing a `vX.Y.Z` tag) builds,
 scans, and publishes multi-arch (`linux/amd64`+`linux/arm64`) images to both
-GHCR and Docker Hub. GHCR only needs the repo's own `GITHUB_TOKEN` (already
+GHCR and Docker Hub — the operator, the AI engine and the Falco bridge — and,
+independently of those: both Helm charts as OCI artifacts (the job fails if
+either `charts/*/Chart.yaml`'s `version` doesn't equal the tag, so **bump
+both `Chart.yaml` files before tagging**), and the trained model as
+`ghcr.io/<owner>/sentinel5g-model:<tag>` (trained in-job from the committed
+captures via `make ai-engine-train-real`, the `reference_error` and dataset
+hash recorded in the run summary). Everything is cosign-signed keylessly. GHCR only needs the repo's own `GITHUB_TOKEN` (already
 available to every workflow run), but Docker Hub needs two repository
 secrets that aren't set up automatically:
 

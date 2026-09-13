@@ -36,9 +36,9 @@ created. Metrics are still reachable on the Service's "metrics" port.
 
 {{- if .Values.model.image.repository }}
 
-The default model is trained on roughly one hour of single-UE GTP-U traffic
-from one lab core (docs/paper-data/real-dataset/). It is a reproducible
-starting point, not a model of your network -- see docs/getting-started.md
-for retraining against your own traffic before relying on
-autoMitigate: true.
+The default model is trained on two short lab sessions of GTP-U from one
+Open5GS core (docs/paper-data/real-dataset/ and real-dataset-v2/). It is a
+reproducible starting point, not a model of your network -- see
+docs/getting-started.md for retraining against your own traffic before
+relying on autoMitigate: true.
 {{- end }}

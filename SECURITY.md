@@ -70,11 +70,28 @@ Sentinel5G is pre-1.0 (`v0.x`, see `CHANGELOG.md`): only the most recently
 published release gets security fixes. There's no long-term support branch
 yet — upgrading to the latest release is the supported way to pick up a fix.
 
+## Things worth knowing when assessing a report
+
+- Anything that can publish to `NATS_THREATS_SUBJECT` can trigger a real
+  mitigation, which is why both the operator and the AI engine refuse an
+  unauthenticated bus unless told otherwise. A forged event with
+  `model: "rule:..."` and `score: 1.0` clears every sensitivity tier by
+  design (`pkg/detect` relies on exactly that), so bus authentication is the
+  control, not the threshold.
+- The model artifact is a trust boundary: a tampered `autoencoder.norm.json`
+  silently rescales every score. The published `sentinel5g-model` image is
+  cosign-signed; a `model.existingSecret` is whatever you put in it.
+- Wire-derived strings never become Prometheus label values as-is
+  (`pkg/controller/metrics.go`'s `scoreSourceLabel` maps them to a closed
+  set), so a forged `model` string is not a series-cardinality vector.
+
 ## Scope
 
 In scope: this repository's own code (`bpf/`, `pkg/`, `cmd/`,
-`charts/sentinel5g-operator`, `config/`, `scripts/`, the container images
-and SBOM/signing pipeline in `.github/workflows/release.yml`).
+`charts/sentinel5g-operator`, `charts/sentinel5g-ai-engine`, `config/`,
+`scripts/`, the container images — including the published model artifact
+`sentinel5g-model` — and the SBOM/signing pipeline in
+`.github/workflows/release.yml`).
 
 Out of scope: vulnerabilities in upstream dependencies (report those
 upstream — `govulncheck`/`pip-audit`/`bandit`/`gosec` already run in CI to

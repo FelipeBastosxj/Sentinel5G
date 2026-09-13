@@ -14,10 +14,12 @@ scattered across other docs.
 that preflight, a slow, generic timeout deep inside `kind create cluster` or
 an image pull instead.
 
-Sentinel5G's own images are only published to GHCR (`ghcr.io`); once
-published to Docker Hub too (see the project roadmap), `docker.io` will also
-be reachable-required. Either host being blocked breaks the quickstart the
-same way. Common causes:
+Sentinel5G's own images are published to both GHCR (`ghcr.io`, what the
+charts and quickstart default to) and Docker Hub (`docker.io`); the
+quickstart also pulls `natsio/nats-box` and the NATS server from
+`docker.io`, and with `SENTINEL5G_AI_ENGINE=true` the model artifact
+`ghcr.io/.../sentinel5g-model` as well. Either host being blocked breaks
+the quickstart the same way. Common causes:
 
 - Corporate VPN or firewall egress rules that only allowlist specific hosts.
 - A cloud VM's security group / network ACL blocking outbound HTTPS to
@@ -143,21 +145,16 @@ and RBAC objects separately using an identity that does have that access.
 
 ## ARM64 vs amd64
 
-As of this writing, Sentinel5G's published images
-(`ghcr.io/felipebastosxj/sentinel5g-operator`,
-`ghcr.io/felipebastosxj/sentinel5g-ai-engine`) are `linux/amd64` only. On an
-ARM64 host (Apple Silicon Macs, AWS Graviton/Azure Ampere VMs, some
-Codespaces machine types), Docker will run the image under emulation
-(slower, and occasionally surfaces syscalls emulation doesn't support
-cleanly) rather than fail outright — if something behaves oddly on ARM64
-specifically, this is the first thing to suspect. Multi-arch
-(`linux/amd64`+`linux/arm64`) images, published to both GHCR and Docker Hub,
-are tracked as project work; check the CHANGELOG for whether that's landed
-yet.
-
-`quickstart.sh` itself (and the `kubectl`/`kind`/`helm` binaries it
-downloads) already supports both `amd64` and `arm64` — this limitation is
-specific to Sentinel5G's own published operator/ai-engine images.
+Every Sentinel5G image published from `v0.2.2` on — the operator, the AI
+engine, the Falco bridge and the model artifact — is a multi-arch
+(`linux/amd64`+`linux/arm64`) manifest on both GHCR and Docker Hub, and
+`quickstart.sh` (with the `kubectl`/`kind`/`helm` binaries it downloads)
+supports both. If you are pinned to an image older than that, Docker runs
+the amd64 image under emulation on an ARM64 host (Apple Silicon, AWS
+Graviton, Azure Ampere, some Codespaces machine types): slower, and
+occasionally surfacing syscalls emulation doesn't support cleanly, rather
+than failing outright — the first thing to suspect if something behaves
+oddly on ARM64 specifically.
 
 ## eBPF: kernel, capabilities, and build
 
@@ -185,9 +182,9 @@ of these it is:
   `ebpf.capabilities: ["SYS_ADMIN", "NET_ADMIN"]` for a pre-5.8 kernel.
 - **"does not exist on this node"** — `ebpf.interface` (default `eth0`)
   doesn't match a real interface inside the container's network namespace.
-  Note the operator's Deployment doesn't set `hostNetwork: true`, so
-  "the interface" here is the pod's own veth, not the node's physical NIC —
-  see the ROADMAP for the known multi-node coverage gap this implies.
+  Note the operator's Deployment doesn't set `hostNetwork: true` unless
+  `daemonset.enabled` is, so "the interface" here is the pod's own veth,
+  not the node's physical NIC — see `docs/integrations.md`.
 - **"unrecognized reason"** (usually alongside a kernel-level error in
   `reason`) — most often an incompatible or very old kernel that doesn't
   support the BPF program/map types used. `bpf/packet_filter.c` doesn't rely
@@ -201,6 +198,105 @@ header, not a `bpftool btf dump` of your own kernel's BTF, so there's no
 dependency on `bpftool`, kernel headers, or `/sys/kernel/btf/vmlinux` being
 accessible (which it isn't inside a plain `docker build`, one reason this
 project moved away from that approach — see `docs/architecture.md`).
+
+**"bpf object does not export map \"tunnel_rate\""** at attach time means
+the operator binary is newer than the `packet_filter.o` it was pointed at:
+per-TEID tracking added two maps and grew the ring-buffer record from 24 to
+32 bytes, and `pkg/ebpf.Attach` refuses an object without them rather than
+silently decoding every subsequent record at the wrong length. The
+published operator image bakes a matching object in; this only happens
+when `--bpf-object` points at a stale copy of your own.
+
+## Nothing ever scores: `SCORING False`, every policy stuck at `Monitoring`
+
+**Symptom:** `kubectl get tsp -A` shows `SCORING False` for longer than
+`SCORING_PIPELINE_GRACE` (default 10m), every policy sits at
+`Phase: Monitoring` with an empty `SCORE`, and `kubectl describe tsp` shows
+a `ScoringPipelineNotReady` warning Event. Nothing errors.
+
+**Cause:** the operator is subscribed to the threat-score subject but no
+`ThreatScoreEvent` has ever arrived. The AI engine is a separate deployment
+(`charts/sentinel5g-ai-engine`) and needs a trained model; without it the
+scoring half of the system simply doesn't exist, and until this condition
+was added that looked identical to a healthy, quiet cluster. Check, in
+order:
+
+1. Is it running? `kubectl -n sentinel5g-system get pods -l
+   app.kubernetes.io/name=sentinel5g-ai-engine`. Not there → install the
+   chart (`docs/production-install.md` step 3).
+2. `Init:` states → the model initContainer. `CreateContainerConfigError`
+   with "runAsNonRoot and image will run as root" means a model image built
+   without the `USER 65532` line `cmd/ai-engine/Dockerfile.model` carries;
+   `Permission denied` in the init logs means the pod's `fsGroup` isn't
+   set (the chart sets `podSecurityContext.fsGroup: 65532` for exactly
+   this).
+3. `CrashLoopBackOff` with `ValueError: model at ... expects a
+   N-dimensional input but this build extracts 12 features` → the model
+   was exported against an older feature vector. Re-export it (the error
+   names the commands) or move to the published artifact.
+4. Both running, still `False` → they're not on the same bus. The
+   engine's `nats.url`/`eventsSubject`/`threatsSubject` must match the
+   operator's; `kubectl -n sentinel5g-system logs deploy/sentinel5g-ai-engine`
+   should end with `subscribed to sentinel5g.events.normalized ...
+   publishing to sentinel5g.threats.scored`.
+
+`sentinel5g_threat_scores_received_total` on the operator's `/metrics` is
+the same signal as a counter — flat at zero means the same thing.
+
+## `helm install sentinel5g-ai-engine` fails with "no model source configured"
+
+**Symptom:** the render fails with `no model source configured: set either
+model.image.repository ... or model.existingSecret ...`, or with
+`model.image.repository and model.existingSecret are mutually exclusive`.
+
+**Cause:** deliberate. The chart refuses to install something that cannot
+score rather than come up healthy and silently never publish (the failure
+the section above describes). Pick one source: leave `model.image` at its
+default (a published artifact), or clear it and bring your own —
+`--set model.image.repository=null --set model.existingSecret=<name>`
+with a Secret holding `autoencoder.onnx`, `autoencoder.onnx.data` and
+`autoencoder.norm.json`.
+
+## `EBPFAttachFailed` / `ScoringPipelineNotReady` Events never appear
+
+**Symptom:** the operator log shows the condition, but `kubectl get
+events` has nothing, and the log carries `Server rejected event ...
+events.events.k8s.io is forbidden`.
+
+**Cause, fixed:** controller-runtime's event recorder writes through
+`events.k8s.io/v1`, and the ClusterRole only granted the core-group
+`events` resource — so every Event the operator ever recorded was
+rejected, from the day `EBPFAttachFailed` was added. Upgrade the chart (or
+re-apply `config/rbac/role.yaml`); an older ClusterRole from before this
+fix reproduces it.
+
+## Every packet on port 2152 is `malformed: true`
+
+**Symptom:** after upgrading, traffic to the GTP-U port that used to score
+as ordinary GTP-U now arrives flagged `malformed`.
+
+**Cause:** the kernel probe now validates GTP-U framing instead of trusting
+the port. Traffic that isn't a real GTP-U T-PDU — a plain UDP flood aimed
+at the N3 socket, a generator that never entered the tunnel (`iperf3 -B`
+and UERANSIM's `nr-binder` both do this silently, see
+`docs/paper-data/real-dataset-v2/README.md`), a GTPv0 or GTP' packet — is
+reported as what it is. Genuine GTP-U from a real gNB carries a valid
+version/PT and a TEID and is not affected.
+
+## The first score after an operator restart never arrived
+
+**Symptom:** a `ThreatScoreEvent` published while the operator was
+restarting shows up in the AI engine's log as published, `SCORING` flips
+to `True`, but the policy's `SCORE` stays empty and nothing mitigates.
+
+**Cause, fixed:** JetStream redelivers everything the durable missed the
+instant the operator resubscribes, which used to happen before
+`PolicyIndex` had been populated — the buffered scores matched nothing,
+were acked, and were gone. `ThreatScoreWatcher.Start` now seeds the index
+from the cache before subscribing. If you see this on a current build,
+`kubectl -n sentinel5g-system logs deploy/sentinel5g-operator | grep
+"policy index warmed"` (debug level, `LOG_LEVEL=debug`) is the line that
+should precede the subscription.
 
 ## GitHub Codespaces specifics
 
@@ -230,7 +326,9 @@ project moved away from that approach — see `docs/architecture.md`).
 
 ```sh
 kubectl get events -A --sort-by=.lastTimestamp
+kubectl get telecomsecuritypolicies -A            # PHASE / SCORE / SCORING
 kubectl logs -n sentinel5g-system deploy/sentinel5g-operator
+kubectl logs -n sentinel5g-system deploy/sentinel5g-ai-engine --all-containers   # includes the model initContainer
 kind export logs <output-dir> --name <cluster-name>
 ```
 

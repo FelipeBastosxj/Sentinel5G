@@ -170,13 +170,13 @@ networkPolicy:
     # connects to.
     port: 4222
     # Additional NetworkPolicyPeer entries (e.g. the AI engine, deployed
-    # separately -- see deployments/quickstart/ai-engine.yaml) allowed to
-    # reach NATS alongside this chart's own operator Pods. Each entry is a
-    # full peer (podSelector and/or namespaceSelector), for example:
+    # separately by charts/sentinel5g-ai-engine) allowed to reach NATS
+    # alongside this chart's own operator Pods. Each entry is a full peer
+    # (podSelector and/or namespaceSelector), for example:
     #   additionalClients:
     #     - podSelector:
     #         matchLabels:
-    #           app: sentinel5g-ai-engine
+    #           app.kubernetes.io/name: sentinel5g-ai-engine
     additionalClients: []
 
 podAnnotations: {}
