@@ -76,6 +76,12 @@ func (w *ThreatScoreWatcher) Start(ctx context.Context) error {
 	if err := w.warmIndex(ctx); err != nil {
 		return fmt.Errorf("populate policy index before subscribing: %w", err)
 	}
+	if w.Scoring != nil {
+		// The grace period starts when THIS process can actually receive a
+		// score, which is here -- not when it was constructed, possibly
+		// hours ago as a standby replica. See ScoringPipelineTracker.
+		w.Scoring.MarkStarted()
+	}
 
 	bus, err := w.Bus.Wait(ctx)
 	if err != nil {
@@ -156,7 +162,19 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 	latest.Status.ObservedThreatScore = fmt.Sprintf("%.4f", event.Score)
 
 	if event.Score < threshold {
-		latest.Status.Phase = securityv1alpha1.PolicyPhaseMonitoring
+		// A benign score does NOT end a mitigation. Reversal is
+		// Reconciler.tryDeEscalate's job, on a quiet-period timer, and it
+		// only runs while Phase == Mitigating -- so flipping to Monitoring
+		// here would leave Status.BlockedSourceIPs populated and the kernel
+		// blocklist entries in place with nothing ever scheduled to remove
+		// them. That was latent while scores were rare; with the AI engine
+		// scoring every NormalizedEvent from every source hitting the same
+		// Pod, a Mitigating policy sees a sub-threshold score within
+		// milliseconds, and the block it just placed would be orphaned
+		// every time. Alerting (no side effects) does return to Monitoring.
+		if latest.Status.Phase != securityv1alpha1.PolicyPhaseMitigating {
+			latest.Status.Phase = securityv1alpha1.PolicyPhaseMonitoring
+		}
 		return w.updateStatus(ctx, latest)
 	}
 

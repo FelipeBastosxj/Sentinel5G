@@ -58,16 +58,48 @@ were confirmed still up both before and after.
 <0.2ms design target.** Two independent samples landed within 11% of each
 other, not a single fluke reading.
 
-**Dated, and pending re-measurement (2026-09-13):** this was the program
-*before* Phase 2.5 added `parse_gtpu()` (a `#pragma unroll`ed extension-
-header walk), the `tunnel_rate` map update on every GTP-U packet, and grew
-the ring-buffer record from 24 to 32 bytes — xlated size went 6936 → 9880
-bytes. The load path is intact and verified (verifier accepts it, max stack
-152 B), but per-packet cost has not been re-measured. The native-Linux lab
-(`test-environment.md`) now sustains ~125,000 pkt/s through one tunnel, so
-the next measurement can be taken at real rates rather than the ~60 pkt/s
-this one was, with `bpftool map dump` on `tunnel_rate` as the per-TEID
-counterpart of the `signal_rate` dump used above.
+**Dated:** this was the program *before* Phase 2.5 added `parse_gtpu()`
+(a `#pragma unroll`ed extension-header walk), the `tunnel_rate` map update
+on every GTP-U packet, and grew the ring-buffer record from 24 to 32 bytes
+— xlated size went 6936 → 9896 bytes.
+
+**Re-measured, 2026-09-13**, on the native-Linux host (Linux 6.14,
+`test-environment.md`), by a different method: `bpftool prog run`
+(`BPF_PROG_TEST_RUN`) executes the loaded program in the kernel against a
+synthetic packet N times and reports the mean. Reproduce from the repo root
+with the program loaded at `/sys/fs/bpf/x` and the packets from
+`docs/paper-data/01-performance-benchmarks.md`'s companion snippet below:
+
+| Packet | repeat | Ring buffer state | ns/packet |
+|---|---|---|---|
+| GTP-U T-PDU, flags `0x34`, one ext header, 84-byte inner | 1,000 | live (every packet `submit`s) | 240 |
+| same | 4,000 | live | 188 |
+| same | 8,000 | filling (256 KB / 32 B = 8,192 records) | 236 |
+| same | 50,000 | full (observation dropped, cheap path) | 158 |
+| same | 1,000,000 | full | 141 |
+| SIP, port 5060 | 1,000,000 | full | 126 |
+| zero-filled UDP at port 2152 (fails GTP-U validation) | 1,000,000 | full | 128 |
+| UDP at an off-signaling port | 1,000,000 | full | 113 |
+
+**~190–240 ns per GTP-U packet with the ring buffer live, roughly 800× under
+the <0.2 ms design target.** The GTP-U parser plus the `tunnel_rate` map
+update cost about **15 ns** over the SIP path (141 vs 126 ns on the same
+cheap path), which is the number this section was left open to find.
+
+Read the two methods against each other honestly: the 2026-09-06 figure
+(735–821 ns) was `run_time_ns/run_cnt` over *live* traffic in WSL2 — cold
+maps, a real NIC driver path, and a userspace reader draining the ring —
+while `prog run` replays one packet with hot caches and no consumer, so it
+measures the program's own instructions rather than a deployment. Both
+answer the CLAUDE.md question the same way; neither is a sustained-load
+benchmark, which stays `ROADMAP.md` Phase 3.
+
+```sh
+# packets: Ethernet + IPv4 127.0.0.1 -> 127.0.0.7 + UDP; see the git history
+# of this file for the Python that built /tmp/pkt_*.bin
+sudo bpftool prog load bpf/packet_filter.o /sys/fs/bpf/x
+sudo bpftool prog run pinned /sys/fs/bpf/x data_in /tmp/pkt_gtpu.bin data_out /dev/null repeat 4000
+```
 **Read honestly:** `lo` has no native XDP driver, so this ran in
 `xdpgeneric` mode. `run_time_ns` measures time *inside the BPF program
 itself* (parse + classify + map lookups) — real and reproducible — but

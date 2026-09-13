@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
@@ -27,25 +28,43 @@ func TestThreatScoreWatcher_IsLeaderGated(t *testing.T) {
 // recordingBlocklist and recordingMesh are in-memory test doubles standing
 // in for pkg/ebpf.BlocklistUpdater and pkg/mesh.Adapter, so applyPolicy's
 // decisions can be asserted without a real kernel or Istio control plane.
-type recordingBlocklist struct{ blocked, unblocked []string }
+// Mutex-guarded because the real implementations are goroutine-safe (a map
+// syscall, a Kubernetes client) and stress_test.go drives them from many
+// goroutines at once; a double that isn't would report its own race as the
+// watcher's.
+type recordingBlocklist struct {
+	mu                 sync.Mutex
+	blocked, unblocked []string
+}
 
 func (r *recordingBlocklist) Block(ip net.IP) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.blocked = append(r.blocked, ip.String())
 	return nil
 }
 func (r *recordingBlocklist) Unblock(ip net.IP) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.unblocked = append(r.unblocked, ip.String())
 	return nil
 }
 func (r *recordingBlocklist) Close() error { return nil }
 
-type recordingMesh struct{ quarantined, released []string }
+type recordingMesh struct {
+	mu                    sync.Mutex
+	quarantined, released []string
+}
 
 func (r *recordingMesh) Quarantine(_ context.Context, namespace string, _ map[string]string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.quarantined = append(r.quarantined, namespace)
 	return nil
 }
 func (r *recordingMesh) Release(_ context.Context, namespace string, _ map[string]string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.released = append(r.released, namespace)
 	return nil
 }
@@ -324,5 +343,73 @@ func TestThreatScoreWatcher_WarmIndexSkipsPoliciesBeingDeleted(t *testing.T) {
 	}
 	if got := w.Index.MatchingPolicies(policy.Namespace, pod.Labels); len(got) != 0 {
 		t.Fatalf("a policy mid-deletion was resurrected into the index")
+	}
+}
+
+// Review finding, pinned: a sub-threshold score arriving while a policy is
+// Mitigating must not move it to Monitoring, because only tryDeEscalate
+// (which runs solely in Mitigating) ever unblocks. With the AI engine
+// scoring every event from every source on the Pod, that benign score
+// arrives within milliseconds of the block -- and used to orphan it.
+func TestApplyPolicy_BenignScoreDoesNotEndAMitigation(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, true, true)
+	pod := newTestPod(policy.Namespace, "amf-0")
+	w, blocklist, _ := newWatcherFixture(t, policy, pod)
+
+	attack := events.ThreatScoreEvent{Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "203.0.113.7", Score: 0.99}
+	if err := w.applyPolicy(context.Background(), policy, attack); err != nil {
+		t.Fatalf("applyPolicy (attack): %v", err)
+	}
+	var mitigating securityv1alpha1.TelecomSecurityPolicy
+	if err := w.Get(context.Background(), nnFor(policy), &mitigating); err != nil {
+		t.Fatal(err)
+	}
+	if mitigating.Status.Phase != securityv1alpha1.PolicyPhaseMitigating || len(blocklist.blocked) != 1 {
+		t.Fatalf("precondition: expected Mitigating with one block, got %s / %v", mitigating.Status.Phase, blocklist.blocked)
+	}
+
+	benign := events.ThreatScoreEvent{Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "198.51.100.9", Score: 0.05}
+	if err := w.applyPolicy(context.Background(), &mitigating, benign); err != nil {
+		t.Fatalf("applyPolicy (benign): %v", err)
+	}
+
+	var got securityv1alpha1.TelecomSecurityPolicy
+	if err := w.Get(context.Background(), nnFor(policy), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != securityv1alpha1.PolicyPhaseMitigating {
+		t.Fatalf("a benign score ended the mitigation: phase is %s, and nothing will ever unblock %v", got.Status.Phase, got.Status.BlockedSourceIPs)
+	}
+	if got.Status.ObservedThreatScore != "0.0500" {
+		t.Fatalf("the benign score should still be recorded, got %q", got.Status.ObservedThreatScore)
+	}
+	if len(got.Status.BlockedSourceIPs) != 1 {
+		t.Fatalf("BlockedSourceIPs = %v, want the original block retained for tryDeEscalate", got.Status.BlockedSourceIPs)
+	}
+}
+
+// ...but Alerting has no side effects to reverse, so it does return to
+// Monitoring on a benign score, as before.
+func TestApplyPolicy_BenignScoreDoesEndAlerting(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, false, true, true)
+	pod := newTestPod(policy.Namespace, "amf-0")
+	w, _, _ := newWatcherFixture(t, policy, pod)
+
+	if err := w.applyPolicy(context.Background(), policy, events.ThreatScoreEvent{Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "203.0.113.7", Score: 0.99}); err != nil {
+		t.Fatal(err)
+	}
+	var alerting securityv1alpha1.TelecomSecurityPolicy
+	if err := w.Get(context.Background(), nnFor(policy), &alerting); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.applyPolicy(context.Background(), &alerting, events.ThreatScoreEvent{Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "203.0.113.7", Score: 0.05}); err != nil {
+		t.Fatal(err)
+	}
+	var got securityv1alpha1.TelecomSecurityPolicy
+	if err := w.Get(context.Background(), nnFor(policy), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != securityv1alpha1.PolicyPhaseMonitoring {
+		t.Fatalf("expected Alerting -> Monitoring on a benign score, got %s", got.Status.Phase)
 	}
 }

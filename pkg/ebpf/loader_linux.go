@@ -3,7 +3,6 @@
 package ebpf
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -383,57 +382,75 @@ func (l *Loader) readSignalingEventsV6(ctx context.Context, reader *ringbuf.Read
 }
 
 // decodeSignalingEvent turns one raw signaling_events ring buffer record into
-// a SignalingEvent. Split out of readSignalingEvents purely so it can be
-// tested against a hand-built buffer: the struct-size assertions in
+// a SignalingEvent. Split out of readSignalingEvents so it can be tested
+// against a hand-built buffer: the struct-size assertions in
 // loader_linux_test.go prove the Go mirror is the right *length*, but nothing
 // proves the fields are in the right *order*, and TEID/TunnelRate are two
 // same-typed uint32s at the tail -- transposing them would be size-clean and
 // silent.
+//
+// Field offsets are spelled out rather than going through binary.Read on
+// rawSignalingEvent: this runs once per observed packet on every node, and
+// the reflection-based path cost ~176ns and four allocations per record --
+// as much as the XDP program itself (docs/paper-data/
+// 01-performance-benchmarks.md). rawSignalingEvent stays as the declared
+// mirror the size test checks; the offsets here are its layout, and
+// TestDecodeSignalingEventFieldOrder is what keeps the two agreeing.
 func (l *Loader) decodeSignalingEvent(sample []byte) (SignalingEvent, error) {
-	var raw rawSignalingEvent
-	if err := binary.Read(bytes.NewReader(sample), binary.LittleEndian, &raw); err != nil {
-		return SignalingEvent{}, err
+	if len(sample) < rawSignalingEventSize {
+		return SignalingEvent{}, fmt.Errorf("signaling_events record is %d bytes, want %d", len(sample), rawSignalingEventSize)
 	}
-
+	le := binary.LittleEndian
 	return SignalingEvent{
-		// raw.TimestampNs is nanoseconds since boot (bpf_ktime_get_ns());
-		// converting to int64 only overflows past ~292 years of uptime.
-		ObservedAt:  l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
-		SourceIP:    ipv4FromU32(raw.Saddr),
-		DestIP:      ipv4FromU32(raw.Daddr),
-		DestPort:    raw.DestPort,
-		PayloadSize: raw.PayloadSize,
-		Protocol:    SignalProtocol(raw.Protocol),
-		Malformed:   raw.Malformed != 0,
-		VLANID:      raw.VlanID,
-		TEID:        raw.TEID,
-		TunnelRate:  raw.TunnelRate,
+		// Nanoseconds since boot (bpf_ktime_get_ns()); converting to int64
+		// only overflows past ~292 years of uptime.
+		ObservedAt:  l.bootTime.Add(time.Duration(le.Uint64(sample[0:]))), // #nosec G115
+		SourceIP:    ipv4FromU32(le.Uint32(sample[8:])),
+		DestIP:      ipv4FromU32(le.Uint32(sample[12:])),
+		DestPort:    le.Uint16(sample[16:]),
+		PayloadSize: le.Uint16(sample[18:]),
+		Protocol:    SignalProtocol(sample[20]),
+		Malformed:   sample[21] != 0,
+		VLANID:      le.Uint16(sample[22:]),
+		TEID:        le.Uint32(sample[24:]),
+		TunnelRate:  le.Uint32(sample[28:]),
 	}, nil
 }
 
 // decodeSignalingEventV6 is decodeSignalingEvent's IPv6 counterpart.
 func (l *Loader) decodeSignalingEventV6(sample []byte) (SignalingEvent, error) {
-	var raw rawSignalingEventV6
-	if err := binary.Read(bytes.NewReader(sample), binary.LittleEndian, &raw); err != nil {
-		return SignalingEvent{}, err
+	if len(sample) < rawSignalingEventV6Size {
+		return SignalingEvent{}, fmt.Errorf("signaling_events_v6 record is %d bytes, want %d", len(sample), rawSignalingEventV6Size)
 	}
-
+	le := binary.LittleEndian
+	// The addresses are the raw 16 wire bytes (not a uint32 register value
+	// like the IPv4 saddr), so they are copied out as-is -- copied, not
+	// sliced, because sample is the ring buffer's memory and is reused.
+	src := make(net.IP, 16)
+	dst := make(net.IP, 16)
+	copy(src, sample[8:24])
+	copy(dst, sample[24:40])
 	return SignalingEvent{
-		ObservedAt: l.bootTime.Add(time.Duration(raw.TimestampNs)), // #nosec G115
-		// raw.Saddr/Daddr are already the raw 16 address bytes (not a
-		// uint32 register value like rawSignalingEvent.Saddr), so no
-		// byte-order round trip is needed the way ipv4FromU32 does one.
-		SourceIP:    net.IP(raw.Saddr[:]),
-		DestIP:      net.IP(raw.Daddr[:]),
-		DestPort:    raw.DestPort,
-		PayloadSize: raw.PayloadSize,
-		Protocol:    SignalProtocol(raw.Protocol),
-		Malformed:   raw.Malformed != 0,
-		VLANID:      raw.VlanID,
-		TEID:        raw.TEID,
-		TunnelRate:  raw.TunnelRate,
+		ObservedAt:  l.bootTime.Add(time.Duration(le.Uint64(sample[0:]))), // #nosec G115
+		SourceIP:    src,
+		DestIP:      dst,
+		DestPort:    le.Uint16(sample[40:]),
+		PayloadSize: le.Uint16(sample[42:]),
+		Protocol:    SignalProtocol(sample[44]),
+		Malformed:   sample[45] != 0,
+		VLANID:      le.Uint16(sample[46:]),
+		TEID:        le.Uint32(sample[48:]),
+		TunnelRate:  le.Uint32(sample[52:]),
 	}, nil
 }
+
+// rawSignalingEventSize/rawSignalingEventV6Size are the wire record sizes
+// the decoders above index against. Derived from the mirror structs (not
+// typed by hand) so the size tests guard these too.
+var (
+	rawSignalingEventSize   = binary.Size(rawSignalingEvent{})
+	rawSignalingEventV6Size = binary.Size(rawSignalingEventV6{})
+)
 
 // signalRateEntry is the Go mirror of bpf/packet_filter.c's
 // `struct signal_rate_entry` (window_start_ns + count), the shared value

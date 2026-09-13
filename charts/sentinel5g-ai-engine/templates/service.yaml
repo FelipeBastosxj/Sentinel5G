@@ -14,9 +14,13 @@ spec:
     app.kubernetes.io/name: {{ include "sentinel5g-ai-engine.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
   ports:
+    # `metrics` always exists (the ServiceMonitor scrapes it by name) and
+    # points at wherever /metrics actually lives for the configured mode --
+    # the dedicated prometheus_client server in nats mode, the FastAPI app
+    # in http mode. See "sentinel5g-ai-engine.metricsPort" in _helpers.tpl.
     - name: metrics
-      port: {{ .Values.config.metricsAddr | trimPrefix ":" | int }}
-      targetPort: metrics
+      port: {{ include "sentinel5g-ai-engine.metricsPort" . }}
+      targetPort: {{ if eq .Values.config.mode "http" }}http{{ else }}metrics{{ end }}
     {{- if eq .Values.config.mode "http" }}
     - name: http
       port: {{ .Values.config.httpAddr | trimPrefix ":" | int }}

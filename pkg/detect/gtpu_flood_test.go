@@ -228,3 +228,38 @@ func TestEvaluate_IsConcurrencySafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Invariant: the ring and the map stay in sync through evict / re-insert /
+// wrap-around, so a re-inserted tunnel is evicted only by genuine FIFO
+// pressure, never early by a leftover reference to its previous position.
+// This holds because claim() overwrites the ring slot at the moment it
+// evicts from it -- the reviewer who wrote this test first suspected a
+// stale-slot bug there, and this is the trace that shows there isn't one.
+func TestEvaluate_ReinsertedTunnelIsNotEvictedEarly(t *testing.T) {
+	now := time.Now()
+	d := NewGTPUFloodDetector(GTPUFloodConfig{
+		Enabled: true, PacketsPerSecond: 10, Cooldown: time.Hour, MaxTrackedTunnels: 3,
+	})
+	fire := func(teid uint32) bool {
+		evt := gtpuEvent(3000)
+		evt.TEID = teid
+		_, fired := d.Evaluate(evt, now)
+		return fired
+	}
+
+	fire(0x51) // slot 0
+	fire(0xA)  // slot 1
+	fire(0xB)  // slot 2
+	fire(0xC)  // slot 0: evicts K1 (correct)
+	if !fire(0x51) {
+		t.Fatal("re-firing an evicted tunnel should be reported again")
+	}
+	// K1 now lives in slot 1 (evicting A). Slot 0 still holds C.
+	// Next insert takes slot 2 (evicting B); the one after takes slot 0
+	// (evicting C). Neither may touch the live K1 in slot 1.
+	fire(0xD) // slot 2
+	fire(0xE) // slot 0
+	if fire(0x51) {
+		t.Fatal("the live K1 was evicted by a stale slot: it fired again inside its cooldown")
+	}
+}

@@ -274,8 +274,13 @@ every subscriber behind that gNB; detection is per tunnel, the drop is not
 (`ROADMAP.md` Phase 3).
 
 `ThreatScoreWatcher` calls `Block`/`Quarantine` but never `Unblock`/`Release`
-itself — a later low score only moves `Status.Phase` back to `Monitoring`,
-it does not restore traffic. Reversal instead happens automatically,
+itself, and a later low score does not touch a `Mitigating` policy's phase
+at all — only its `observedThreatScore`. (It used to flip the phase back to
+`Monitoring`, which was harmless while scores were rare and became a real
+bug once the AI engine scored every event from every source on the Pod: the
+benign score arrived milliseconds after the block, the phase left
+`Mitigating`, and since reversal only runs *in* `Mitigating`, the block was
+orphaned in the kernel forever.) Reversal instead happens automatically,
 separately, on a timer: `Reconciler.tryDeEscalate` unblocks/releases once a
 policy has gone `DeEscalationDwell` (`DE_ESCALATION_DWELL`, default 5m)
 without a *new* mitigation. This is a quiet-period timer on

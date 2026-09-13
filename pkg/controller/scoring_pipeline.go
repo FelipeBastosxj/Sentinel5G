@@ -55,10 +55,16 @@ type ScoringPipelineTracker struct {
 	// while Reconciler reads it from the controller's worker goroutines.
 	firstScoreUnixNano atomic.Int64
 
-	// startedAt anchors the grace period. Set at construction rather than at
-	// manager start, so an operator that takes a while to become leader
-	// doesn't get a grace period that starts late.
-	startedAt time.Time
+	// startedAt anchors the grace period. It is (re)set by MarkStarted when
+	// ThreatScoreWatcher.Start runs -- i.e. when this process actually
+	// becomes leader and subscribes -- NOT at construction. A standby
+	// replica (replicaCount > 1, or daemonset.enabled) may sit idle for
+	// hours before winning the lease; anchored at construction, the moment
+	// it did it would report NoThreatScoresReceived on every policy and
+	// emit a warning Event for each, then flip to True seconds later once
+	// the durable delivered. Construction still sets it, so a tracker used
+	// without a watcher (tests) has a sane anchor.
+	startedAt atomic.Int64
 
 	// Grace is how long to wait before reporting not-ready. Zero uses
 	// DefaultScoringPipelineGrace.
@@ -68,11 +74,18 @@ type ScoringPipelineTracker struct {
 	Now func() time.Time
 }
 
-// NewScoringPipelineTracker returns a tracker whose grace period starts now.
+// NewScoringPipelineTracker returns a tracker whose grace period starts now;
+// MarkStarted re-anchors it when the watcher actually subscribes.
 func NewScoringPipelineTracker(grace time.Duration) *ScoringPipelineTracker {
 	t := &ScoringPipelineTracker{Grace: grace}
-	t.startedAt = t.now()
+	t.MarkStarted()
 	return t
+}
+
+// MarkStarted (re)anchors the grace period at now. Called by
+// ThreatScoreWatcher.Start, once this process is leader and subscribed.
+func (t *ScoringPipelineTracker) MarkStarted() {
+	t.startedAt.Store(t.now().UnixNano())
 }
 
 func (t *ScoringPipelineTracker) now() time.Time {
@@ -103,16 +116,27 @@ func (t *ScoringPipelineTracker) EverScored() bool {
 	return t.firstScoreUnixNano.Load() != 0
 }
 
-// Status returns the condition reason to report and, while still inside the
-// grace period, how long remains -- so the caller can requeue and have the
-// condition flip on its own rather than waiting for an unrelated event to
-// trigger the next reconcile.
+// notReadyRecheck is how often a policy already reporting
+// NoThreatScoresReceived is re-evaluated. Nothing in the event stream wakes
+// a quiet policy's reconcile when the AI engine finally comes up -- the
+// watcher's status write only touches the policies whose Pods received a
+// score -- so without a requeue a policy with no traffic yet would keep its
+// False condition and warning Event until controller-runtime's resync
+// (10h by default). One reconcile a minute per not-ready policy is cheap;
+// it also writes nothing unless the condition actually changes.
+const notReadyRecheck = time.Minute
+
+// Status returns the condition reason to report and how long until it
+// should be re-evaluated (0 = no timer needed), so the caller can requeue
+// and have the condition flip on its own rather than waiting for an
+// unrelated event to trigger the next reconcile.
 func (t *ScoringPipelineTracker) Status() (reason string, retryAfter time.Duration) {
 	if t.EverScored() {
 		return ReasonScoresReceived, 0
 	}
-	if remaining := t.grace() - t.now().Sub(t.startedAt); remaining > 0 {
+	startedAt := time.Unix(0, t.startedAt.Load())
+	if remaining := t.grace() - t.now().Sub(startedAt); remaining > 0 {
 		return ReasonAwaitingFirstScore, remaining
 	}
-	return ReasonNoThreatScoresReceived, 0
+	return ReasonNoThreatScoresReceived, notReadyRecheck
 }

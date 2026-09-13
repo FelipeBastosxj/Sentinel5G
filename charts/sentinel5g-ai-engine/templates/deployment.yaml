@@ -75,11 +75,17 @@ spec:
                   key: password
             {{- end }}
           ports:
-            - name: metrics
-              containerPort: {{ .Values.config.metricsAddr | trimPrefix ":" | int }}
             {{- if eq .Values.config.mode "http" }}
+            # One port in http mode: the FastAPI app serves /v1/score,
+            # /healthz AND /metrics on httpAddr, and nothing listens on
+            # metricsAddr. Kubernetes rejects two entries with the same
+            # containerPort, so the Service's `metrics` port targets this
+            # one by name (see service.yaml).
             - name: http
               containerPort: {{ .Values.config.httpAddr | trimPrefix ":" | int }}
+            {{- else }}
+            - name: metrics
+              containerPort: {{ .Values.config.metricsAddr | trimPrefix ":" | int }}
             {{- end }}
           # The image's own HEALTHCHECK module, mode-aware: it probes /healthz
           # in http mode and the metrics server in nats mode, since the

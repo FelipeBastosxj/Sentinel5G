@@ -3,6 +3,7 @@
 package ebpf
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"strings"
@@ -222,5 +223,69 @@ func TestDecodeSignalingEventV6FieldOrder(t *testing.T) {
 	}
 	if evt.TunnelRate != 4096 {
 		t.Errorf("TunnelRate = %d, want 4096", evt.TunnelRate)
+	}
+}
+
+// The hand-written offsets in decodeSignalingEvent are the layout of
+// rawSignalingEvent. Round-tripping a fully populated mirror struct through
+// binary.Write and then the decoder is what keeps them equal: change one
+// without the other and a field lands in the wrong place here.
+func TestDecodeSignalingEvent_AgreesWithTheMirrorStruct(t *testing.T) {
+	raw := rawSignalingEvent{
+		TimestampNs: 123456789, Saddr: 0x0100007f, Daddr: 0x0700007f,
+		DestPort: 2152, PayloadSize: 100, Protocol: 1, Malformed: 1, VlanID: 99,
+		TEID: 0xdeadbeef, TunnelRate: 3001,
+	}
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.LittleEndian, raw); err != nil {
+		t.Fatal(err)
+	}
+	l := &Loader{bootTime: time.Unix(0, 0)}
+	evt, err := l.decodeSignalingEvent(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evt.ObservedAt.UnixNano() != 123456789 || evt.SourceIP.String() != "127.0.0.1" ||
+		evt.DestIP.String() != "127.0.0.7" || evt.DestPort != 2152 || evt.PayloadSize != 100 ||
+		evt.Protocol != SignalProtoGTPU || !evt.Malformed || evt.VLANID != 99 ||
+		evt.TEID != 0xdeadbeef || evt.TunnelRate != 3001 {
+		t.Fatalf("decoder disagrees with the mirror struct: %+v", evt)
+	}
+
+	raw6 := rawSignalingEventV6{
+		TimestampNs: 42, DestPort: 5060, PayloadSize: 7, Protocol: 2, VlanID: 3,
+		TEID: 0x11, TunnelRate: 0x22,
+	}
+	copy(raw6.Saddr[:], net.ParseIP("2001:db8::1").To16())
+	copy(raw6.Daddr[:], net.ParseIP("2001:db8::2").To16())
+	buf.Reset()
+	if err := binary.Write(&buf, binary.LittleEndian, raw6); err != nil {
+		t.Fatal(err)
+	}
+	evt6, err := l.decodeSignalingEventV6(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evt6.ObservedAt.UnixNano() != 42 || evt6.SourceIP.String() != "2001:db8::1" ||
+		evt6.DestIP.String() != "2001:db8::2" || evt6.DestPort != 5060 || evt6.PayloadSize != 7 ||
+		evt6.Protocol != SignalProtoSIP || evt6.VLANID != 3 || evt6.TEID != 0x11 || evt6.TunnelRate != 0x22 {
+		t.Fatalf("v6 decoder disagrees with the mirror struct: %+v", evt6)
+	}
+}
+
+// The v6 decoder must COPY the addresses out of the sample: the ring buffer
+// reuses that memory, so a slice into it would silently change under a
+// consumer holding the event.
+func TestDecodeSignalingEventV6_CopiesAddressesOutOfTheSample(t *testing.T) {
+	sample := make([]byte, 56)
+	copy(sample[8:], net.ParseIP("2001:db8::1").To16())
+	l := &Loader{bootTime: time.Unix(0, 0)}
+	evt, err := l.decodeSignalingEventV6(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample[8+15] = 0xff // The ring buffer moves on.
+	if evt.SourceIP.String() != "2001:db8::1" {
+		t.Fatalf("SourceIP aliased the ring buffer memory: now %s", evt.SourceIP)
 	}
 }
