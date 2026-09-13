@@ -34,25 +34,22 @@ at the end.
 
 ## 5.2 Container registry pulls (Docker Hub / GHCR)
 
-**Not applicable yet.** `release.yml` publishes images to
-`ghcr.io/felipebastosxj/sentinel5g-operator` and
-`ghcr.io/felipebastosxj/sentinel5g-ai-engine`, but only triggers on a
-`v*.*.*` tag push. Locally, `git tag` does list `v0.2.0`/`v0.3.0`/`v0.4.0`
-— but those point at commits from the legacy "EventStream" platform this
-repo was repurposed from (pre `2ecce23`, "chore: remove legacy
-event-ingestion platform"), not at any Sentinel5G release, and
-`git ls-remote --tags origin` confirms none of them were ever pushed to
-`origin` — so `release.yml` has never actually run. No image has been
-published to GHCR, and there is no Docker Hub target configured in the
-workflow at all — pulls can't be measured because no image exists to pull.
-If those stale tags aren't wanted for anything, they're local-only cleanup
-(`git tag -d v0.2.0 v0.3.0 v0.4.0`); left alone here since deleting tags
-wasn't asked for.
+**Superseded (2026-09-13).** An earlier draft of this section stated that
+`release.yml` had never run and that no image had been published. That
+was true at the 2026-09-06 snapshot and is not now: `v0.1.0`, `v0.2.0`,
+`v0.2.1` and `v0.2.2` are Sentinel5G releases pushed to `origin` (see
+`CHANGELOG.md`), `release.yml` publishes multi-arch images to both
+`ghcr.io/felipebastosxj/*` and Docker Hub, and
+`01-performance-benchmarks.md` §1.2 ran the `v0.1.0` images in-cluster.
+The packages whose pull counts can be captured are:
+`sentinel5g-operator`, `sentinel5g-ai-engine`, `sentinel5g-falco-bridge`,
+the two OCI charts under `charts/`, and — from the first release after
+`v0.2.2` — the trained model artifact `sentinel5g-model`.
 
-**Pending — next step:** once a first `v0.1.0`-style tag is cut, GHCR
-exposes pull counts under the package's own page
-(`github.com/FelipeBastosxj/Sentinel5G/pkgs/container/<name>`, or via `gh
-api /orgs/.../packages` / `/users/.../packages` for a personal account) —
+**Pending — next step:** GHCR exposes pull counts under each package's own
+page (`github.com/FelipeBastosxj/Sentinel5G/pkgs/container/<name>`, or via
+`gh api /users/FelipeBastosxj/packages`); Docker Hub under the repository
+page. Neither has been captured yet —
 periodic screenshots or API pulls of that page are the mechanism, same
 cadence consideration as the clone-traffic note above (GHCR's own download
 counters are cumulative-since-publish, so no retention window problem

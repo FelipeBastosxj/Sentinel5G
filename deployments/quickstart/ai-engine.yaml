@@ -9,8 +9,9 @@
 # ThreatScoreEvent. See docs/production-install.md step 3.
 #
 # This manifest is kept because it is the shortest path to a running engine
-# on a cluster you already have a model Secret for, and because
-# scripts/quickstart.sh's demo flow references it. It needs that Secret
+# on a cluster you already have a model Secret for (scripts/quickstart.sh
+# no longer uses it; SENTINEL5G_AI_ENGINE=true installs the chart). It
+# needs that Secret
 # created imperatively -- the artifacts are deliberately not committed:
 #
 #   kubectl create secret generic ai-engine-model -n sentinel5g-system \

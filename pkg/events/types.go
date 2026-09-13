@@ -22,7 +22,7 @@ const (
 )
 
 // NormalizedEvent is the common representation of a single capture-layer
-// observation after Fluent Bit/normalization (Layer 2), published on
+// observation after normalization by pkg/ingestion (Layer 2), published on
 // NATS_EVENTS_SUBJECT ("sentinel5g.events.normalized" by default).
 //
 // It intentionally carries a small, fixed set of fields: this is a

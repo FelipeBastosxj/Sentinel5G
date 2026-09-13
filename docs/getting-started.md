@@ -44,31 +44,41 @@ python scripts/export_onnx.py
 pytest
 ```
 
-This produces `models/autoencoder.onnx` and `models/autoencoder.norm.json`.
+This produces `models/autoencoder.onnx`, `.onnx.data` and
+`models/autoencoder.norm.json`. `generate_synthetic_dataset.py` fabricates
+traffic (it does not ship with, or claim to represent, real telecom
+captures) purely to exercise the pipeline end to end — see the module
+docstring and `docs/architecture.md`. The section below is what you
+actually want for a model worth scoring with.
 
 For an in-cluster deployment you don't have to train at all to get started:
 `charts/sentinel5g-ai-engine` pulls a published model artifact by default
 (`make ai-engine-train-real` is what builds it, from the committed real
-dataset). Train your own when you want a model of *your* traffic rather than
-one lab core's — see `docs/production-install.md` step 3.
-`generate_synthetic_dataset.py` fabricates traffic (it does not ship with,
-or claim to represent, real telecom captures) purely to exercise the
-pipeline end to end — see the module docstring and
-`docs/architecture.md`.
+datasets). Train your own when you want a model of *your* traffic rather
+than one lab core's — see `docs/production-install.md` step 3.
 
 ### Training against real captures instead
 
-`docs/paper-data/real-dataset/` bundles real GTP-U packet captures from a
-live Open5GS+UERANSIM 5G core (see that directory's README for exactly how
-they were produced, and its honestly-stated scope limits — single UE, no
-real SIP/SMPP, roughly one hour of wall-clock capture time). To train
-against those instead of synthetic data:
+`docs/paper-data/real-dataset/` and `docs/paper-data/real-dataset-v2/`
+bundle real GTP-U packet captures from live Open5GS+UERANSIM 5G cores (see
+each directory's README for exactly how they were produced and their
+stated scope limits — a single UE in the first, four in the second, no real
+SIP/SMPP in either, short sessions). To train against those instead of
+synthetic data — this is `make ai-engine-train-real`:
 
 ```sh
 python scripts/build_real_dataset.py
 python scripts/train.py --dataset data/real_dataset.npz --output models/autoencoder.pt
 python scripts/export_onnx.py --weights models/autoencoder.pt --dataset data/real_dataset.npz
 ```
+
+One thing `build_real_dataset.py` does that is easy to miss: it reads the
+`.pcap` files, not the `tcpdump` text dumps beside them (the dumps carry no
+payload bytes, so no GTP-U TEID), and it spreads each capture's time-of-day
+across 24h before feature extraction. Skip the second and you train a model
+that flags every packet captured at a different hour — measured in
+`docs/paper-data/02-ai-training-inference.md` §2.6, which is also why
+time-of-day is no longer a model feature at all.
 
 This overwrites the same `models/autoencoder.onnx` the server loads by
 default. See `docs/paper-data/02-ai-training-inference.md` for the
@@ -97,6 +107,9 @@ cd cmd/ai-engine
 AI_ENGINE_MODE=http python -m sentinel_ai.server
 curl -X POST localhost:8090/v1/score -H 'content-type: application/json' \
   -d '{"protocol":"SIP","destPort":5060,"payloadSize":256,"ratePerSecond":3000,"malformed":false}'
+# A tunneled GTP-U packet carries its tunnel identity too; for those the
+# per-source rate is ignored and tunnelRatePerSecond is what the model sees:
+#   {"protocol":"GTP-U","destPort":2152,"payloadSize":86,"ratePerSecond":3031,"teid":34632,"tunnelRatePerSecond":3001}
 ```
 
 ## 3. Run the operator against a local cluster
@@ -142,6 +155,27 @@ nats pub sentinel5g.threats.scored '{
 (`amf-0` must exist and carry `app: amf-service` for the watcher to match it
 against the sample policy — `kubectl label pod amf-0 app=amf-service -n telecom-core`.)
 
+That forged score exercises the operator's closed loop but skips the
+scoring half entirely. With the AI engine from step 2 running in NATS mode
+(`AI_ENGINE_MODE=nats`), publish a *NormalizedEvent* instead and let the
+model produce the score — this is the shape of a single GTP-U tunnel
+flooding at 3,000 pkt/s, the `docs/paper-data/real-dataset-v2/` scenario:
+
+```sh
+nats pub sentinel5g.events.normalized '{
+  "eventId": "demo-2", "observedAt": "2026-01-05T12:00:00Z",
+  "namespace": "telecom-core", "podName": "amf-0", "nodeName": "local",
+  "sourceIp": "203.0.113.7", "destIp": "10.0.0.1", "destPort": 2152,
+  "protocol": "GTP-U", "payloadSize": 86, "ratePerSecond": 3031,
+  "malformed": false, "vlanId": 0, "teid": 34632, "tunnelRatePerSecond": 3001
+}'
+kubectl get telecomsecuritypolicy -n telecom-core   # SCORING flips to True
+```
+
+The `SCORING` column is the `ScoringPipelineReady` condition: `False`
+means the operator is subscribed but no score has ever arrived — the AI
+engine isn't running, or has no model. See `docs/observability.md`.
+
 ## 4. Install via Helm -- an alternative to step 3, not a continuation of it
 
 This runs the operator in-cluster from the published image instead of via
@@ -155,14 +189,22 @@ first (this deletes any `TelecomSecurityPolicy` objects too) so Helm can
 create it fresh.
 
 ```sh
-helm lint charts/sentinel5g-operator
+make helm-lint   # both charts
 helm install sentinel5g charts/sentinel5g-operator --namespace sentinel5g-system --create-namespace \
   --set nats.url=nats://<your-nats-service>:4222 \
   --set nats.allowUnauthenticated=true  # only if that NATS instance genuinely has no auth -- see below
+helm install sentinel5g-ai-engine charts/sentinel5g-ai-engine --namespace sentinel5g-system \
+  --set nats.url=nats://<your-nats-service>:4222 \
+  --set nats.allowUnauthenticated=true
 ```
 
-See `charts/sentinel5g-operator/values.yaml` for the `ebpf.enabled` toggle
-and `docs/integrations.md` for what enabling it requires. The README's
+The AI engine chart pulls a published model artifact by default and
+refuses to install without a model source at all — see
+`docs/production-install.md` step 3 for that and for bringing your own via
+`model.existingSecret`. See `charts/sentinel5g-operator/values.yaml` for the
+`ebpf.enabled` toggle, `config.gtpuTunnelFlood` (the deterministic
+tunnel-flood detector, on by default) and `docs/integrations.md` for what
+enabling eBPF requires. The README's
 [Quick Start](../README.md#-quick-start) walks this same path end to end,
 including a minimal NATS instance and a demo workload to protect, if you
 just want to see it work rather than run it against your own cluster/NATS.

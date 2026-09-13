@@ -10,24 +10,27 @@ end.
 ```mermaid
 flowchart TD
     subgraph L1["Layer 1 — Kernel Capture (bpf/packet_filter.c)"]
-        A["XDP program on host NIC<br/>parses Eth/IPv4/UDP"]
+        A["XDP program on host NIC<br/>parses Eth/IPv4/UDP, and GTP-U (TS 29.281) on 2152"]
         A --> B{"Signaling port?<br/>2152 (GTP-U) / 5060 (SIP)"}
-        B -->|yes| C["signaling_events ring buffer<br/>(BPF_MAP_TYPE_RINGBUF)"]
-        B -->|"malformed UDP"| C
-        A --> D["signal_rate LRU map<br/>(per-source rate counter)"]
+        B -->|yes| C["signaling_events ring buffer<br/>(32-byte record: ..., teid, tunnel_rate)"]
+        B -->|"malformed UDP, or<br/>invalid GTP-U framing"| C
+        A --> D["signal_rate LRU map<br/>(per-source rate)"]
+        A --> D2["tunnel_rate LRU map<br/>(per source+TEID rate, carried in-band)"]
         A --> E["blocklist map<br/>(XDP_DROP on match)"]
     end
 
     subgraph L2["Layer 2 — Ingestion (pkg/ingestion, pkg/events)"]
         C --> F["Loader.SignalingEvents()<br/>(pkg/ebpf, cilium/ebpf/ringbuf)"]
         F --> G["PodIPIndex lookup<br/>(source IP → owning Pod)"]
-        G --> H["ingestion.Publisher<br/>(manager.Runnable)"]
+        G --> H["ingestion.Publisher<br/>(manager.Runnable, per node)"]
         H -->|"NATS: sentinel5g.events.normalized"| I[("NATS JetStream<br/>SENTINEL5G stream")]
+        H --> H2["pkg/detect: GTP-U tunnel-flood rule<br/>(tunnel_rate ≥ PPS, per TEID, cooldown)"]
+        H2 -->|"NATS: sentinel5g.threats.scored<br/>score 1.0, model rule:gtpu-tunnel-flood"| N
     end
 
     subgraph L3["Layer 3 — AI Engine (cmd/ai-engine)"]
         I --> J["NATS worker /<br/>HTTP POST /v1/score"]
-        J --> K["extract_features()<br/>12-dim feature vector"]
+        J --> K["extract_features()<br/>12-dim vector, no time-of-day;<br/>source rate zeroed for tunneled traffic"]
         K --> L["ONNX Runtime<br/>Autoencoder inference"]
         L --> M["ScoringEngine<br/>reconstruction error → score [0,1]"]
         M -->|"NATS: sentinel5g.threats.scored"| N[("NATS JetStream")]
@@ -37,10 +40,12 @@ flowchart TD
         N --> O["ThreatScoreWatcher"]
         O --> P{"score ≥ policy threshold?<br/>(BaseThreshold × sensitivityMultiplier)"}
         P -->|no| Q["Status.Phase = Monitoring"]
+        P -->|"yes, autoMitigate=false"| Q2["Status.Phase = Alerting<br/>threshold_crossings_total{outcome=alerting}"]
         P -->|"yes, autoMitigate=true"| R["EbpfBlock:<br/>push sourceIP to blocklist map"]
-        P -->|"yes, autoMitigate=true"| S["IsolatePod:<br/>Istio AuthorizationPolicy DENY"]
+        P -->|"yes, autoMitigate=true"| S["IsolatePod:<br/>mesh adapter DENY (Istio/Cilium/Linkerd)"]
         R --> E
-        P --> T["TelecomSecurityPolicy.status updated<br/>(observedThreatScore, lastMitigationTime)"]
+        P --> T["TelecomSecurityPolicy.status updated<br/>(phase, observedThreatScore, lastMitigationTime,<br/>ScoringPipelineReady condition)"]
+        O --> U["Prometheus: threat_scores_received_total,<br/>threat_score, mitigations_total, policy_phase"]
     end
 
     E -.->|"drops future packets<br/>from blocked source"| A
@@ -96,27 +101,37 @@ toolchain/stdlib CVEs, a real `cilium/ebpf` CVE (BTF parsing integer
 overflow, `0.15.0 → 0.22.0`, re-verified against a live XDP attach), 10
 known `onnx` CVEs, and an unsafe `torch.load` call (`weights_only=True`).
 
-### Kernel header strategy: UAPI vs. CO-RE (`vmlinux.h`) — open tradeoff, not yet resolved
-Current, deliberate choice (`docs/architecture.md`): `bpf/packet_filter.c`
-uses plain UAPI kernel headers rather than a generated `vmlinux.h`, so it
-builds against any recent kernel without first extracting BTF from the
-target host — lower friction for a reference implementation, at the cost
-of full portability across differing kernel struct layouts. `ROADMAP.md`
-Phase 1 lists switching to CO-RE (`BPF_CORE_READ()`) as explicit future
-work, not a bug — this is presented here as an engineering tradeoff being
-tracked, not something already fixed.
+### Kernel header strategy: a hand-maintained `vmlinux_min.h`, not UAPI and not full CO-RE
+An earlier revision of this section described `bpf/packet_filter.c` as
+building against plain UAPI kernel headers with a switch to CO-RE tracked
+as future work. That was true at the time and is stale now: since
+`ROADMAP.md` Phase 1 the program builds against
+`bpf/headers/vmlinux_min.h`, a small hand-maintained stand-in for a
+`bpftool btf dump`-generated `vmlinux.h`. The precise claim, because it's
+easy to overstate (`docs/architecture.md`): every struct the program reads
+is a wire-format type whose layout is fixed by its protocol — `ethhdr`,
+`iphdr`, `udphdr`, and since Phase 2.5 `gtpuhdr` (3GPP TS 29.281) — so
+CO-RE's relocation mechanism has nothing to protect and is deliberately
+not used. What the change bought was dropping the UAPI-header *and*
+host-BTF build dependencies, which is what lets the object build inside a
+plain `docker build` and get baked into the operator image.
 
-### Time-of-day bias — a design decision baked in from the start, not a later fix
-Worth being precise about, since it's easy to overstate: the synthetic
-dataset generator's normal-traffic sampling was written from the start to
-span the full 24h day uniformly, specifically to prevent the autoencoder
-from keying on "unusual hour" as *the* anomaly signal and drowning out the
-protocol/rate/malformed signals every other anomaly type is meant to be
-judged on (`generate_synthetic_dataset.py`'s own code comment states this
-reasoning directly). This is a documented design decision in the original
-implementation, not a bug discovered and patched in a later commit — no
-commit in this repo's history is titled or described as fixing a temporal
-bias regression.
+### Time-of-day bias — designed out of the synthetic pipeline, then found in the real one
+An earlier revision of this section said, correctly, that the synthetic
+generator's normal-traffic sampling spans the full 24h day precisely so the
+autoencoder cannot key on "unusual hour" as *the* anomaly signal, and that
+no commit had ever needed to fix a temporal-bias regression. The second
+half stopped being true on 2026-09-13. The real-capture pipeline
+(`build_real_dataset.py`) never applied the same treatment, every real
+capture is a single ~1h session, and the model trained on it scored 1.0 on
+every packet of a later capture taken eleven hours away — a 100%
+false-positive rate on any deployment whose traffic runs at a different
+hour from the training session. Spreading the real timestamps fixed the
+false positives and destroyed recall (the two features became
+unreconstructable noise); the features were removed. Full measurement in
+[`02-ai-training-inference.md`](02-ai-training-inference.md) §2.6.3. The
+design decision was right; it just had to be applied twice, and the record
+of it being applied only once is the more useful engineering note.
 
 ### README overclaims correction (`4a02bc2`)
 A self-correction pass worth citing precisely because it demonstrates the
@@ -125,4 +140,54 @@ standard this folder uses: removed a claim that the model trains on
 real-world telecom traffic (it's synthetic), reframed the `<0.2ms`/`2%`/
 `8ms` figures from implied benchmarks to explicit design targets
 consistent with `docs/observability.md`, and swapped an unverifiable "CNCF
-Sandbox Candidate" badge for an accurate one.
+Sandbox Candidate" badge for an accurate one. The first of those claims was
+later re-added on evidence rather than assertion: once `real-dataset/` and
+`real-dataset-v2/` existed and the release pipeline trained the published
+artifact from them, "trains on real GTP-U" became true, and the README says
+so with the captures' scope limits linked beside it.
+
+### Phase 2.5 decisions, sourced from the branch (`6927111`…`0a5c57b`)
+
+Each of these is a decision with a plausible alternative, recorded with why
+the alternative lost. Commit messages carry the full reasoning.
+
+- **Carry the per-tunnel rate inside the kernel's ring-buffer record rather
+  than look it up from userspace (`ff08d07`).** A userspace lookup races
+  the 1-second window roll and can return 1 for the very packet the kernel
+  counted as the three-thousandth — worst exactly during the flood the
+  counter exists to catch. The record grew 24 → 32 bytes, and `Attach` now
+  refuses an object without the `tunnel_rate` map so a stale `.o` fails
+  loudly instead of decoding every record at the wrong length.
+- **A rule, not a retune, for the in-tunnel flood (`6102a6d`).** The
+  measured anomaly reconstructed *better* than normal traffic (0.0679 vs
+  0.0811); no threshold on reconstruction error separates that. The rule
+  publishes an ordinary `ThreatScoreEvent` on the ordinary subject so it
+  cannot bypass policy — `ThreatScoreWatcher` has no branch for it at all.
+  On by default with the threshold's provenance stated, because a detector
+  shipped off closes nothing.
+- **The AI engine chart refuses to render without a model (`3e9f109`).**
+  The alternative — install, come up healthy, silently never score — was the
+  failure being fixed. CI asserts the refusal rather than trusting it.
+- **Refuse a wrong-width model at startup, not per event (`28e6a39`).**
+  Inside the NATS worker a shape mismatch was an exception, a nak, five
+  redeliveries and a dropped event, forever, with nothing naming the cause.
+- **Drop time-of-day from the model (`fd9210b`).** Found by measuring, not
+  by review: 100% false positives on a capture from another hour, and the
+  fix that kept the features (spreading timestamps) destroyed recall. See
+  the section above.
+- **Zero the per-source rate for tunneled traffic instead of removing it
+  (`95b9d27`).** Removing it took bystander false positives to 0 but blinded
+  the model to every untunneled storm (SIP, SMPP, off-port probes). Zeroing
+  it only where a tunnel rate exists kept both.
+- **Seed `PolicyIndex` from the cache before the score subscription
+  (`0a5c57b`).** Found on a real cluster by the e2e: after a rollout, every
+  score JetStream had buffered was matched against an empty index and
+  acked away. Unit tests could not have found it; the failure is an
+  ordering between two runnables and a durable consumer.
+- **Four defects found only by running the real thing.** Events rejected
+  by RBAC (`events.k8s.io` missing, so `EBPFAttachFailed` had never once
+  landed); `helm upgrade` not restarting the operator (no ConfigMap
+  checksum); a named `USER` in the AI engine image failing `runAsNonRoot`;
+  and two load generators (`iperf3 -B`, UERANSIM's `nr-binder`) that report
+  success while never entering the GTP-U tunnel. All four are the kind of
+  thing that looks fine in a template render and a unit test.

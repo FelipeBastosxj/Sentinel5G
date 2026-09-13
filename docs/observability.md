@@ -69,8 +69,10 @@ kubectl get tsp -A
 `SCORING` is the `ScoringPipelineReady` condition. `False` with reason
 `NoThreatScoresReceived` (see `kubectl describe tsp`) means the operator is
 subscribed to the threat-score subject but no score has *ever* arrived —
-almost always an AI engine that was never deployed, or one running without a
-model. `SCORING_PIPELINE_GRACE` (`config.scoringPipelineGrace`, default
+almost always an AI engine that was never deployed, one running without a
+model, or one crash-looping on a model of the wrong width (it refuses to
+start rather than fail per event; `kubectl logs` names the re-export
+command). `SCORING_PIPELINE_GRACE` (`config.scoringPipelineGrace`, default
 `10m`) is how long after startup it waits before saying so; inside that
 window the reason is `AwaitingFirstScore` instead.
 
@@ -93,6 +95,18 @@ wiring a `scrape_config` by hand (needs the `monitoring.coreos.com/v1`
 bounds how many replicas a node drain/cluster upgrade can evict at once —
 see `values.yaml`'s comment for why it defaults to `maxUnavailable: 1`
 rather than `minAvailable`.
+
+A `helm upgrade` that changes any `config.*`/`nats.*` value now rolls the
+operator Pod (a ConfigMap checksum annotation on the Deployment — before
+it, the new values landed in the ConfigMap and never took effect). One
+consequence: a rollout restarts the `SCORING_PIPELINE_GRACE` clock, so the
+condition briefly reads `AwaitingFirstScore` again.
+
+`charts/sentinel5g-ai-engine` mirrors all of this for the engine: an
+always-on `Service` (`<release>-sentinel5g-ai-engine`, port `metrics` →
+`config.metricsAddr`, `:9090` in NATS mode; plus `http` in HTTP mode),
+`serviceMonitor.enabled` with the same CRD guard, and
+`podDisruptionBudget.enabled` with the same `maxUnavailable` reasoning.
 
 ## AI engine metrics
 
@@ -149,6 +163,16 @@ Every automated mitigation is reflected onto the triggering
   automatically once `Reconciler.tryDeEscalate`'s quiet-period timer fires
   (`DE_ESCALATION_DWELL`, default 5m since the last mitigation, not since
   each individual IP), not just on deletion (see `docs/architecture.md`)
+- `status.conditions[ScoringPipelineReady]` — whether any score has ever
+  arrived (see "Is the scoring pipeline alive?" above); surfaced as the
+  `SCORING` column in `kubectl get tsp`
+
+Which detector produced a given score is in the `ThreatScoreEvent` itself:
+`model: "autoencoder-v1"` for the ML path, `model: "rule:gtpu-tunnel-flood"`
+for the deterministic detector (`docs/integrations.md`). The operator's
+structured log for the mitigation carries it, and
+`sentinel5g_threat_scores_received_total{source="model"|"rule"}` splits the
+two rates.
 
 ```sh
 kubectl get telecomsecuritypolicy -A -o wide

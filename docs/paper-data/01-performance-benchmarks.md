@@ -58,6 +58,16 @@ were confirmed still up both before and after.
 <0.2ms design target.** Two independent samples landed within 11% of each
 other, not a single fluke reading.
 
+**Dated, and pending re-measurement (2026-09-13):** this was the program
+*before* Phase 2.5 added `parse_gtpu()` (a `#pragma unroll`ed extension-
+header walk), the `tunnel_rate` map update on every GTP-U packet, and grew
+the ring-buffer record from 24 to 32 bytes — xlated size went 6936 → 9880
+bytes. The load path is intact and verified (verifier accepts it, max stack
+152 B), but per-packet cost has not been re-measured. The native-Linux lab
+(`test-environment.md`) now sustains ~125,000 pkt/s through one tunnel, so
+the next measurement can be taken at real rates rather than the ~60 pkt/s
+this one was, with `bpftool map dump` on `tunnel_rate` as the per-TEID
+counterpart of the `signal_rate` dump used above.
 **Read honestly:** `lo` has no native XDP driver, so this ran in
 `xdpgeneric` mode. `run_time_ns` measures time *inside the BPF program
 itself* (parse + classify + map lookups) — real and reproducible — but
@@ -79,10 +89,11 @@ in-cluster from their published images
 (`ghcr.io/felipebastosxj/sentinel5g-operator:v0.1.0` via the Helm chart;
 `sentinel5g-ai-engine:v0.1.0` via a new plain manifest,
 [`deployments/quickstart/ai-engine.yaml`](../../deployments/quickstart/ai-engine.yaml)
-— no Helm template for the AI engine exists yet, this fills that gap with
-the real model already trained locally delivered via a Secret, created
-imperatively per that file's own header comment rather than committing
-model bytes to the repo).
+— at the time no Helm template for the AI engine existed and this manifest
+filled that gap, with a locally trained model delivered via a hand-created
+Secret. Since Phase 2.5 the supported path is `charts/sentinel5g-ai-engine`
+with a published model artifact; the manifest is kept for the
+bring-your-own-Secret case only).
 
 Idle baseline: operator **1m CPU / 11Mi memory**; AI engine **~1m CPU / low
 double-digit Mi** (both negligible, as expected with no traffic).
@@ -119,11 +130,16 @@ numbers above are still real measurements taken during genuine load, just
 worth knowing this environment's restarts aren't evidence of an app-level
 resource leak or crash.
 
-**Still pending:** a higher-throughput load driver (the current harness's
-~60-70 msgs/s is far below NATS's own measured ceiling) and AI-engine
-request-level latency instrumentation
-(`docs/observability.md`'s tracked `prometheus-fastapi-instrumentator`
-gap) to get a real p50/p99 scoring latency, not just aggregate CPU/mem.
+**Partly resolved since:** the AI-engine request-level latency gap is
+closed — `sentinel5g_ai_score_latency_seconds` (ROADMAP.md Phase 2) records
+every `ScoringEngine.score_event`, in both run modes — and the operator now
+has its own decision-path metrics too (`docs/observability.md`). The
+higher-throughput load driver on the *bus* is still pending. Note, though,
+that the ~60-70 pkt/s figure this environment could push through a GTP-U
+tunnel turned out not to be an environment limit at all: the same tunnel
+on the native-Linux lab carries ~125,000 pkt/s from a real UDP generator
+(`test-environment.md`), so the harness in ROADMAP.md Phase 3 can be built
+against real rates rather than around WSL2.
 
 ## 1.3 NATS JetStream metrics: pub/sub latency and throughput
 
@@ -151,6 +167,9 @@ run above wasn't captured.
 this project's actual `sentinel5g.events.normalized`/`sentinel5g.threats.scored`
 traffic shape (small, infrequent JSON events, not a 50k-message flood).
 **Pending — next step:** repeat concurrently with a real signaling-storm
-burst from the Open5GS+UERANSIM core (§2.2/2.3 in the AI-training file) on
-the actual project subjects, so the measurement reflects this system's real
-event shape/rate instead of synthetic bench traffic alone.
+burst on the actual project subjects, so the measurement reflects this
+system's real event shape/rate instead of synthetic bench traffic alone.
+The burst now exists as a committed, reproducible artifact:
+`real-dataset-v2/multi_ue_one_flooding.pcap` (3,000 pkt/s through one
+tunnel) and the `gen_tunnel_flood.py` that produces it at any rate the lab
+supports.

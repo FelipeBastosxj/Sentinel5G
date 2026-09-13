@@ -12,8 +12,8 @@ definitions **must** be kept in lockstep by hand:
 
 | Subject (default)                    | Producer      | Consumer            | Payload            |
 |---------------------------------------|---------------|----------------------|---------------------|
-| `sentinel5g.events.normalized`        | `pkg/ingestion.Publisher` (Layer 2) | AI engine (`cmd/ai-engine`) | `NormalizedEvent`   |
-| `sentinel5g.threats.scored`           | AI engine     | Operator (`pkg/controller.ThreatScoreWatcher`) | `ThreatScoreEvent`  |
+| `sentinel5g.events.normalized`        | `pkg/ingestion.Publisher` (Layer 2); also `pkg/hubble.Observer` and `pkg/falco.Bridge` | AI engine (`cmd/ai-engine`) | `NormalizedEvent`   |
+| `sentinel5g.threats.scored`           | AI engine; also `pkg/detect` (inside the operator, via `pkg/ingestion.Publisher`) | Operator (`pkg/controller.ThreatScoreWatcher`), which also feeds `sentinel5g_threat_scores_received_total` and the `ScoringPipelineReady` condition from it | `ThreatScoreEvent`  |
 
 Both subjects live on a single JetStream stream (`SENTINEL5G` by default,
 `NATS_STREAM_NAME`), file-backed with a 24h retention limit — see
@@ -35,7 +35,7 @@ set of fields.
 | `sourceIp`        | string      | Source IPv4 or IPv6 address (see `bpf/packet_filter.c`'s parallel `*_v6` maps/ringbuf — IPv6 is a separate capture path, not a unified scheme, but both render into this same string field). |
 | `destIp`          | string      | Destination IPv4 or IPv6 address. |
 | `destPort`        | uint16      | Destination port. |
-| `protocol`        | enum        | One of `GTP-U`, `SIP`, `SMPP`, `HTTP2`, `PORT_SCAN`, `UNKNOWN`. `PORT_SCAN` is deliberately folded into the AI engine's `proto_unknown` one-hot feature (see `cmd/ai-engine/sentinel_ai/features.py`) rather than given its own feature dimension, to avoid changing `FEATURE_VECTOR_SIZE` and breaking the shipped ONNX model's input shape — it's still distinguishable from a genuinely unknown protocol via the other features (`payload_size_norm` in particular; see `payloadSize`'s note above). |
+| `protocol`        | enum        | One of `GTP-U`, `SIP`, `SMPP`, `HTTP2`, `PORT_SCAN`, `UNKNOWN`. `PORT_SCAN` is deliberately folded into the AI engine's `proto_unknown` one-hot feature (see `cmd/ai-engine/sentinel_ai/features.py`) rather than given its own feature dimension — changing `FEATURE_VECTOR_SIZE` invalidates every deployed model, so the vector's width is changed deliberately and rarely (it has been, twice, for features the model could not do without; see §2.5–2.6 of the AI document), not for a protocol that's already distinguishable from a genuinely unknown protocol via the other features (`payload_size_norm` in particular; see `payloadSize`'s note above). |
 | `payloadSize`     | uint32      | Signaling payload size in bytes, except for `protocol == "PORT_SCAN"`, where this instead carries the distinct-destination-port count that triggered the scan detection (see `bpf/packet_filter.c`'s `port_scan`/`track_port_scan()`). |
 | `ratePerSecond`   | float64     | eBPF-side rolling rate for this `(sourceIp, protocol)` tuple. See `tunnelRatePerSecond` below for why this one is not sufficient on its own. |
 | `malformed`       | bool        | True when the eBPF parser could not validate protocol framing. |
@@ -78,7 +78,7 @@ it by construction.
 
 ## `ThreatScoreEvent`
 
-Produced by the AI engine after scoring one or more `NormalizedEvent`s.
+Produced by the AI engine after scoring one or more `NormalizedEvent`s, or by a deterministic detector in `pkg/detect` (see `model`).
 
 | Field            | Type        | Notes |
 |-------------------|-------------|-------|
@@ -88,7 +88,7 @@ Produced by the AI engine after scoring one or more `NormalizedEvent`s.
 | `sourceIp`        | string      | Copied from the scored event. |
 | `score`           | float64     | Reconstruction-error-derived anomaly score, normalized to `[0.0, 1.0]`. |
 | `model`           | string      | Scoring model/version, e.g. `autoencoder-v1`. A **`rule:` prefix** means the score came from a deterministic, non-ML detector rather than the autoencoder (e.g. `rule:gtpu-tunnel-flood`). Everything else about the event — and the entire `ThreatScoreWatcher` path it drives — is identical for both, so a rule-sourced score goes through exactly the same policy/sensitivity/`autoMitigate` gating. |
-| `detectedAt`      | RFC3339 time | When the AI engine produced this score. |
+| `detectedAt`      | RFC3339 time | When the AI engine, or the detector, produced this score. |
 
 ## Feature vector (AI engine internal)
 
@@ -115,8 +115,9 @@ There is deliberately **no time-of-day feature**. `hour_sin`/`hour_cos`
 used to occupy indices 10-11 and were removed after producing a 100%
 false-positive rate on real traffic captured at a different hour from the
 training session — see `docs/paper-data/02-ai-training-inference.md` §2.6.
-`observedAt` is still on the wire (it drives the kernel's rate windows and
-is useful for correlation); it just doesn't reach the model.
+`observedAt` is still on the wire — it is the kernel's monotonic capture
+timestamp converted to wall-clock by `pkg/ebpf`, kept for correlation; it
+just doesn't reach the model.
 
 **Changing `FEATURE_VECTOR_SIZE` changes the shipped ONNX model's input
 shape**, so a model exported against a different width cannot be used. The

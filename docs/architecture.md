@@ -14,13 +14,15 @@ while the architecture scales to real telecom deployments.
                                           v (Event Stream)
 +-----------------------------------------------------------------------------------+
 |                          LAYER 2: INGESTION & PIPELINE                            |
-|              Fluent Bit / NATS JetStream ---> Normalization & Extraction          |
+|     pkg/ingestion (ring buffer -> NormalizedEvent) ---> NATS JetStream            |
+|     pkg/detect: deterministic GTP-U tunnel-flood rule, inline, per node           |
 +-----------------------------------------------------------------------------------+
                                           |
-                                          v (Feature Vector)
+                                          v (NormalizedEvent)
 +-----------------------------------------------------------------------------------+
 |                        LAYER 3: AI ENGINE / ANOMALY DETECTION                      |
 |              ONNX Runtime (Python) ---> Inference Engine (Autoencoder)            |
+|              charts/sentinel5g-ai-engine + a published model artifact             |
 +-----------------------------------------------------------------------------------+
                                           |
                                           v (Threat Score)
@@ -37,8 +39,8 @@ while the architecture scales to real telecom deployments.
 | Kernel & Capture      | C/eBPF, Falco, Cilium                                | High-performance in-kernel capture of GTP-U/SIP/HTTP2 (5G SBA) traffic with no meaningful per-packet latency penalty. |
 | Inference & AI Engine | Python, PyTorch, ONNX Runtime                       | Lightweight, low-latency inference. The model trains in PyTorch and is exported to ONNX for production inference. |
 | Controller/Operator   | Go, controller-runtime (Kubebuilder patterns)       | Native Kubernetes reconciliation of `TelecomSecurityPolicy` CRDs, managed via `kubectl`. |
-| Pipeline & Messaging  | NATS JetStream                                      | Real-time telemetry/threat-score transport between the capture and inference layers. |
-| Security & CI/CD      | Cosign, Syft (SBOM), GitHub Actions, Trivy           | SAST, SBOM generation, and container signing for every published image. |
+| Pipeline & Messaging  | NATS JetStream                                      | Real-time telemetry/threat-score transport between the capture and inference layers. `pkg/detect` (Go) runs beside it: the one anomaly class the autoencoder provably cannot separate is caught by a rule, on the same event stream, feeding the same subject. |
+| Security & CI/CD      | Cosign, Syft (SBOM), GitHub Actions, Trivy           | SAST, SBOM generation, and keyless signing for every published image, both Helm charts (OCI) and the trained model artifact. |
 
 ## Component responsibilities
 
@@ -47,17 +49,21 @@ while the architecture scales to real telecom deployments.
 `bpf/packet_filter.c` is an XDP program attached at a telecom-facing pod's
 host network interface. It inspects Ethernet/IPv4/UDP headers looking for
 GTP-U (port 2152) and SIP (port 5060) traffic without requiring a sidecar in
-every pod. A single 802.1Q VLAN tag is transparently unwrapped before this
+every pod — and, for port 2152, parses the GTP-U header itself
+(`parse_gtpu()`, 3GPP TS 29.281) rather than trusting the port; see
+"Per-tunnel (per-TEID) rate" below. A single 802.1Q VLAN tag is transparently unwrapped before this
 inspection (the tagged frame's real EtherType/IPv4 header is parsed the same
 as an untagged one), with the VLAN ID carried through to
 `signaling_events` — QinQ (double-tagged, `0x88a8`) frames are not unwrapped
-and fall through unparsed, same as any other unhandled EtherType. It maintains a coarse per-source-IP signaling-rate counter
-(storm detection) and consults a `blocklist` BPF map populated exclusively
+and fall through unparsed, same as any other unhandled EtherType. It
+maintains a coarse per-source-IP signaling-rate counter (storm detection), a
+per-`(source, TEID)` tunnel-rate counter for GTP-U, and consults a
+`blocklist` BPF map populated exclusively
 by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
 at the kernel/NIC level.
 
 IPv6 traffic is inspected through a parallel set of maps (`blocklist_v6`,
-`signal_rate_v6`, `scan_rate_v6`, `port_scan_v6`) and a separate ring buffer
+`signal_rate_v6`, `scan_rate_v6`, `tunnel_rate_v6`, `port_scan_v6`) and a separate ring buffer
 (`signaling_events_v6`) rather than a unified 128-bit-capable scheme on the
 IPv4 ones — this keeps every IPv4 map/key/wire-struct byte-for-byte
 unchanged by IPv6 support existing, at the cost of near-duplicate
@@ -141,7 +147,8 @@ sensitivity tier, and `autoMitigate` gating as an ML score. A detection-only
 pilot stays detection-only.
 
 A second, separate detector (`port_scan`/`track_port_scan()`) closes exactly
-that gap: it tracks a bounded, deduplicated set of the *distinct*
+the low-and-slow multi-port gap `scan_rate` leaves (described above the
+per-tunnel section): it tracks a bounded, deduplicated set of the *distinct*
 destination ports each source has touched within a longer 30-second window
 (`MULTIPORT_SCAN_WINDOW_NS`), and emits once a source crosses
 `MULTIPORT_SCAN_THRESHOLD` distinct ports — a classic low-and-slow scan
@@ -209,6 +216,25 @@ exported ONNX graph is what actually serves inference
 (`sentinel_ai/server.py`, via `onnxruntime`), keeping the production
 dependency surface — and the Python GIL — out of the hot path.
 
+The feature vector is 12 wide (`docs/event-model.md` lists it) and
+deliberately carries no time-of-day: every real capture this project has
+is a single short session, and a model that could see the hour learned it
+as *the* anomaly signal and flagged 100% of traffic captured at another
+hour (`docs/paper-data/02-ai-training-inference.md` §2.6). For tunneled
+GTP-U the per-source rate is zeroed and the tunnel's own rate speaks
+instead, so innocent subscribers behind a flooding gNB don't score as
+anomalous (§2.6.5). `ScoringEngine` refuses at startup a model whose ONNX
+input width doesn't match — a stale model would otherwise fail per event,
+inside the NATS worker's redelivery loop, forever.
+
+In-cluster it is deployed by `charts/sentinel5g-ai-engine`, separate from
+the operator's chart because it scales separately. The chart pulls a
+published, signed model artifact by default (trained in the release
+pipeline from the committed captures), accepts `model.existingSecret`
+instead, and refuses to render with neither — a deployment with no model
+comes up healthy and silently never scores, which is the failure
+`ROADMAP.md` Phase 2.5 was about.
+
 ### Layer 4 — Orchestration & automation (`pkg/controller`, `pkg/ebpf`, `pkg/mesh`)
 
 The `TelecomSecurityPolicy` CRD (`api/v1alpha1`) declares which workloads a
@@ -223,6 +249,29 @@ scored threats, matches them against active policies, and — when a policy's
 
 Both actions are independent: a cluster without a service mesh can still run
 with `ebpfBlock: true, isolatePod: false`, and vice versa.
+
+A crossing that `autoMitigate: false` withholds moves the policy to
+`Phase: Alerting`, not `Degraded` — a working detection-only pilot, and
+each one increments `sentinel5g_threshold_crossings_total{outcome="alerting"}`
+so the pilot's false-positive rate is a number (`docs/observability.md`).
+`Degraded` is reserved for a mesh or eBPF action actually failing.
+
+Every policy also carries a `ScoringPipelineReady` condition (the `SCORING`
+column in `kubectl get tsp`): whether *any* score has ever arrived. It
+exists because the AI engine is a separate deployment and its absence is
+otherwise indistinguishable from a healthy, quiet cluster — every policy
+just sits at `Monitoring`. It is "ever", not a liveness rate, on purpose:
+quiet is the normal state of a network under no attack.
+
+Scores come from two producers on the same subject and go through the same
+gating: the autoencoder (`model: "autoencoder-v1"`) and the deterministic
+GTP-U tunnel-flood rule in `pkg/detect` (`model: "rule:gtpu-tunnel-flood"`,
+run per node inside `pkg/ingestion.Publisher`). `ThreatScoreWatcher` has no
+branch for the difference, which is the design: a rule cannot bypass
+policy. What a mitigation acts on is still the *source IP* — on a real N3
+interface that is the gNB's, so an eBPF block for one flooding tunnel drops
+every subscriber behind that gNB; detection is per tunnel, the drop is not
+(`ROADMAP.md` Phase 3).
 
 `ThreatScoreWatcher` calls `Block`/`Quarantine` but never `Unblock`/`Release`
 itself — a later low score only moves `Status.Phase` back to `Monitoring`,

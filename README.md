@@ -10,8 +10,8 @@
 
 ## 💡 Key Features
 
-* **Kernel-Level Visibility (eBPF):** Non-intrusive packet and event inspection for 3GPP/SIP/SMPP protocols at the XDP/TC layer.
-* **AI-Driven Anomaly Detection:** Machine learning inference engine (ONNX Runtime) that learns a per-workload signaling baseline and flags deviations as zero-day candidates. The published model trains on **real** GTP-U captured from a live Open5GS+UERANSIM core ([`docs/paper-data/real-dataset/`](docs/paper-data/real-dataset/README.md)) — read that directory's stated scope limits before treating it as a model of your own network. Paired with an explicit non-ML detector for the one anomaly class the autoencoder provably cannot catch; the measurement is in [`docs/paper-data/02-ai-training-inference.md`](docs/paper-data/02-ai-training-inference.md) §2.5.
+* **Kernel-Level Visibility (eBPF):** Non-intrusive packet and event inspection for 3GPP/SIP/SMPP protocols at the XDP/TC layer — including parsing the GTP-U header itself (3GPP TS 29.281) to rate traffic **per tunnel (TEID)**, which is what tells one flooding subscriber apart from the gNB every subscriber shares.
+* **AI-Driven Anomaly Detection:** Machine learning inference engine (ONNX Runtime) that learns a per-workload signaling baseline and flags deviations as zero-day candidates. The published model trains on **real** GTP-U captured from a live Open5GS+UERANSIM core ([`docs/paper-data/real-dataset/`](docs/paper-data/real-dataset/README.md)) — read that directory's stated scope limits before treating it as a model of your own network. Paired with an explicit non-ML detector for the one anomaly class the autoencoder provably cannot catch; the measurement is in [`docs/paper-data/02-ai-training-inference.md`](docs/paper-data/02-ai-training-inference.md) §2.5–§2.6.
 * **Closed-Loop Automation:** Automated network isolation and eBPF-level packet dropping triggered instantly upon anomaly detection.
 * **Kubernetes-Native:** Full declarative control via custom CRDs (`TelecomSecurityPolicy`).
 * **Zero-Trust Telecom Architecture:** Aligned with CISA and NIST guidelines for U.S. Critical Infrastructure Security.
@@ -43,7 +43,9 @@ already-published `ghcr.io/felipebastosxj/*:v0.2.2` images — no local Go/Pytho
 build required. Verified end to end against a real k3s cluster; see
 [`docs/getting-started.md`](docs/getting-started.md) for the deeper walkthrough
 that runs every layer (real eBPF capture + the AI engine) instead of hand-
-publishing the AI engine's output like step 3 below does.
+publishing the AI engine's output like step 3 below does. `scripts/quickstart.sh`
+can do the real thing too (`SENTINEL5G_AI_ENGINE=true`, which CI's e2e runs)
+from the first release that publishes the model artifact.
 
 Images are published to [GHCR](https://github.com/FelipeBastosxj?tab=packages)
 and, from the next tagged release on, also to [Docker
@@ -79,9 +81,9 @@ kind/network/RBAC friction, not code.
   --set profile=demo -y`. Without it, step 3 still reaches `Phase:
   Mitigating`, it just won't produce a real 403.
 
-The chart itself is published as an OCI artifact (`helm install sentinel5g
+Both charts are published as OCI artifacts (`helm install sentinel5g
 oci://ghcr.io/felipebastosxj/charts/sentinel5g-operator --version 0.2.2`,
-no `helm repo add` needed) but this walkthrough also uses other files from
+likewise `.../charts/sentinel5g-ai-engine`; no `helm repo add` needed) but this walkthrough also uses other files from
 the repo (the demo NATS/workload manifests, the sample policy) — clone it
 first; every command below is run from its root:
 
@@ -143,7 +145,24 @@ Within a few seconds, the policy shows real automated mitigation:
 
 ```sh
 kubectl get telecomsecuritypolicy -n telecom-core protect-amf-core
-# Phase: Mitigating   Score: 0.9300
+# NAME               PHASE        SCORE    SCORING   AGE
+# protect-amf-core   Mitigating   0.9300   True      1m
+```
+
+`SCORING` is whether a score has *ever* arrived — with the AI engine
+missing it reads `False` after a grace period, which is the difference
+between "quiet cluster" and "half the system was never deployed". To run
+the real scoring half instead of publishing its output by hand, install
+the AI engine chart (it pulls a published model artifact by default and
+refuses to install without a model source) and publish a
+`NormalizedEvent` for it to score — `docs/getting-started.md` step 3, or
+`SENTINEL5G_AI_ENGINE=true ./scripts/quickstart.sh` once a release has
+published `sentinel5g-model`:
+
+```sh
+helm install sentinel5g-ai-engine charts/sentinel5g-ai-engine --namespace sentinel5g-system \
+  --set nats.url=nats://nats.default.svc.cluster.local:4222 \
+  --set nats.allowUnauthenticated=true
 ```
 
 and — if Istio is installed — the same `curl` that returned `200` a moment
@@ -159,7 +178,7 @@ kubectl exec -n telecom-core attacker -- curl -s -o /dev/null -w '%{http_code}\n
 ### Cleanup
 
 ```sh
-helm uninstall sentinel5g -n sentinel5g-system
+helm uninstall sentinel5g sentinel5g-ai-engine -n sentinel5g-system
 kubectl delete namespace sentinel5g-system telecom-core
 kubectl delete -f deployments/quickstart/nats.yaml
 ```
@@ -169,7 +188,9 @@ kubectl delete -f deployments/quickstart/nats.yaml
 ## 📊 Design Targets
 
 These are the latency/overhead budgets the architecture is designed around,
-**not** measured benchmarks — no load-testing harness is wired into CI yet.
+**not** measured benchmarks — no sustained-load harness is wired into CI
+yet (a one-off in-program XDP cost of ~0.8µs/packet was measured before the
+GTP-U parser existed; `docs/paper-data/01-performance-benchmarks.md`).
 See [`docs/observability.md`](docs/observability.md) for how they're intended
 to be measured and tracked, and [`ROADMAP.md`](ROADMAP.md) for the harness
 that will validate them under sustained load.

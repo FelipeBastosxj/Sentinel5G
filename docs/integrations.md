@@ -38,16 +38,29 @@ have two options:
    Cilium should use this *instead of* attaching `packet_filter.c`, not
    alongside it — running both against the same real traffic would
    double-count every signaling packet as two separate `NormalizedEvent`s.
+
+   **What the Hubble and Falco paths cannot see, stated so it isn't
+   assumed:** neither produces a GTP-U TEID or a per-tunnel rate. Hubble
+   reports L3/L4 five-tuples and endpoint identity, never the tunnel header
+   inside the UDP payload; Falco traces syscalls, never payload bytes. Both
+   emit `teid: 0` — the schema's explicit "no tunnel identity" sentinel —
+   and so `pkg/detect`'s GTP-U tunnel-flood rule can never fire on their
+   events, by construction (tests in both packages pin it). On a real N3
+   interface every subscriber shares the gNB's source IP, so those two
+   paths see aggregate load per gNB and nothing finer; only the standalone
+   XDP path parses GTP-U (`docs/architecture.md`, "Per-tunnel rate"). Pick
+   the capture path knowing which detections come with it.
    `HUBBLE_TLS_CA_FILE`/`HUBBLE_TLS_CERT_FILE`/`HUBBLE_TLS_KEY_FILE`
    configure mTLS to Hubble Relay, commonly deployed that way — see
    [Cilium's Hubble TLS docs](https://docs.cilium.io/en/stable/observability/hubble/configuration/#tls-configuration).
 
    **Verification note**: this integration was NOT verified against a live
-   Hubble/Cilium deployment. This project's real WSL2 test cluster (see
-   the persistent session memory referenced from `CLAUDE.md`) runs
-   flannel, not Cilium, as its CNI, and installing Cilium there would risk
-   breaking the Istio/NATS/Open5GS environment already relied on for other
-   testing. What *was* verified instead: an in-process gRPC server
+   Hubble/Cilium deployment. Neither of this project's test environments
+   (`docs/paper-data/test-environment.md`) runs Cilium: the original WSL2
+   cluster ran flannel, and the native-Linux lab that replaced it runs the
+   5G core on loopback with no Kubernetes CNI in the path at all, so there
+   is still no Hubble Relay to test against without standing one up
+   specifically. What *was* verified instead: an in-process gRPC server
    implementing the real `observer.ObserverServer` interface
    (`google.golang.org/grpc/test/bufconn`, not a real network listener),
    exercised end-to-end through the actual generated
@@ -116,8 +129,11 @@ delivered on the real subject, confirmed by directly subscribing to it) and
 inside a real built `docker build`/`docker run` container (`HEALTHCHECK`
 reports `"Status":"healthy"` against a live NATS connection). What was
 *not* verified is a live Falco daemon's own alerts flowing through it —
-this WSL2 environment's custom kernel doesn't reliably support Falco's own
-kernel-module/eBPF probe. The HTTP contract itself (Falco's long-stable,
+the WSL2 environment used at the time had a custom kernel that didn't
+reliably support Falco's own kernel-module/eBPF probe. The native-Linux lab
+that replaced it (`docs/paper-data/test-environment.md`, kernel 6.14) has
+no such limitation; running a real Falco daemon there is the obvious next
+verification and hasn't been done yet. The HTTP contract itself (Falco's long-stable,
 widely-integrated JSON output schema) is the part carrying the residual
 risk; this is the same kind of explicit, honest caveat this page already
 carries for `LinkerdAdapter`'s real-traffic-enforcement gap below.
@@ -212,7 +228,9 @@ chart's `values.yaml`) drops all Linux capabilities, so:
   fails, classifying *why* (missing object, insufficient capability, unknown
   interface, or unrecognized) via `pkg/ebpf.ClassifyAttachError` — see
   `docs/troubleshooting.md#ebpf` — so a misconfigured capability set
-  degrades to mesh-only isolation instead of crash-looping the operator, and
+  degrades to mesh-only isolation instead of crash-looping the operator
+  (that Event needs the `events.k8s.io` RBAC rule the current chart grants;
+  before it, every Event the operator recorded was silently rejected), and
   the cause shows up in the log instead of a bare error string. It's also
   recorded as an `EBPFAttachFailed` Kubernetes Event against the operator's
   own Pod (via the `POD_NAME`/`POD_NAMESPACE` Downward API env vars the
@@ -268,7 +286,10 @@ or `ThreatScoreEvent` on it. Since `ThreatScoreWatcher.handle` trusts every
 message on `NATS_THREATS_SUBJECT` unconditionally, an unauthenticated bus
 reachable from outside the cluster is a real way to trigger a live mitigation
 (`EbpfBlock`/`IsolatePod`) against any workload a policy protects, by
-publishing a few lines of forged JSON.
+publishing a few lines of forged JSON — and a forged `score: 1.0` with
+`model: "rule:..."` clears even the most conservative sensitivity tier by
+design, since that is exactly what `pkg/detect` relies on. The threshold is
+not a control against this; the bus's authentication is.
 
 `pkg/config.Load()` (the operator) and `sentinel_ai/config.py`'s
 `require_nats_credentials_if_unauthenticated_disallowed` (the AI engine,
@@ -295,11 +316,51 @@ has an opt-in one built in: `networkPolicy.nats.enabled: true` plus
 doesn't deploy NATS itself, see `nats.url`'s comment in `values.yaml`) renders
 a `NetworkPolicy` allowing ingress on `networkPolicy.nats.port` only from the
 operator's own Pods and whatever's listed in
-`networkPolicy.nats.additionalClients` (e.g. the AI engine's selector).
+`networkPolicy.nats.additionalClients` — for the AI engine chart that is
+`podSelector: {matchLabels: {app.kubernetes.io/name: sentinel5g-ai-engine}}`.
+Note the operator is itself a *publisher* on the threats subject now too
+(`pkg/detect` runs inside it), so the two clients are both bidirectional.
 Rendering refuses with an explicit error if `enabled: true` is set without a
 `podSelector` — an empty one would match every Pod in NATS's namespace, not
 just NATS.
 
+## Deterministic GTP-U tunnel-flood detection
+
+`pkg/detect` is a rule, not a model, and it ships on by default
+(`config.gtpuTunnelFlood.enabled`, `GTPU_TUNNEL_FLOOD_ENABLED`). It exists
+because a real in-tunnel flood at the rates a lab tunnel could produce
+reconstructed *better* than normal traffic under the autoencoder — no
+threshold on the model's score separates them
+(`docs/paper-data/02-ai-training-inference.md` §2.4–§2.5). The rule fires
+when one GTP-U tunnel's own rate crosses `config.gtpuTunnelFlood.
+packetsPerSecond` (`GTPU_TUNNEL_FLOOD_PPS`, default 1,000), at most once
+per tunnel per `cooldown` (default 30s).
+
+Three things worth knowing before tuning it:
+
+- It publishes an ordinary `ThreatScoreEvent` (score `1.0`,
+  `model: "rule:gtpu-tunnel-flood"`) on the ordinary subject, so it is
+  subject to exactly the same policy matching, sensitivity and
+  `autoMitigate` gating as an ML score. A detection-only pilot stays
+  detection-only.
+- Per *tunnel*, not per source. On a real N3 a per-source threshold would
+  have to sit above the combined load of every subscriber on the gNB —
+  the aggregation that hides a single-tunnel flood in the first place.
+  Measured on four subscribers sharing one gNB
+  (`docs/paper-data/real-dataset-v2/`): keyed per TEID it names the one
+  flooding tunnel; keyed per source it names the gNB.
+- The default threshold is reasoned, not tuned to a production N3. The
+  same lab tunnel sustains ~125,000 pkt/s, so 1,000 is reachable by an
+  attacker by orders of magnitude and is conservative, not unreachable;
+  the honest number for your network comes from watching
+  `sentinel5g_threshold_crossings_total` during a detection-only pilot.
+
+The mitigation it triggers is still keyed by source IP — on a real N3 that
+is the gNB, i.e. every subscriber behind it. Making the *action* as precise
+as the detection needs a TEID-keyed drop path in eBPF; that is
+`ROADMAP.md` Phase 3.
+
 ## Observability
 
-See `docs/observability.md` for metrics and dashboards.
+See `docs/observability.md` for metrics, the shadow-mode false-positive
+counter, and the `ScoringPipelineReady` condition.
