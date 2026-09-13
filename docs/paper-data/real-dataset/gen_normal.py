@@ -20,8 +20,8 @@ while time.time() < end:
             subprocess.run(
                 [
                     # -W 1: the tunnel's default gateway never replies (known
-                    # WSL2-kernel TUN quirk, see memory/wsl2_real_test_
-                    # environment.md) -- without a short wait timeout, ping's
+                    # WSL2-kernel TUN quirk, see
+                    # ../test-environment.md) -- without a short wait timeout, ping's
                     # default ~10s post-send linger for a reply that will
                     # never come dominates the run, starving packet volume.
                     "ping", "-I", "uesimtun0", "-c", str(count),

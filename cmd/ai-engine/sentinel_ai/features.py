@@ -7,7 +7,6 @@ the wire schema shared between the Go operator/eBPF side and this service.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping
@@ -23,11 +22,32 @@ FEATURE_NAMES = [
     "malformed",
     "dest_port_signaling",
     "dest_port_norm",
-    "hour_sin",
-    "hour_cos",
     "tunnel_rate_norm",
     "has_teid",
 ]
+
+# hour_sin/hour_cos -- a cyclical time-of-day encoding, meant as an
+# "off-hours activity" signal -- used to sit between dest_port_norm and
+# tunnel_rate_norm. They were removed on the strength of a measurement, not
+# a preference (docs/paper-data/02-ai-training-inference.md §2.6):
+#
+# Every real capture this project has is a single session spanning about an
+# hour of wall-clock. Trained on that raw, the autoencoder learned "was this
+# packet captured during my training hour" as THE dominant signal and scored
+# 1.0000 on 5,000/5,000 packets of well-behaved traffic from a second
+# capture, purely because it was taken eleven hours later -- a 100%
+# false-positive rate on any deployment whose traffic happens at a different
+# time of day, which is all of them. Spreading the training timestamps
+# across 24h (what the synthetic generator already did) fixed that but turned
+# the two features into pure noise the model cannot reconstruct, which
+# inflated the normalization's reference error ~17x and compressed every
+# real anomaly's score below the production thresholds. No real capture
+# carries any time-of-day information to learn, and the "off-hours scan"
+# shape only ever existed in the synthetic generator's imagination. A
+# feature with no supporting data and two demonstrated failure modes is a
+# liability, so it is gone; a future capture with a real diurnal baseline
+# would be the evidence to bring it back on.
+
 
 FEATURE_VECTOR_SIZE = len(FEATURE_NAMES)
 
@@ -121,9 +141,6 @@ def extract_features(event: NormalizedEvent) -> list[float]:
     payload_norm = min(max(event.payload_size, 0), _MAX_PAYLOAD_BYTES) / _MAX_PAYLOAD_BYTES
     rate_norm = min(max(event.rate_per_second, 0.0), _MAX_RATE_PER_SECOND) / _MAX_RATE_PER_SECOND
 
-    hour = event.observed_at.hour + event.observed_at.minute / 60.0
-    hour_angle = 2 * math.pi * hour / 24.0
-
     tunnel_norm = (
         min(max(event.tunnel_rate_per_second, 0.0), _MAX_TUNNEL_RATE_PER_SECOND)
         / _MAX_TUNNEL_RATE_PER_SECOND
@@ -135,8 +152,6 @@ def extract_features(event: NormalizedEvent) -> list[float]:
         1.0 if event.malformed else 0.0,
         1.0 if event.dest_port in _SIGNALING_PORTS else 0.0,
         min(max(event.dest_port, 0), 65535) / 65535.0,
-        math.sin(hour_angle),
-        math.cos(hour_angle),
         tunnel_norm,
         # has_teid earns its own dimension independently of tunnel_rate_norm.
         # Until the kernel parsed GTP-U headers, "protocol" was asserted from

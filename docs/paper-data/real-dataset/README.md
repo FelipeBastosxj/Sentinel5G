@@ -1,7 +1,7 @@
 # Real-dataset-at-scale captures (ROADMAP.md Phase 1)
 
 Captured 2026-09-07 against the live Open5GS+UERANSIM core in
-`memory/wsl2_real_test_environment.md`'s WSL2 environment, superseding the
+`../test-environment.md`'s WSL2 environment, superseding the
 original `docs/paper-data/normal.pcap`/`storm.pcap` pair (30/618 packets,
 one shape each) with materially more volume and traffic-shape variety.
 
@@ -57,6 +57,10 @@ being carried through the pipeline as well-formed GTP-U.
   variance across this dataset (unlike the synthetic generator, which
   deliberately spans the full 24h day). This is an accurate reflection of
   what a single real capture session produces, not a bug to paper over.
+  **Update, 2026-09-13:** it was, however, a bug in the resulting model —
+  trained on this, it learned the capture hour as *the* anomaly signal and
+  scored 1.0 on every packet of a later capture. Those two features no
+  longer exist; see `../02-ai-training-inference.md` §2.6.
 
 Raw `tcpdump -r <pcap> -tt -n` text dumps (`<name>_raw.txt`) accompany each
 pcap, same convention as the original `normal_raw.txt`/`storm_raw.txt`.

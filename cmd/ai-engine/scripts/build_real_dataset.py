@@ -1,7 +1,7 @@
 """Builds a real-traffic training/eval dataset from the packet captures under
 docs/paper-data/real-dataset/ (see that directory's README for how each
 capture was produced — a live Open5GS+UERANSIM core in WSL2, per
-memory/wsl2_real_test_environment.md), replacing
+docs/paper-data/test-environment.md), replacing
 scripts/generate_synthetic_dataset.py's synthetic distributions with real,
 on-wire GTP-U traffic wherever the current pipeline can actually produce it.
 
@@ -116,8 +116,14 @@ def tunnel_rate_series(packets: list[Packet]) -> list[int]:
     return counts
 
 
+_SECONDS_PER_DAY = 24 * 60 * 60
+
+
 def events_from_capture(
-    path: Path, protocol: str, dest_port_override: int | None
+    path: Path,
+    protocol: str,
+    dest_port_override: int | None,
+    spread_time_of_day: random.Random | None = None,
 ) -> list[NormalizedEvent]:
     """Turns one committed capture into NormalizedEvents the way the
     production path would.
@@ -125,6 +131,20 @@ def events_from_capture(
     `malformed` is no longer a caller-supplied label: it is whatever
     pcap_gtpu's mirror of the kernel's own GTP-U validation decided, so this
     script can no longer assert framing the wire doesn't support.
+
+    `spread_time_of_day`, when given, re-stamps each event's absolute
+    time-of-day uniformly across 24h AFTER the rate windows have been
+    computed from the real timestamps. This is the same treatment
+    generate_synthetic_dataset.py's _random_time_of_day has always applied
+    to synthetic normal traffic, and for exactly the reason its docstring
+    gives: a capture session spans one hour of wall-clock, so trained on it
+    raw, the autoencoder learns "wrong time of day" as THE anomaly signal.
+    That is not hypothetical -- see docs/paper-data/02-ai-training-inference.md
+    §2.6: the model trained without this scored 1.0000 on 5,000/5,000
+    packets of well-behaved traffic from a second capture, purely because it
+    was taken eleven hours later. The relative timing (which drives every
+    rate feature) is untouched; only the hour_sin/hour_cos inputs change.
+    Pass None to keep the capture's real timestamps, e.g. for scoring.
     """
     packets = read_udp_packets(path)
     if not packets:
@@ -134,6 +154,11 @@ def events_from_capture(
 
     events = []
     for packet, rate, tunnel_rate in zip(packets, rates, tunnel_rates):
+        observed_at = datetime.fromtimestamp(packet.timestamp, tz=timezone.utc)
+        if spread_time_of_day is not None:
+            observed_at = observed_at.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) + timedelta(seconds=spread_time_of_day.uniform(0, _SECONDS_PER_DAY))
         events.append(
             NormalizedEvent(
                 protocol=protocol,
@@ -143,7 +168,7 @@ def events_from_capture(
                 payload_size=packet.payload_size,
                 rate_per_second=float(rate),
                 malformed=packet.malformed,
-                observed_at=datetime.fromtimestamp(packet.timestamp, tz=timezone.utc),
+                observed_at=observed_at,
                 teid=packet.teid,
                 tunnel_rate_per_second=float(tunnel_rate),
             )
@@ -182,33 +207,73 @@ def build(real_dataset_dir: Path, seed: int = 42) -> tuple[np.ndarray, np.ndarra
     # Reproducible sampling (kernel-malformed timestamp jitter), not a security context.
     rng = random.Random(seed)  # nosec B311
 
+    # Every real capture gets its time-of-day spread -- see
+    # events_from_capture's docstring. Applied to the anomalous captures too,
+    # not just normal: there is no evidence about time-of-day for any real
+    # category here, so leaving hour_sin/hour_cos as pure noise for all of
+    # them is the honest encoding, and it is what lets the model learn to
+    # ignore those two features rather than learning a capture schedule.
     normal_events = events_from_capture(
         real_dataset_dir / "real_normal.pcap",
         protocol="GTP-U",
         dest_port_override=2152,
+        spread_time_of_day=rng,
     )
+    # The multi-UE baseline from real-dataset-v2/ (four subscribers, four
+    # TEIDs, one gNB source IP) joins the normal set so "normal" is no longer
+    # defined by a single tunnel's shape. See real-dataset-v2/README.md.
+    v2_dir = real_dataset_dir.parent / "real-dataset-v2"
+    if (v2_dir / "multi_ue_normal.pcap").exists():
+        normal_events += events_from_capture(
+            v2_dir / "multi_ue_normal.pcap",
+            protocol="GTP-U",
+            dest_port_override=2152,
+            spread_time_of_day=rng,
+        )
 
     anomalous_events: list[NormalizedEvent] = []
     anomalous_events += events_from_capture(
         real_dataset_dir / "real_storm_pingflood.pcap",
         protocol="GTP-U",
         dest_port_override=2152,
+        spread_time_of_day=rng,
     )
     anomalous_events += events_from_capture(
         real_dataset_dir / "real_storm_udpflood.pcap",
         protocol="GTP-U",
         dest_port_override=2152,
+        spread_time_of_day=rng,
     )
     anomalous_events += events_from_capture(
         real_dataset_dir / "real_malformed.pcap",
         protocol="GTP-U",
         dest_port_override=2152,
+        spread_time_of_day=rng,
     )
     anomalous_events += events_from_capture(
         real_dataset_dir / "real_scan.pcap",
         protocol="UNKNOWN",
         dest_port_override=None,  # keep each packet's real (random) dest port
+        spread_time_of_day=rng,
     )
+    if (v2_dir / "multi_ue_one_flooding.pcap").exists():
+        # Three of the four tunnels in this capture are behaving normally --
+        # that is the entire point of the scenario -- so only the flooding
+        # tunnel's packets are anomalous. Labelling the bystanders as
+        # anomalous would teach the model that being on the same gNB as an
+        # attacker is itself an anomaly, which is exactly the per-source
+        # aggregation error the per-TEID work exists to undo.
+        flooding = events_from_capture(
+            v2_dir / "multi_ue_one_flooding.pcap",
+            protocol="GTP-U",
+            dest_port_override=2152,
+            spread_time_of_day=rng,
+        )
+        counts: dict[int, int] = {}
+        for e in flooding:
+            counts[e.teid] = counts.get(e.teid, 0) + 1
+        flooding_teid = max(counts, key=counts.get)
+        anomalous_events += [e for e in flooding if e.teid == flooding_teid]
 
     all_ts = [e.observed_at for e in normal_events + anomalous_events]
     kernel_malformed_count = max(

@@ -88,6 +88,15 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
 - Both Helm charts are now published as OCI artifacts on release (the
   existing job became a matrix), and `make helm-lint`/`helm-template` cover
   both.
+- `docs/paper-data/real-dataset-v2/`: multi-UE captures from a native-Linux
+  Open5GS + UERANSIM lab (`docs/paper-data/test-environment.md`, which also
+  replaces the dangling `memory/wsl2_real_test_environment.md` references
+  six files carried). Four subscribers on one gNB, one flooding at
+  3,000 pkt/s -- the first data on which per-TEID keying can be shown to
+  name the flooding subscriber where per-source keying names the gNB.
+  Includes `gen_tunnel_flood.py`, a `SO_BINDTODEVICE` flood generator,
+  because both `iperf3 -B` and UERANSIM's `nr-binder` silently bypass the
+  tunnel on this topology.
 
 ### Changed
 - **Breaking for a mixed deployment:** `struct signaling_event` grew from 24
@@ -102,13 +111,25 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   short to read. Traffic that is not protocol-conformant GTP-U but aimed at
   the GTP-U port -- a plain UDP flood against the N3 socket, for instance --
   is reclassified accordingly.
-- **Breaking for any deployed model:** `FEATURE_VECTOR_SIZE` went 12 -> 14
-  (`tunnel_rate_norm`, `has_teid`), which changes the ONNX graph's input
-  shape. Every existing `autoencoder.onnx` must be re-exported. The AI engine
-  now refuses to start against a mismatched model instead of failing per
-  event -- in NATS worker mode that was an exception log, a nak, five
-  redeliveries and a silently dropped event, repeated forever, with nothing
-  saying the model was simply the wrong shape.
+- **Breaking for any deployed model:** the feature vector changed twice in
+  this cycle and is back at 12 wide, but a *different* 12: `tunnel_rate_norm`
+  and `has_teid` are in, and `hour_sin`/`hour_cos` are out. The removal is
+  a measured decision, not a cleanup -- trained on single-session real
+  captures, the two time-of-day features made the model score 1.0 on
+  every packet of traffic captured at a different hour, a 100%
+  false-positive rate on any real deployment
+  (`docs/paper-data/02-ai-training-inference.md` §2.6). Every existing
+  `autoencoder.onnx` must be re-exported; the AI engine now refuses to start
+  against a mismatched model instead of failing per event -- in NATS worker
+  mode that was an exception log, a nak, five redeliveries and a silently
+  dropped event, repeated forever, with nothing saying the model was simply
+  the wrong shape.
+- `build_real_dataset.py` spreads each real capture's time-of-day across
+  24h before feature extraction (the treatment the synthetic generator
+  always applied), and now folds in the multi-UE captures. Retrained: ROC
+  AUC 0.9449 -> 0.9829, recall 0.69-0.73 -> 0.91-0.92 at every tier, zero
+  false positives on a capture from a different day, and the ML path
+  catches a real 3,000 pkt/s in-tunnel flood for the first time.
 - **Breaking-ish default:** the operator and the AI engine
   (`AI_ENGINE_MODE=nats`) now refuse to start against a NATS bus with no
   auth/TLS configured, unless `NATS_ALLOW_UNAUTHENTICATED=true`
