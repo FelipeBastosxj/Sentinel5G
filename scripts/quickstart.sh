@@ -29,6 +29,18 @@ DEMO_NAMESPACE="telecom-core"
 OPERATOR_IMAGE="${SENTINEL5G_OPERATOR_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-operator:v0.2.2}"
 KIND_LOAD_IMAGES="${SENTINEL5G_KIND_LOAD_IMAGES:-}"
 
+# Deploy the real AI engine (charts/sentinel5g-ai-engine) and drive the
+# mitigation from a real score, instead of forging a ThreatScoreEvent onto
+# NATS. Off by default until the first release that publishes the model
+# artifact the chart pulls (ghcr.io/.../sentinel5g-model) -- with the
+# published-image defaults below, enabling it before then would just
+# ImagePullBackOff. CI enables it against images built from the PR
+# (.github/workflows/e2e.yml), so the end-to-end test exercises Layer 3 for
+# real either way. Flip the default to true when that release lands.
+WITH_AI_ENGINE="${SENTINEL5G_AI_ENGINE:-false}"
+AI_ENGINE_IMAGE="${SENTINEL5G_AI_ENGINE_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-ai-engine:v0.2.2}"
+MODEL_IMAGE="${SENTINEL5G_MODEL_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-model:v0.2.2}"
+
 # ANSI colors, disabled automatically when not writing to a real terminal
 # (CI logs, piping to a file) so output stays readable either way.
 if [ -t 1 ]; then
@@ -418,11 +430,43 @@ info "Confirming the demo workload is reachable before any mitigation fires..."
 BEFORE=$(kubectl exec -n "$DEMO_NAMESPACE" attacker -- curl -s -o /dev/null -w '%{http_code}' http://amf-0 || true)
 echo "  amf-0 responded: $BEFORE"
 
-# --- 7. Simulate an attack -----------------------------------------------------
-step "Simulating an attack (publishing a real ThreatScoreEvent over NATS)"
-kubectl run nats-box --rm -i --restart=Never --image=natsio/nats-box:latest --namespace="$DEMO_NAMESPACE" -- \
-  nats pub sentinel5g.threats.scored '{"sourceEventId":"quickstart-1","namespace":"telecom-core","podName":"amf-0","sourceIp":"203.0.113.7","score":0.93,"model":"autoencoder-v1","detectedAt":"2026-01-05T12:00:00Z"}' \
-  --server nats://nats.default.svc.cluster.local:4222 >/dev/null
+# --- 7. AI engine (optional, see WITH_AI_ENGINE above) -------------------------
+if [ "$WITH_AI_ENGINE" = "true" ]; then
+  step "Installing the Sentinel5G AI engine (Helm), with its model artifact"
+  # The image-pull-policy overrides matter only for kind-loaded local images;
+  # for published images they're the chart's own defaults anyway.
+  helm upgrade --install sentinel5g-ai-engine charts/sentinel5g-ai-engine \
+    --namespace "$NAMESPACE" \
+    --set image.repository="${AI_ENGINE_IMAGE%:*}" \
+    --set image.tag="${AI_ENGINE_IMAGE##*:}" \
+    --set model.image.repository="${MODEL_IMAGE%:*}" \
+    --set model.image.tag="${MODEL_IMAGE##*:}" \
+    --set nats.url=nats://nats.default.svc.cluster.local:4222 \
+    --set nats.allowUnauthenticated=true \
+    --wait --timeout=180s
+  ok "AI engine deployed; the model was delivered by the chart's initContainer"
+fi
+
+# --- 8. Simulate an attack -----------------------------------------------------
+if [ "$WITH_AI_ENGINE" = "true" ]; then
+  # A NormalizedEvent shaped like a single GTP-U tunnel flooding at
+  # 3,000 pkt/s -- the docs/paper-data/real-dataset-v2/ scenario. Nothing
+  # here is a score: the AI engine has to consume this, run the model, and
+  # publish the ThreatScoreEvent itself for the operator to act on. That is
+  # the whole Layer 1 -> 2 -> 3 -> 4 loop, minus only the kernel probe.
+  step "Simulating an attack (publishing a NormalizedEvent for the AI engine to score)"
+  kubectl run nats-box --rm -i --restart=Never --image=natsio/nats-box:latest --namespace="$DEMO_NAMESPACE" -- \
+    nats pub sentinel5g.events.normalized '{"eventId":"quickstart-1","observedAt":"2026-01-05T12:00:00Z","namespace":"telecom-core","podName":"amf-0","nodeName":"kind","sourceIp":"203.0.113.7","destIp":"10.0.0.1","destPort":2152,"protocol":"GTP-U","payloadSize":86,"ratePerSecond":3031,"malformed":false,"vlanId":0,"teid":34632,"tunnelRatePerSecond":3001}' \
+    --server nats://nats.default.svc.cluster.local:4222 >/dev/null
+else
+  # Without the AI engine there is nothing to score, so the ThreatScoreEvent
+  # is forged directly -- this exercises the operator's closed loop but NOT
+  # the scoring half. See WITH_AI_ENGINE at the top of this file.
+  step "Simulating an attack (publishing a forged ThreatScoreEvent over NATS)"
+  kubectl run nats-box --rm -i --restart=Never --image=natsio/nats-box:latest --namespace="$DEMO_NAMESPACE" -- \
+    nats pub sentinel5g.threats.scored '{"sourceEventId":"quickstart-1","namespace":"telecom-core","podName":"amf-0","sourceIp":"203.0.113.7","score":0.93,"model":"autoencoder-v1","detectedAt":"2026-01-05T12:00:00Z"}' \
+    --server nats://nats.default.svc.cluster.local:4222 >/dev/null
+fi
 
 step "Waiting for the operator to close the loop (Phase -> Mitigating)"
 for _ in $(seq 1 30); do
@@ -438,6 +482,25 @@ if [ "$PHASE" = "Mitigating" ]; then
   ok "Success -- TelecomSecurityPolicy protect-amf-core is now Phase: Mitigating"
 else
   info "Still Phase: ${PHASE:-<none>} after 30s -- check 'kubectl get events -n $DEMO_NAMESPACE' if this doesn't move to Mitigating shortly."
+  # In CI a loop that didn't close is a failure, not a hint. Locally the
+  # cluster is left up for the user to look at, so the script keeps going.
+  if [ -n "${CI:-}" ]; then
+    kubectl get telecomsecuritypolicy protect-amf-core -n "$DEMO_NAMESPACE" -o yaml || true
+    exit 1
+  fi
+fi
+
+if [ "$WITH_AI_ENGINE" = "true" ]; then
+  # With a real engine the policy's own status must say the scoring pipeline
+  # is alive -- it is the signal the whole chart/model work exists for.
+  SCORING=$(kubectl get telecomsecuritypolicy protect-amf-core -n "$DEMO_NAMESPACE" \
+    -o jsonpath='{.status.conditions[?(@.type=="ScoringPipelineReady")].status}' 2>/dev/null || true)
+  if [ "$SCORING" = "True" ]; then
+    ok "ScoringPipelineReady=True -- the score that fired came from the AI engine, not a forged event"
+  else
+    info "ScoringPipelineReady is '${SCORING:-<unset>}' -- the AI engine did not report a score"
+    [ -n "${CI:-}" ] && exit 1
+  fi
 fi
 
 # The commands printed below have to work when pasted into the user's own
@@ -461,6 +524,7 @@ ${BOLD}Look around:${RESET}
   $kubectl_hint get telecomsecuritypolicy -n $DEMO_NAMESPACE -w
   $kubectl_hint get pods -A
   $kubectl_hint logs -n $NAMESPACE deploy/sentinel5g-operator
+  $kubectl_hint get telecomsecuritypolicy -A   # the SCORING column: is the AI engine alive?
 
 ${BOLD}Tear down when done:${RESET}
   $kind_hint delete cluster --name $CLUSTER_NAME

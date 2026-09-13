@@ -328,12 +328,20 @@ open.
       `(saddr, TEID)`-keyed drop map in `bpf/packet_filter.c`, a TEID on the
       `ThreatScoreEvent`, a new action on the CRD, and the same
       finalizer/de-escalation plumbing the IP blocklist has.
-- [ ] **Wire the AI engine into `scripts/quickstart.sh`'s e2e.** The script
-      publishes a forged `ThreatScoreEvent` straight onto NATS to trigger
-      mitigation, so CI's end-to-end test has never actually exercised
-      Layer 3. Now that a model artifact and a chart exist, it can install
-      the real thing instead — pending the first release that publishes
-      `sentinel5g-model`, since the quickstart runs from published images.
+- [x] **Wire the AI engine into `scripts/quickstart.sh`'s e2e.** Done:
+      `SENTINEL5G_AI_ENGINE=true` installs `charts/sentinel5g-ai-engine`
+      and publishes a *NormalizedEvent* (a 3,000 pkt/s tunnel-flood shape)
+      instead of a forged score, so the AI engine has to score it for the
+      loop to close; the script then asserts `ScoringPipelineReady=True`.
+      `.github/workflows/e2e.yml` builds all three images from the PR --
+      training the model from the committed dataset the same way
+      `release.yml` does -- so CI's end-to-end test now runs Layer 3 for
+      real. Off by default for a plain `./scripts/quickstart.sh` until the
+      first release publishes `sentinel5g-model`; the forged-event path
+      stays as the fallback. Running it found a real operator bug: after a
+      restart, `ThreatScoreWatcher` consumed the scores JetStream had
+      buffered before `PolicyIndex` was populated, and dropped every one of
+      them silently. `Start` now seeds the index from the cache first.
 - [ ] Multi-cluster policy propagation.
 - [ ] Load-testing harness for the <0.2ms/packet and mitigation-latency
       targets in `docs/observability.md`. Also where to settle two open
