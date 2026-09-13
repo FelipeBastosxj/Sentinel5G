@@ -16,7 +16,7 @@ the targets as if they were measurements.
 
 **What is actually proven today (functional correctness, not latency):**
 the WSL2 real-world validation round (2026-09-06, see
-`memory/wsl2_real_test_environment.md`) attached `bpf/packet_filter.o` for
+`test-environment.md`) attached `bpf/packet_filter.o` for
 real to the host's `eth0` and sent a genuine 500+500 UDP packet burst on
 port 2152 (GTP-U) and port 5060 (SIP) from the Windows host across the
 WSL2 boundary. `bpftool map dump` on the `signal_rate` LRU map confirmed
@@ -114,7 +114,7 @@ roughly 75-second cadence, a containerd/CNI-level event, not an
 application crash (exit code 0, no panic/error in the logs each time). This
 is WSL2 network-stack instability (the same `cni0` bridge already noted
 going link-down elsewhere this session — see
-`memory/wsl2_real_test_environment.md`), not a Sentinel5G bug. The CPU/mem
+`test-environment.md`), not a Sentinel5G bug. The CPU/mem
 numbers above are still real measurements taken during genuine load, just
 worth knowing this environment's restarts aren't evidence of an app-level
 resource leak or crash.

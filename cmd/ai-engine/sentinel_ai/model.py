@@ -19,7 +19,7 @@ class Autoencoder(nn.Module):
 
     Normal telecom signaling traffic is assumed to lie on a low-dimensional
     manifold the encoder learns to reconstruct cheaply; anomalous traffic
-    (signaling storms, malformed protocol framing, off-hours scanning)
+    (signaling storms, malformed protocol framing, port scanning)
     reconstructs poorly, and that reconstruction error is the raw anomaly
     signal turned into a threat score by sentinel_ai.server.ScoringEngine.
     """

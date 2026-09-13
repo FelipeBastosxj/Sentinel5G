@@ -291,16 +291,36 @@ open.
 
 ## Phase 3 — Scale & multi-cluster
 
-- [ ] **A multi-UE capture, and a non-WSL2 throughput ceiling.** Both halves
-      of what Phase 2.5's detection work could not validate, and they need
-      the same lab. Every committed capture is single-UE and therefore
-      single-TEID (verified by parsing, pinned by
-      `cmd/ai-engine/tests/test_gtpu_parse.py`), so per-TEID keying's actual
-      purpose — isolating one flooding subscriber among many sharing the
-      gNB's source IP — is argued architecturally and not yet measured. And
-      the in-tunnel flood ceiling of ~63 pkt/s is a property of WSL2's
-      tunnel, not of what an attacker can sustain, which is what leaves
-      `GTPU_TUNNEL_FLOOD_PPS`'s default reasoned rather than tuned.
+- [x] **A multi-UE capture, and a non-WSL2 throughput ceiling.** Both
+      done on a native-Linux Open5GS + UERANSIM lab
+      (`docs/paper-data/test-environment.md`, captures in
+      `docs/paper-data/real-dataset-v2/`), write-up in
+      `docs/paper-data/02-ai-training-inference.md` §2.6. Four subscribers
+      on one gNB, all from the same source IP: with one flooding at
+      3,000 pkt/s, per-source keying attributes the flood to the gNB (i.e.
+      all four), per-TEID keying names the one tunnel — the argument the
+      per-TEID work rested on, now measured. The ~63 pkt/s ceiling turned
+      out to be `ping -f`'s, not WSL2's; the same tunnel carries ~125,000
+      pkt/s from a real generator, so the 1,000 pkt/s default is
+      conservative rather than unreachable.
+
+      The finding nobody was looking for: the model trained on the
+      single-session captures scored **1.0 on every packet** of the new
+      normal traffic, because its two time-of-day features had learned the
+      training capture's hour. That is a 100% false-positive rate on any
+      real deployment. `hour_sin`/`hour_cos` are removed; retrained without
+      them, AUC 0.9829, zero false positives on the new capture, and the ML
+      path catches a real 3,000 pkt/s in-tunnel flood for the first time
+      (70% of its packets above the high threshold).
+- [ ] **Drop or down-weight `rate_per_second` now that
+      `tunnel_rate_per_second` exists.** §2.6.4's bystander row: during a
+      flood, the three well-behaved tunnels on the same gNB score a mean of
+      0.45, with 36/192 packets above the high threshold, because the
+      per-source rate is 3,031 for every packet on that gNB regardless of
+      tunnel. That is per-source cross-attribution surviving inside the
+      model after it was removed from the detector. Measurable now; not
+      decided here because it is a second `FEATURE_VECTOR_SIZE` change in
+      one cycle and deserves its own evaluation.
 - [ ] **Wire the AI engine into `scripts/quickstart.sh`'s e2e.** The script
       publishes a forged `ThreatScoreEvent` straight onto NATS to trigger
       mitigation, so CI's end-to-end test has never actually exercised

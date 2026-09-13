@@ -4,7 +4,7 @@ ship with, since real telecom traffic is not available in this environment).
 
 "Normal" samples cluster around a handful of realistic signaling baselines;
 "anomalous" samples simulate signaling storms, protocol malformation, and
-off-hours scanning bursts. This dataset only exists to exercise the
+port-scanning bursts. This dataset only exists to exercise the
 train -> export -> infer pipeline end to end; it is not a claim about
 real-world attack traffic distributions, and must not be used to make
 production sensitivity/threshold decisions without replacing it with real
@@ -29,10 +29,13 @@ _SECONDS_PER_DAY = 24 * 60 * 60
 
 
 def _random_time_of_day(rng: random.Random, base_time: datetime) -> datetime:
-    """Normal traffic must span the full day, not a narrow slice of it —
-    otherwise the autoencoder learns "wrong time of day" as *the* anomaly
-    signal and drowns out the protocol/rate/malformed signals every other
-    event type is actually meant to be flagged on.
+    """Spreads timestamps across the full day. This was load-bearing while
+    hour_sin/hour_cos were features -- a narrow slice taught the autoencoder
+    "wrong time of day" as *the* anomaly signal -- and the real-capture
+    pipeline learned the same lesson the hard way (docs/paper-data/
+    02-ai-training-inference.md §2.6). Those features are gone now, so this
+    is inert; kept because NormalizedEvent needs a timestamp and a spread
+    one is the least misleading kind.
     """
     return base_time + timedelta(seconds=rng.uniform(0, _SECONDS_PER_DAY))
 
@@ -103,11 +106,12 @@ def _anomalous_event(rng: random.Random, base_time: datetime) -> NormalizedEvent
             observed_at=_random_time_of_day(rng, base_time),
         )
 
-    # kind == "scan": unknown protocol, unusual port, elevated rate — flagged
-    # off-hours (02:00-04:00) specifically because a handful of normal
-    # samples also naturally land in that window (see _random_time_of_day),
-    # so the model has to weigh time-of-day together with the other
-    # features rather than treating either signal alone as decisive.
+    # kind == "scan": unknown protocol, unusual port, elevated rate. This
+    # used to be clustered at 02:00-04:00 so the model would weigh
+    # time-of-day jointly with the other features; time-of-day is no longer
+    # a feature at all (see sentinel_ai/features.py for the measurement
+    # behind that), so the timestamp here is now inert and kept only because
+    # NormalizedEvent requires one.
     return NormalizedEvent(
         protocol="UNKNOWN",
         dest_port=rng.randint(1024, 65535),

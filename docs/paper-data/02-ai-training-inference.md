@@ -72,7 +72,7 @@ the sensitivity thresholds an explicit open item, not a formality.
 
 **Measured** on 2026-09-06 against a live Open5GS+UERANSIM core running in
 this machine's WSL2 environment (see
-`memory/wsl2_real_test_environment.md`) — not the recalled session-log
+`test-environment.md`) — not the recalled session-log
 number originally referenced (that lived only in a separate, unreachable
 background session's terminal transcript); this is a freshly captured,
 independently reproducible replacement instead.
@@ -261,6 +261,13 @@ general port-scan detection remains open (`ROADMAP.md` Phase 2).
 
 ## 2.5 Closing the in-tunnel-flood gap: per-TEID rate and a non-ML detector
 
+> **Read with §2.6.** This section's model (14 features, single-UE data)
+> was superseded two days later: its two time-of-day features turned out to
+> produce a 100% false-positive rate on any capture from a different hour,
+> and were removed. The measurements below are left as taken; §2.6 says
+> which conclusions survive (the detector's, entirely) and which are
+> withdrawn (the second caveat in 2.5.3).
+
 **Measured** on 2026-09-11 against commit `6102a6d`, on a native Linux host
 (kernel 6.14) rather than the WSL2 environment §2.2 and §2.4 used. §2.4
 stays as written — it is the historical measurement, not a draft — and this
@@ -423,3 +430,147 @@ rate comparison, not by the model.
    cooldown, so "2 events over a 55s flood" is the designed behaviour, not
    partial detection. Recall is best read per incident here, not per packet:
    1 incident, caught, versus the model's 0.
+
+## 2.6 Multi-UE captures on native Linux: what per-TEID buys, and a false-positive rate of 100%
+
+**Measured** on 2026-09-11 (analysis completed 2026-09-13) on the native
+Linux lab in [`test-environment.md`](test-environment.md), against commit
+`3e9f109` plus the changes this section motivated. §2.5 closed the
+in-tunnel-flood gap on the single-UE captures and left two things
+explicitly unvalidated: whether keying by TEID is *discriminative* (it
+could only be shown correct on one tunnel), and whether the ~63 pkt/s
+ceiling was an artifact of WSL2. Both are settled here. A third finding
+nobody was looking for turned out to be the most consequential.
+
+### 2.6.1 The ceiling was the generator, not the environment
+
+`ping -f` through a UERANSIM tunnel reaches ~89 pkt/s on native Linux —
+barely above the ~63 pkt/s §2.4 measured under WSL2 and attributed to that
+environment. The same tunnel carries ~125,000 pkt/s from a proper UDP
+generator. **Flood-ping was the bottleneck; WSL2 was not.** §2.4's
+"non-WSL2, higher-throughput environment" follow-up is closed by that
+number, and the conclusion it feeds is the opposite of the one hedged
+against there: a real attacker is not rate-limited anywhere near 63 pkt/s,
+so the shipped `GTPU_TUNNEL_FLOOD_PPS=1000` default is conservative rather
+than unreachable.
+
+### 2.6.2 Four tunnels, one source IP
+
+[`real-dataset-v2/`](real-dataset-v2/README.md): four subscribers on one gNB,
+two scenarios, every packet from the same source IP. Rates reconstructed
+with the kernel's own 1-second window:
+
+| Scenario | per-source peak | per-tunnel peak, each TEID |
+|---|---|---|
+| All four behaving (5,000 pkts, 130 s) | 40 | 10 / 10 / 10 / 10 |
+| Three behaving, one flooding at 3,000 pkt/s (20,000 pkts, 6.6 s) | 3,031 | **3,001** / 10 / 10 / 10 |
+
+The deterministic detector (`pkg/detect`) at the shipped 1,000 pkt/s
+default, simulated on the same events:
+
+| | keyed per TEID (as shipped) | keyed per source (the previous design) |
+|---|---|---|
+| All four behaving | 0 events | 0 events |
+| One flooding | **1 event, TEID `0x8748` only** | 1 event, attributed to the source IP — **the gNB, i.e. all four subscribers** |
+
+This is the measurement the per-TEID work rested on until now. Per-source
+keying does detect the flood; what it cannot do is say *who*, and a
+mitigation built on it blocklists everyone behind that gNB. Per-tunnel
+keying names the one subscriber and leaves the other three alone. §2.5.3's
+second caveat — "separation here is not proof of per-tunnel value" — is
+withdrawn.
+
+### 2.6.3 The model scored 1.0000 on every packet of normal traffic
+
+Scoring `multi_ue_normal` — 5,000 packets of well-behaved traffic — with the
+model §2.5.2 trained:
+
+| | score min / mean / max | flagged at high (0.68) |
+|---|---|---|
+| `multi_ue_normal`, as captured | 1.0000 / 1.0000 / 1.0000 | **5,000 / 5,000** |
+| same packets, timestamps shifted into the training session's hour | 0.2338 / 0.2360 / 0.2501 | 0 / 5,000 |
+
+Every real capture this project has is a single session spanning about an
+hour of wall-clock. `real-dataset/README.md` said so, as a scope limit.
+Trained on that raw, the autoencoder learned "was this packet captured
+during my training hour" as *the* dominant signal: `hour_sin`/`hour_cos`
+were the only two features whose distribution differed materially between
+the two captures (Δ 0.60 and 1.90; every other feature within 0.02), and
+moving the timestamps eleven hours removed the entire effect. That is a
+**100% false-positive rate on any deployment whose traffic happens at a
+different time of day from the training capture — which is all of them.**
+`generate_synthetic_dataset.py` had documented this exact failure mode for
+synthetic data and spread its timestamps across 24 h to avoid it;
+`build_real_dataset.py` never applied the same treatment to real captures.
+
+Applying it (spreading each real capture's time-of-day uniformly after the
+rate windows are computed) removed the false positives — and destroyed
+recall. With no time-of-day structure left to learn, the two features became
+noise the model could not reconstruct, the normalization's reference error
+rose ~17× (0.0043 → 0.0763), and every real anomaly's score compressed
+below the production thresholds: recall 0.005 / 0.000 / 0.000 at the three
+tiers.
+
+A feature with no supporting data — no real capture carries any diurnal
+signal, and the "off-hours scan" only ever existed in the synthetic
+generator — and two demonstrated failure modes is a liability. **`hour_sin`
+and `hour_cos` were removed.** `FEATURE_VECTOR_SIZE` is 12 again
+(`tunnel_rate_norm` and `has_teid` in, the two hour features out), and
+`tests/test_features.py` pins that time-of-day does not influence the
+vector, so bringing it back requires evidence rather than an edit.
+
+### 2.6.4 Retrained without it, on both datasets
+
+`build_real_dataset.py` now also folds in `real-dataset-v2/`
+(`multi_ue_normal` into the normal set; the flooding tunnel's packets — and
+only those, not the three bystanders' — into the anomalous set). Reproduce
+from `cmd/ai-engine/` with the same four commands as §2.5.2.
+
+| Metric | §2.5 (14 features) | §2.6 (12, no time-of-day) |
+|---|---|---|
+| ROC AUC | 0.9680 | **0.9829** |
+| Recall @ high / medium / low | 0.896 / 0.896 / 0.896 | **0.917 / 0.915 / 0.913** |
+| False positives, all tiers | 0 | 0 |
+
+Every capture, scored with its **real** timestamps — what production sees:
+
+| Capture | n | score min / mean / max | ≥ 0.68 | ≥ 0.85 | = 1.0 |
+|---|---|---|---|---|---|
+| v1 normal (UTC 11h) | 1,889 | 0.2471 / 0.2489 / 0.2501 | 0 | 0 | 0 |
+| **v2 multi-UE normal (UTC 22h)** | 5,000 | 0.2480 / 0.2485 / 0.2491 | **0** | 0 | 0 |
+| v1 in-tunnel flood, 63 pkt/s | 3,348 | 0.2475 / 0.2478 / 0.2487 | 0 | 0 | 0 |
+| **v2 flooding tunnel, 3,000 pkt/s** | 19,808 | 0.2471 / 0.7974 / 1.0000 | **13,782** | 12,746 | 11,948 |
+| v2 bystander tunnels during the flood | 192 | 0.2470 / 0.4543 / 0.9435 | 36 | 10 | 0 |
+| v1 direct UDP flood (no GTP header) | 25,944 | 1.0000 | 25,944 | 25,944 | 25,944 |
+| v1 malformed tiny payload | 700 | 1.0000 | 700 | 700 | 700 |
+| v1 scan, off-port | 708 | 1.0000 | 708 | 708 | 708 |
+
+Read in order of importance:
+
+1. **The false-positive problem is gone.** The multi-UE normal capture, from
+   a different day and hour than anything in the original training set,
+   scores indistinguishably from the training-session normal.
+2. **The ML path catches a real in-tunnel flood for the first time.** At
+   3,000 pkt/s, 70% of the flooding tunnel's packets clear the high
+   threshold and 60% reach 1.0. §2.4 and §2.5 both recorded this class at
+   recall 0 — that was a property of a 63 pkt/s flood sitting inside normal
+   variance, and it still is at 63 pkt/s (row 3). Above ~1,000 pkt/s the
+   model separates it on its own; below, `pkg/detect` is what covers it, by
+   configuration.
+3. **Bystanders on a flooding gNB get elevated scores — 36 of 192 packets
+   above the high threshold, 10 above medium, none at 1.0.** That is
+   `rate_per_second_norm` leaking through: the per-source rate is 3,031 for
+   every packet on that gNB, innocent or not. It is the exact cross-
+   attribution the per-TEID work predicted, now measured in the model rather
+   than argued. The deterministic detector does not have this problem (it
+   keys on TEID). Whether `rate_per_second` should remain a feature at all
+   now that `tunnel_rate_per_second` exists is the obvious follow-up, and it
+   is recorded in `ROADMAP.md` rather than decided here.
+
+**Not claimed:** none of this is a production subscriber population, a
+diurnal baseline, or real application traffic — `real-dataset-v2/README.md`
+lists the limits. What is claimed is narrower and measured: per-TEID keying
+identifies the flooding subscriber where per-source keying identifies the
+gNB; the shipped default threshold is reachable by an attacker by three
+orders of magnitude; and the model shipped before this section would have
+flagged every packet of real traffic it had not been trained on.

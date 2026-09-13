@@ -85,7 +85,21 @@ def test_tunnel_features_are_the_last_two_dimensions():
     the model the wrong columns.
     """
     assert FEATURE_NAMES[-2:] == ["tunnel_rate_norm", "has_teid"]
-    assert FEATURE_VECTOR_SIZE == 14
+    assert FEATURE_VECTOR_SIZE == 12
+
+
+def test_time_of_day_is_not_a_feature():
+    """Pinned deliberately. hour_sin/hour_cos were removed after they produced
+    a 100% false-positive rate on real traffic captured at a different hour
+    from the training session (docs/paper-data/02-ai-training-inference.md
+    §2.6). Reintroducing them needs a real diurnal baseline as evidence, not
+    a one-line edit -- this test is the speed bump.
+    """
+    assert not any("hour" in name for name in FEATURE_NAMES)
+
+    morning = _event(observed_at=datetime(2026, 9, 7, 11, 0, tzinfo=timezone.utc))
+    night = _event(observed_at=datetime(2026, 9, 11, 22, 0, tzinfo=timezone.utc))
+    assert extract_features(morning) == extract_features(night)
 
 
 def test_has_teid_distinguishes_a_real_tunnel_from_port_2152_traffic():

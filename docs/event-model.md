@@ -93,7 +93,7 @@ Produced by the AI engine after scoring one or more `NormalizedEvent`s.
 ## Feature vector (AI engine internal)
 
 `cmd/ai-engine/sentinel_ai/features.py` turns a `NormalizedEvent` into a
-fixed, 14-dimensional feature vector (`FEATURE_VECTOR_SIZE`) before it
+fixed, 12-dimensional feature vector (`FEATURE_VECTOR_SIZE`) before it
 reaches the autoencoder:
 
 | Index | Name                     | Description |
@@ -104,18 +104,24 @@ reaches the autoencoder:
 | 7     | `malformed`              | `1.0` if the eBPF parser flagged malformed framing. |
 | 8     | `dest_port_signaling`    | `1.0` if `destPort` is 2152 (GTP-U) or 5060 (SIP). |
 | 9     | `dest_port_norm`         | `destPort / 65535`. |
-| 10-11 | `hour_sin`, `hour_cos`   | Cyclical encoding of time-of-day, for off-hours anomaly signal. |
-| 12    | `tunnel_rate_norm`       | `tunnelRatePerSecond` clipped to 2000/s, normalized to `[0,1]`. A much tighter clip than `rate_per_second_norm`'s 5000 — a single tunnel carries one subscriber, so its interesting range sits orders of magnitude below an aggregate per-source rate, and clipping it the same way would squash every realistic value into the bottom couple of percent. |
-| 13    | `has_teid`               | `1.0` when `teid` is non-zero. Encodes "this really is a GTP-U tunnel" as a first-class feature, rather than leaving the model to infer it from the destination port — which is what made 25,944 packets of plain UDP aimed at port 2152 indistinguishable from genuine tunneled traffic. |
+| 10    | `tunnel_rate_norm`       | `tunnelRatePerSecond` clipped to 2000/s, normalized to `[0,1]`. A much tighter clip than `rate_per_second_norm`'s 5000 — a single tunnel carries one subscriber, so its interesting range sits orders of magnitude below an aggregate per-source rate, and clipping it the same way would squash every realistic value into the bottom couple of percent. |
+| 11    | `has_teid`               | `1.0` when `teid` is non-zero. Encodes "this really is a GTP-U tunnel" as a first-class feature, rather than leaving the model to infer it from the destination port — which is what made 25,944 packets of plain UDP aimed at port 2152 indistinguishable from genuine tunneled traffic. |
 
 This vector — not the raw event — is what the autoencoder is trained and
 scored against; see `docs/architecture.md` for how the score turns into a
 mitigation decision.
+
+There is deliberately **no time-of-day feature**. `hour_sin`/`hour_cos`
+used to occupy indices 10-11 and were removed after producing a 100%
+false-positive rate on real traffic captured at a different hour from the
+training session — see `docs/paper-data/02-ai-training-inference.md` §2.6.
+`observedAt` is still on the wire (it drives the kernel's rate windows and
+is useful for correlation); it just doesn't reach the model.
 
 **Changing `FEATURE_VECTOR_SIZE` changes the shipped ONNX model's input
 shape**, so a model exported against a different width cannot be used. The
 AI engine refuses to start against one rather than failing per event (which
 in NATS worker mode would be an exception log, a nak, five redeliveries and
 a silently dropped event, forever); the error names the re-export command.
-See `docs/paper-data/02-ai-training-inference.md` §2.5 for the measurement
-that motivated the most recent change.
+See `docs/paper-data/02-ai-training-inference.md` §2.5 and §2.6 for the
+measurements that motivated the most recent changes.
