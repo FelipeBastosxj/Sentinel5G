@@ -259,7 +259,7 @@ func TestDecodeSignalingEvent_AgreesWithTheMirrorStruct(t *testing.T) {
 	copy(raw6.Saddr[:], net.ParseIP("2001:db8::1").To16())
 	copy(raw6.Daddr[:], net.ParseIP("2001:db8::2").To16())
 	buf.Reset()
-	if err := binary.Write(&buf, binary.LittleEndian, raw6); err != nil {
+	if err = binary.Write(&buf, binary.LittleEndian, raw6); err != nil {
 		t.Fatal(err)
 	}
 	evt6, err := l.decodeSignalingEventV6(buf.Bytes())
