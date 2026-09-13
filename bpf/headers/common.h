@@ -37,6 +37,27 @@
  * legitimately carry TEID 0. */
 #define GTPU_MSG_TPDU 0xFF
 
+/* The other message types 3GPP TS 29.281 §7.1 defines for GTP-U. Anything
+ * else on port 2152 with a valid version/PT is not GTP-U at all and is
+ * reported malformed, rather than waved through as "some path-management
+ * message" -- random bytes hit the version/PT check 1 time in 16, and 3 of
+ * the 700 packets in docs/paper-data/real-dataset/real_malformed.pcap did. */
+#define GTPU_MSG_ECHO_REQUEST 1
+#define GTPU_MSG_ECHO_RESPONSE 2
+#define GTPU_MSG_ERROR_INDICATION 26
+#define GTPU_MSG_SUPPORTED_EXT_HDR_NOTIFICATION 31
+#define GTPU_MSG_END_MARKER 254
+
+/* parse_gtpu() results. Three states, not two, because two real cases are
+ * neither "a tunnel packet" nor "broken": path-management messages (Echo,
+ * Error Indication, End Marker) are valid GTP-U with no tunnel to rate, and
+ * must NOT be reported malformed -- a peer sends Echo Requests
+ * periodically, and flagging every one of them would feed the model a
+ * malformed=1 on port 2152 that only its anomaly classes ever produced. */
+#define GTPU_PARSE_TPDU 1       /* valid T-PDU; *teid_out set */
+#define GTPU_PARSE_OTHER 0      /* valid GTP-U, not user plane; teid 0, not malformed */
+#define GTPU_PARSE_MALFORMED -1 /* framing failed; *teid_out may still be set (see parse_gtpu) */
+
 /* How deep parse_gtpu() walks the extension-header chain. Every real N3
  * packet in docs/paper-data/real-dataset/ carries exactly ONE extension
  * header (PDU Session Container, type 0x85, 4 bytes) — measured by parsing

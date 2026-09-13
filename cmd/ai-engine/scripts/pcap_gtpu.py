@@ -34,6 +34,9 @@ GTPU_VERSION_PT_MASK = 0xF0
 GTPU_VERSION_1_PT_GTP = 0x30
 GTPU_EXT_FLAGS_MASK = 0x07
 GTPU_MSG_TPDU = 0xFF
+# 3GPP TS 29.281 §7.1: the only other message types GTP-U defines. Anything
+# else with a valid version/PT is not GTP-U and is reported malformed.
+GTPU_MSG_PATH_MANAGEMENT = frozenset({1, 2, 26, 31, 254})
 GTPU_MAX_EXT_HEADERS = 4
 GTPU_MAX_HDR_BYTES = 64
 
@@ -57,41 +60,49 @@ class Packet:
     dest_port: int
     #: UDP payload size in bytes (what bpf/packet_filter.c reports).
     payload_size: int
-    #: 0 when no valid GTP-U T-PDU header was parsed — the same "no tunnel
-    #: identity" sentinel pkg/events.NormalizedEvent documents.
+    #: 0 when no GTP-U T-PDU header was read — the same "no tunnel identity"
+    #: sentinel pkg/events.NormalizedEvent documents. May be non-zero on a
+    #: malformed packet: see parse_gtpu.
     teid: int
     #: True when this is GTP-U-port traffic whose framing failed to validate,
-    #: matching what the kernel now flags.
+    #: matching what the kernel now flags. Path-management messages are
+    #: valid GTP-U and are NOT malformed.
     malformed: bool
 
 
 def parse_gtpu(payload: bytes) -> tuple[int, bool]:
     """Mirror of parse_gtpu() in bpf/packet_filter.c.
 
-    Returns (teid, ok). ok is False when the payload is not a well-formed
-    GTP-U T-PDU; teid is 0 in that case.
+    Returns (teid, malformed). The kernel's three results map as:
+
+    - T-PDU with valid framing      -> (teid, False)
+    - path management (Echo, Error Indication, End Marker): valid GTP-U
+      with no user plane            -> (0, False)   -- NOT malformed
+    - framing failure               -> (teid, True)  -- teid is still set
+      whenever the mandatory header parsed, because the kernel rate-tracks
+      such a packet under its tunnel anyway (a flood with a deliberately
+      broken extension header must not escape the per-tunnel counter).
+      (0, True) when even the mandatory header didn't parse.
     """
     if len(payload) < 8:
-        return 0, False
+        return 0, True
 
     flags = payload[0]
     msg_type = payload[1]
 
     if (flags & GTPU_VERSION_PT_MASK) != GTPU_VERSION_1_PT_GTP:
-        return 0, False
+        return 0, True
     if msg_type != GTPU_MSG_TPDU:
-        # Path management (Echo, Error Indication, End Marker): real GTP-U,
-        # but no user-plane payload and a legitimate TEID of 0.
-        return 0, False
+        return 0, msg_type not in GTPU_MSG_PATH_MANAGEMENT
 
     teid = struct.unpack_from(">I", payload, 4)[0]
 
     if not (flags & GTPU_EXT_FLAGS_MASK):
-        return teid, True
+        return teid, False
 
     # Any of E/S/PN set means all four optional bytes are present.
     if len(payload) < 12:
-        return 0, False
+        return teid, True
     next_type = payload[11]
     off = 12
 
@@ -99,19 +110,19 @@ def parse_gtpu(payload: bytes) -> tuple[int, bool]:
         if next_type == 0:
             break
         if off > GTPU_MAX_HDR_BYTES - 4 or off >= len(payload):
-            return 0, False
+            return teid, True
         ext_len = payload[off] * 4
         if ext_len == 0 or off + ext_len > GTPU_MAX_HDR_BYTES:
-            return 0, False
+            return teid, True
         if off + ext_len > len(payload):
-            return 0, False
+            return teid, True
         next_type = payload[off + ext_len - 1]
         off += ext_len
 
     if next_type != 0:
-        return 0, False
+        return teid, True
 
-    return teid, True
+    return teid, False
 
 
 def _ip_offset(link_type: int, frame: bytes) -> int | None:
@@ -203,8 +214,7 @@ def read_udp_packets(path: Path) -> list[Packet]:
         teid = 0
         malformed = False
         if dest_port == GTPU_PORT:
-            teid, ok = parse_gtpu(payload)
-            malformed = not ok
+            teid, malformed = parse_gtpu(payload)
 
         packets.append(
             Packet(

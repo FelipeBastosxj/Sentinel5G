@@ -44,7 +44,7 @@ func conditionOf(t *testing.T, r *Reconciler, policy *securityv1alpha1.TelecomSe
 func TestScoringPipeline_WithinGraceReportsAwaiting(t *testing.T) {
 	now := time.Now()
 	tracker := &ScoringPipelineTracker{Grace: 10 * time.Minute, Now: func() time.Time { return now }}
-	tracker.startedAt = now
+	tracker.startedAt.Store(now.UnixNano())
 
 	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, false, false, false)
 	r := newReconcilerFixture(t, tracker, policy)
@@ -71,7 +71,7 @@ func TestScoringPipeline_WithinGraceReportsAwaiting(t *testing.T) {
 func TestScoringPipeline_AfterGraceWithoutScoresReportsNotReady(t *testing.T) {
 	now := time.Now()
 	tracker := &ScoringPipelineTracker{Grace: 10 * time.Minute, Now: func() time.Time { return now }}
-	tracker.startedAt = now.Add(-11 * time.Minute)
+	tracker.startedAt.Store(now.Add(-11 * time.Minute).UnixNano())
 
 	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, false, false, false)
 	r := newReconcilerFixture(t, tracker, policy)
@@ -85,8 +85,10 @@ func TestScoringPipeline_AfterGraceWithoutScoresReportsNotReady(t *testing.T) {
 	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != ReasonNoThreatScoresReceived {
 		t.Fatalf("expected False/%s after the grace period, got %+v", ReasonNoThreatScoresReceived, cond)
 	}
-	if result.RequeueAfter != 0 {
-		t.Fatalf("expected no requeue once the answer can't change on a timer, got %v", result.RequeueAfter)
+	// Still requeues, at the slow not-ready cadence: nothing in the event
+	// stream wakes a quiet policy when the engine finally comes up.
+	if result.RequeueAfter != notReadyRecheck {
+		t.Fatalf("expected a %v recheck while not ready, got %v", notReadyRecheck, result.RequeueAfter)
 	}
 	// The message has to name the actual cause; a bare "not ready" would be
 	// no more actionable than the silent Monitoring it replaces.
@@ -101,7 +103,7 @@ func TestScoringPipeline_AfterGraceWithoutScoresReportsNotReady(t *testing.T) {
 func TestScoringPipeline_OneScoreFlipsItPermanently(t *testing.T) {
 	now := time.Now()
 	tracker := &ScoringPipelineTracker{Grace: 10 * time.Minute, Now: func() time.Time { return now }}
-	tracker.startedAt = now.Add(-11 * time.Minute)
+	tracker.startedAt.Store(now.Add(-11 * time.Minute).UnixNano())
 	tracker.Observe()
 
 	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, false, false, false)
@@ -144,7 +146,7 @@ func TestScoringPipeline_NilTrackerWritesNoCondition(t *testing.T) {
 func TestScoringPipeline_UnchangedConditionDoesNotRewriteStatus(t *testing.T) {
 	now := time.Now()
 	tracker := &ScoringPipelineTracker{Grace: 10 * time.Minute, Now: func() time.Time { return now }}
-	tracker.startedAt = now.Add(-11 * time.Minute)
+	tracker.startedAt.Store(now.Add(-11 * time.Minute).UnixNano())
 
 	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, false, false, false)
 	r := newReconcilerFixture(t, tracker, policy)
@@ -207,4 +209,28 @@ func containsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+// Review finding, pinned: a standby replica that becomes leader after
+// sitting idle longer than the grace must NOT immediately report
+// NoThreatScoresReceived. The grace is anchored where the process can
+// actually receive a score -- ThreatScoreWatcher.Start -- not at
+// construction.
+func TestScoringPipeline_GraceIsAnchoredAtWatcherStart(t *testing.T) {
+	now := time.Now()
+	tracker := &ScoringPipelineTracker{Grace: 10 * time.Minute, Now: func() time.Time { return now }}
+	tracker.startedAt.Store(now.Add(-3 * time.Hour).UnixNano()) // constructed long ago, as a standby
+
+	if reason, _ := tracker.Status(); reason != ReasonNoThreatScoresReceived {
+		t.Fatalf("precondition: a stale anchor reads not-ready, got %s", reason)
+	}
+
+	tracker.MarkStarted() // what Start does on becoming leader
+	reason, retry := tracker.Status()
+	if reason != ReasonAwaitingFirstScore {
+		t.Fatalf("after MarkStarted expected %s, got %s", ReasonAwaitingFirstScore, reason)
+	}
+	if retry <= 0 || retry > 10*time.Minute {
+		t.Fatalf("expected a fresh grace window, got retry %v", retry)
+	}
 }

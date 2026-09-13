@@ -197,6 +197,43 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   `CreateContainerConfigError`. Now numeric (`65532:65532`), matching every
   other image here. It went unnoticed because
   `deployments/quickstart/ai-engine.yaml` sets no securityContext at all.
+- **A benign score ended a mitigation and orphaned its eBPF block.**
+  `ThreatScoreWatcher` moved any policy to `Monitoring` on a sub-threshold
+  score, but reversal (`tryDeEscalate`) only runs in `Mitigating` -- so
+  `blockedSourceIPs` and the kernel blocklist entry stayed forever. Latent
+  while scores were rare; with the AI engine scoring every event from every
+  source on the Pod, the benign score arrived milliseconds after the block,
+  every time. A `Mitigating` policy now keeps its phase on a benign score
+  (`Alerting`, which has no side effects, still returns to `Monitoring`).
+- **`parse_gtpu()` dropped the tunnel on a bad extension header, and flagged
+  Echo Requests as malformed.** Both caught in review. A T-PDU whose
+  extension chain failed to parse was emitted with its TEID but never
+  rate-tracked -- append one broken extension header to each flood packet
+  and the per-tunnel counter never moved, a trivial detector bypass. And
+  path-management messages (Echo, Error Indication, End Marker) were
+  reported malformed, contrary to the documented contract, which would have
+  fed the model a `malformed=1` on every routine keepalive. The parser now
+  returns three states, rate-tracks whenever a TEID was read, validates the
+  message type against the ones TS 29.281 defines, and the Python mirror
+  matches; fuzz and property tests pin all of it.
+- `ScoringPipelineReady`'s grace period is anchored where the process can
+  actually receive a score (`ThreatScoreWatcher.Start`), not at
+  construction -- a standby replica winning the lease after sitting idle
+  reported `NoThreatScoresReceived` on every policy the instant it did. And a
+  policy already reporting `False` is now rechecked every minute instead of
+  waiting for the 10h resync.
+- `charts/sentinel5g-ai-engine`'s `metrics` port and ServiceMonitor scraped a
+  dead port in `config.mode: http`, where `/metrics` is served by the FastAPI
+  app on `httpAddr` rather than the dedicated server on `metricsAddr`.
+- `pkg/ebpf`'s ring-buffer decode went through reflection (`binary.Read`),
+  costing ~176ns and four allocations per packet -- as much as the XDP
+  program itself. Direct field reads: 25ns, two allocations (the two
+  `net.IP`s). The per-packet XDP cost was also finally measured on the
+  current program: ~190-240ns with the ring buffer live
+  (`docs/paper-data/01-performance-benchmarks.md`).
+- `scripts/quickstart.sh` re-run with a re-built image under the same local
+  tag left the old Pod running; it now forces a rollout whenever images were
+  kind-loaded.
 - **Scores buffered during an operator restart were dropped.** JetStream
   redelivers everything the durable missed the instant `ThreatScoreWatcher`
   resubscribes, but `PolicyIndex` is only populated as `Reconciler` visits

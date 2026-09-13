@@ -87,16 +87,16 @@ def test_the_scan_capture_is_not_gtpu_port_traffic_so_is_not_parsed():
     "payload, expected",
     [
         # Version 1, PT 1, no optional block: the 8-byte minimal header.
-        (bytes([0x30, 0xFF, 0x00, 0x00]) + (0x1234).to_bytes(4, "big"), (0x1234, True)),
+        (bytes([0x30, 0xFF, 0x00, 0x00]) + (0x1234).to_bytes(4, "big"), (0x1234, False)),
         # Version 0 (GTPv0) is rejected.
-        (bytes([0x00, 0xFF, 0x00, 0x00]) + (0x1234).to_bytes(4, "big"), (0, False)),
+        (bytes([0x00, 0xFF, 0x00, 0x00]) + (0x1234).to_bytes(4, "big"), (0, True)),
         # PT 0 is GTP', a different protocol on the same header shape.
-        (bytes([0x20, 0xFF, 0x00, 0x00]) + (0x1234).to_bytes(4, "big"), (0, False)),
+        (bytes([0x20, 0xFF, 0x00, 0x00]) + (0x1234).to_bytes(4, "big"), (0, True)),
         # Echo Request: real GTP-U, but path management -- no user-plane
-        # payload and a legitimately zero TEID, so not a tunnel to rate.
+        # payload and a legitimately zero TEID. Valid, NOT malformed.
         (bytes([0x30, 0x01, 0x00, 0x00]) + (0).to_bytes(4, "big"), (0, False)),
         # Shorter than the mandatory header.
-        (bytes([0x30, 0xFF, 0x00]), (0, False)),
+        (bytes([0x30, 0xFF, 0x00]), (0, True)),
     ],
 )
 def test_parse_gtpu_validation_matches_the_kernel_s_rules(payload, expected):
@@ -118,7 +118,7 @@ def test_parse_gtpu_walks_the_pdu_session_container_every_real_packet_carries():
         + bytes([0x01, 0x00, 0x00, 0x00])  # 1 * 4 bytes, next type 0 (end)
     )
 
-    assert parse_gtpu(payload) == (0x4D84, True)
+    assert parse_gtpu(payload) == (0x4D84, False)
 
 
 def test_parse_gtpu_rejects_a_zero_length_extension_header():
@@ -132,4 +132,4 @@ def test_parse_gtpu_rejects_a_zero_length_extension_header():
         + bytes([0x00, 0x00, 0x00, 0x00])  # length 0
     )
 
-    assert parse_gtpu(payload) == (0, False)
+    assert parse_gtpu(payload) == (0x4D84, True)

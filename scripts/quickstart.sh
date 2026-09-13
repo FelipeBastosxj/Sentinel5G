@@ -418,6 +418,16 @@ helm upgrade --install sentinel5g charts/sentinel5g-operator \
   --wait --timeout=180s
 
 kubectl wait --for=condition=Established crd/telecomsecuritypolicies.security.sentinel5g.io --timeout=60s
+
+# A re-run that kind-loaded a NEW build under the SAME tag (pullPolicy Never,
+# unchanged Deployment spec) leaves the OLD Pod running: nothing in the spec
+# changed, so nothing rolls. Verified the hard way -- an operator fix was
+# "tested" against the previous build for a full run. Force it whenever
+# images were loaded locally; a no-op on a fresh cluster.
+if [ -n "$KIND_LOAD_IMAGES" ]; then
+  kubectl -n "$NAMESPACE" rollout restart deployment/sentinel5g-operator
+  kubectl -n "$NAMESPACE" rollout status deployment/sentinel5g-operator --timeout=120s
+fi
 ok "Operator deployed and its CRD is established"
 
 # --- 6. Demo workload + policy ------------------------------------------------
@@ -444,6 +454,10 @@ if [ "$WITH_AI_ENGINE" = "true" ]; then
     --set nats.url=nats://nats.default.svc.cluster.local:4222 \
     --set nats.allowUnauthenticated=true \
     --wait --timeout=180s
+  if [ -n "$KIND_LOAD_IMAGES" ]; then
+    kubectl -n "$NAMESPACE" rollout restart deployment/sentinel5g-ai-engine
+    kubectl -n "$NAMESPACE" rollout status deployment/sentinel5g-ai-engine --timeout=180s
+  fi
   ok "AI engine deployed; the model was delivered by the chart's initContainer"
 fi
 

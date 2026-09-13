@@ -367,10 +367,11 @@ static __always_inline int is_signaling_port(__u16 dest_port_host)
 }
 
 // parse_gtpu extracts the TEID from a GTP-U packet and validates its framing.
-// Returns 1 when this is a well-formed GTP-U T-PDU (setting *teid_out), 0
-// otherwise -- the caller reports 0 as malformed=1, which is exactly what
-// struct signaling_event's malformed field already means ("the parser could
-// not fully validate the protocol framing", see pkg/events/types.go).
+// Returns GTPU_PARSE_TPDU for a well-formed user-plane packet,
+// GTPU_PARSE_OTHER for valid GTP-U that carries no user plane (path
+// management: Echo Request/Response, Error Indication, End Marker -- real
+// protocol traffic with a legitimate TEID of 0, and NOT a framing error),
+// and GTPU_PARSE_MALFORMED when the framing fails.
 //
 // Until this existed, nothing in the project ever parsed a GTP-U header:
 // traffic was classified as GTP-U purely because it was UDP to port 2152.
@@ -379,37 +380,47 @@ static __always_inline int is_signaling_port(__u16 dest_port_host)
 // header at all -- was labelled "GTP-U" throughout, and why the kernel's
 // malformed flag never fired for it.
 //
-// Deliberately two-stage. The TEID sits at a FIXED offset (bytes 4..7) in the
-// 8-byte mandatory header and needs no chain walk, so it is read first and
-// unconditionally. The optional block and extension-header walk below only
-// exist to validate the rest of the framing; a packet whose chain is too deep
-// to walk is still rate-tracked under its (correct) TEID and merely also
-// flagged malformed. Dropping tunnel attribution for a malformed packet would
-// be backwards -- malformed flood traffic is precisely the case that most
-// needs attributing to a tunnel.
+// *teid_out is written as soon as the mandatory header validates, BEFORE the
+// extension-header walk, and is left set even when that walk then fails.
+// That is deliberate and the caller relies on it: the TEID sits at a fixed
+// offset (bytes 4..7) and needs no chain walk, so a packet whose chain is
+// truncated or too deep still has a correct tunnel identity, and is still
+// rate-tracked under it -- merely also flagged malformed. Dropping tunnel
+// attribution for malformed packets would hand an attacker a trivial
+// bypass: append a bad extension header to every flood packet and the
+// per-tunnel counter never moves. (A first version of this function got
+// exactly that wrong, and its own comment claimed otherwise; review caught
+// it, not a test -- hence the test that now pins it in scripts/pcap_gtpu's
+// mirror.)
 static __always_inline int parse_gtpu(void *gtp, void *data_end, __u32 *teid_out)
 {
 	struct gtpuhdr *gh = gtp;
 	if ((void *)(gh + 1) > data_end)
-		return 0; // Fewer than 8 payload bytes: not a GTP-U header at all.
+		return GTPU_PARSE_MALFORMED; // Fewer than 8 payload bytes: not a GTP-U header.
 
 	// Version must be 1 and PT must be 1 (GTP, not the GTP' charging
 	// protocol). This check is what keeps a plain non-GTP datagram aimed at
 	// port 2152 from being read as a tunnel with a garbage TEID.
 	if ((gh->flags & GTPU_VERSION_PT_MASK) != GTPU_VERSION_1_PT_GTP)
-		return 0;
+		return GTPU_PARSE_MALFORMED;
 
-	// Path management (Echo Request/Response, Error Indication, End Marker)
-	// is real GTP-U but carries no user-plane payload and legitimately uses
-	// TEID 0 -- nothing to rate a tunnel by, and not a framing error either,
-	// so the caller gets 0 here and reports teid 0 without malformed.
-	if (gh->msg_type != GTPU_MSG_TPDU)
-		return 0;
+	switch (gh->msg_type) {
+	case GTPU_MSG_TPDU:
+		break;
+	case GTPU_MSG_ECHO_REQUEST:
+	case GTPU_MSG_ECHO_RESPONSE:
+	case GTPU_MSG_ERROR_INDICATION:
+	case GTPU_MSG_SUPPORTED_EXT_HDR_NOTIFICATION:
+	case GTPU_MSG_END_MARKER:
+		return GTPU_PARSE_OTHER; // Valid GTP-U, no user plane to rate.
+	default:
+		return GTPU_PARSE_MALFORMED; // Not a message type GTP-U defines.
+	}
 
 	*teid_out = bpf_ntohl(gh->teid);
 
 	if (!(gh->flags & GTPU_EXT_FLAGS_MASK))
-		return 1; // No optional block: 8-byte header, nothing left to walk.
+		return GTPU_PARSE_TPDU; // No optional block: 8-byte header, nothing left to walk.
 
 	// Any of E/S/PN set means the sequence(2) + N-PDU(1) + next-extension-
 	// type(1) block is ALL present, including the fields whose own flag is
@@ -418,7 +429,7 @@ static __always_inline int parse_gtpu(void *gtp, void *data_end, __u32 *teid_out
 	// block, so a parser that skipped it would mis-frame 100% of the real
 	// GTP-U here.
 	if ((void *)((__u8 *)gtp + 12) > data_end)
-		return 0;
+		return GTPU_PARSE_MALFORMED;
 	__u8 next = *((__u8 *)gtp + 11);
 	__u32 off = 12;
 
@@ -431,36 +442,36 @@ static __always_inline int parse_gtpu(void *gtp, void *data_end, __u32 *teid_out
 		// verifier, not a sanity check: without it the offset below is an
 		// unbounded runtime value and the program is rejected outright.
 		if (off > GTPU_MAX_HDR_BYTES - 4)
-			return 0;
+			return GTPU_PARSE_MALFORMED;
 
 		__u8 *ext = (__u8 *)gtp + off;
 		if ((void *)(ext + 1) > data_end)
-			return 0;
+			return GTPU_PARSE_MALFORMED;
 
 		__u32 elen = (__u32)ext[0] * 4; // Length is in 4-octet units.
 		if (elen == 0)
-			return 0; // A zero-length extension would never terminate.
+			return GTPU_PARSE_MALFORMED; // A zero-length extension would never terminate.
 		if (off + elen > GTPU_MAX_HDR_BYTES)
-			return 0;
+			return GTPU_PARSE_MALFORMED;
 
 		__u8 *tail = (__u8 *)gtp + off + elen - 1;
 		if ((void *)(tail + 1) > data_end)
-			return 0;
+			return GTPU_PARSE_MALFORMED;
 
 		next = *tail; // An extension header's last octet is the next type.
 		off += elen;
 	}
 
 	if (next != 0)
-		return 0; // Chain deeper than GTPU_MAX_EXT_HEADERS: unparseable.
+		return GTPU_PARSE_MALFORMED; // Chain deeper than GTPU_MAX_EXT_HEADERS: unparseable.
 
-	return 1;
+	return GTPU_PARSE_TPDU;
 }
 
-static __always_inline void track_signal_rate(__u32 saddr)
+// budget is the one CLAUDE.md constraint that is measured per packet.
+static __always_inline void track_signal_rate(__u32 saddr, __u64 now)
 {
 	struct signal_rate_entry *entry = bpf_map_lookup_elem(&signal_rate, &saddr);
-	__u64 now = bpf_ktime_get_ns();
 
 	if (!entry) {
 		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
@@ -578,10 +589,9 @@ static __always_inline __u32 track_port_scan(__u32 saddr, __u16 dest_port, __u64
 // Kept as near-duplicates rather than a shared generic-key helper —
 // obscuring the verifier-relevant pointer arithmetic for marginal LOC
 // savings isn't a good trade in a program the verifier has to prove safe.
-static __always_inline void track_signal_rate_v6(const struct in6_key *saddr6)
+static __always_inline void track_signal_rate_v6(const struct in6_key *saddr6, __u64 now)
 {
 	struct signal_rate_entry *entry = bpf_map_lookup_elem(&signal_rate_v6, saddr6);
-	__u64 now = bpf_ktime_get_ns();
 
 	if (!entry) {
 		struct signal_rate_entry fresh = {.window_start_ns = now, .count = 1};
@@ -680,12 +690,15 @@ static __always_inline __u32 track_port_scan_v6(const struct in6_key *saddr6, __
 }
 
 // Verified on Linux 6.14 with `bpftool prog load` + `bpftool prog show`:
-// xlated 9880B, jited 6029B, max stack depth 152 bytes -- comfortably under
+// xlated 9896B, jited 6050B, max stack depth 152 bytes -- comfortably under
 // the verifier's hard 512-byte limit (CLAUDE.md). The GTP-U parsing added
 // here cost ~2.9KB of xlated instructions and ~60 bytes of stack over the
 // previous revision (6936B / 4200B), almost all of it the #pragma unroll'ed
-// extension-header walk; re-measure and update these numbers if that loop's
-// depth (GTPU_MAX_EXT_HEADERS) ever changes.
+// extension-header walk. Per-packet cost via `bpftool prog run`: ~190-240ns
+// for a real-shaped GTP-U packet with the ring buffer live, ~15ns of which
+// is the parser + tunnel_rate update (docs/paper-data/
+// 01-performance-benchmarks.md). Re-measure and update these numbers if
+// GTPU_MAX_EXT_HEADERS ever changes.
 SEC("xdp")
 int xdp_packet_filter(struct xdp_md *ctx)
 {
@@ -742,20 +755,20 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		__u16 payload_size6 = (__u16)((void *)data_end - (void *)(udph6 + 1));
 
 		if (is_signaling_port(dest_port6)) {
-			track_signal_rate_v6(&saddr6);
+			__u64 now6 = bpf_ktime_get_ns(); // Shared by both trackers below.
+			track_signal_rate_v6(&saddr6, now6);
 
 			__u8 protocol6 = (dest_port6 == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
 			__u32 teid6 = 0, tunnel_rate6 = 0;
 			__u8 malformed6 = 0;
 
 			if (dest_port6 == GTPU_PORT) {
-				if (parse_gtpu((void *)(udph6 + 1), data_end, &teid6)) {
-					if (teid6 != 0)
-						tunnel_rate6 = track_tunnel_rate_v6(&saddr6, teid6,
-										     bpf_ktime_get_ns());
-				} else {
-					malformed6 = 1;
-				}
+				int rc6 = parse_gtpu((void *)(udph6 + 1), data_end, &teid6);
+				malformed6 = (rc6 == GTPU_PARSE_MALFORMED);
+				// Tracked whenever a TEID was read, malformed or not -- see
+				// parse_gtpu's comment on why the malformed case matters.
+				if (teid6 != 0)
+					tunnel_rate6 = track_tunnel_rate_v6(&saddr6, teid6, now6);
 			}
 
 			emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
@@ -829,7 +842,8 @@ int xdp_packet_filter(struct xdp_md *ctx)
 	__u16 payload_size = (__u16)((void *)data_end - (void *)(udph + 1));
 
 	if (is_signaling_port(dest_port)) {
-		track_signal_rate(saddr);
+		__u64 now = bpf_ktime_get_ns(); // Shared by both trackers below.
+		track_signal_rate(saddr, now);
 
 		__u8 protocol = (dest_port == GTPU_PORT) ? SIGNAL_PROTO_GTPU : SIGNAL_PROTO_SIP;
 		__u32 teid = 0, tunnel_rate = 0;
@@ -840,12 +854,12 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		// per-source counter above sees aggregate load and nothing else.
 		// See struct tunnel_key's comment.
 		if (dest_port == GTPU_PORT) {
-			if (parse_gtpu((void *)(udph + 1), data_end, &teid)) {
-				if (teid != 0)
-					tunnel_rate = track_tunnel_rate(saddr, teid, bpf_ktime_get_ns());
-			} else {
-				malformed = 1;
-			}
+			int rc = parse_gtpu((void *)(udph + 1), data_end, &teid);
+			malformed = (rc == GTPU_PARSE_MALFORMED);
+			// Tracked whenever a TEID was read, malformed or not -- see
+			// parse_gtpu's comment on why the malformed case matters.
+			if (teid != 0)
+				tunnel_rate = track_tunnel_rate(saddr, teid, now);
 		}
 
 		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol,

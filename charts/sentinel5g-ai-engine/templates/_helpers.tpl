@@ -47,3 +47,20 @@ installing something that cannot work.
 {{- fail "no model source configured: set either model.image.repository (a published model artifact, the default) or model.existingSecret (the name of a Secret holding autoencoder.onnx, autoencoder.onnx.data and autoencoder.norm.json). Without one the AI engine cannot score anything and every TelecomSecurityPolicy would sit at Phase: Monitoring forever. See docs/production-install.md." -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The port /metrics is actually served on. In nats mode the worker has no
+HTTP app, so sentinel_ai/server.py starts a dedicated prometheus_client
+server on config.metricsAddr; in http mode /metrics is exposed by the FastAPI
+app on config.httpAddr and NOTHING listens on metricsAddr. A Service and
+ServiceMonitor that always targeted metricsAddr therefore scraped a dead
+port in http mode -- caught in review, not by a test, because the chart
+defaults to nats mode.
+*/}}
+{{- define "sentinel5g-ai-engine.metricsPort" -}}
+{{- if eq .Values.config.mode "http" -}}
+{{ .Values.config.httpAddr | trimPrefix ":" | int }}
+{{- else -}}
+{{ .Values.config.metricsAddr | trimPrefix ":" | int }}
+{{- end -}}
+{{- end -}}
