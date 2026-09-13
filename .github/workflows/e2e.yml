@@ -29,17 +29,37 @@ jobs:
       - name: Build the operator image from this ref's code
         run: docker build -t sentinel5g-operator:e2e .
 
+      - name: Build the AI engine image from this ref's code
+        run: docker build -t sentinel5g-ai-engine:e2e cmd/ai-engine
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Train a model from the committed real dataset and build its image
+        # The same path release.yml's publish-model job takes, so what the
+        # e2e exercises is the artifact a user would actually get. Until
+        # this existed the quickstart forged a ThreatScoreEvent straight
+        # onto NATS and CI's end-to-end test had never run Layer 3 at all.
+        run: |
+          pip install -e "./cmd/ai-engine[train]"
+          make ai-engine-train-real
+          make docker-build-model IMG_MODEL=sentinel5g-model:e2e
+
       - name: Run scripts/quickstart.sh
-        # SENTINEL5G_OPERATOR_IMAGE/SENTINEL5G_KIND_LOAD_IMAGES point the
-        # script at the image just built above instead of pulling the last
-        # published release, and have it `kind load docker-image` that image
+        # SENTINEL5G_*_IMAGE/SENTINEL5G_KIND_LOAD_IMAGES point the script at
+        # the images just built above instead of pulling the last published
+        # release, and have it `kind load docker-image` each of them
         # into the cluster it creates rather than pulling from a registry --
         # see scripts/quickstart.sh's own top-of-file comments on both
         # variables. Everything else about the run is identical to what a
         # real user's `./scripts/quickstart.sh` does.
         env:
           SENTINEL5G_OPERATOR_IMAGE: sentinel5g-operator:e2e
-          SENTINEL5G_KIND_LOAD_IMAGES: sentinel5g-operator:e2e
+          SENTINEL5G_AI_ENGINE: "true"
+          SENTINEL5G_AI_ENGINE_IMAGE: sentinel5g-ai-engine:e2e
+          SENTINEL5G_MODEL_IMAGE: sentinel5g-model:e2e
+          SENTINEL5G_KIND_LOAD_IMAGES: sentinel5g-operator:e2e sentinel5g-ai-engine:e2e sentinel5g-model:e2e
         run: ./scripts/quickstart.sh
 
       - name: Diagnostics (only runs if a prior step failed)
@@ -54,6 +74,9 @@ jobs:
           echo "::endgroup::"
           echo "::group::operator logs"
           kubectl logs -n sentinel5g-system deploy/sentinel5g-operator --tail=500 || true
+          echo "::endgroup::"
+          echo "::group::ai-engine logs"
+          kubectl logs -n sentinel5g-system deploy/sentinel5g-ai-engine --all-containers --tail=200 || true
           echo "::endgroup::"
           mkdir -p /tmp/kind-logs
           kind export logs /tmp/kind-logs --name sentinel5g-quickstart || true

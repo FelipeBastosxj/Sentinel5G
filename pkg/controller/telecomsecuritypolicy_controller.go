@@ -205,6 +205,16 @@ func (r *Reconciler) reportScoringPipeline(ctx context.Context, log logr.Logger,
 
 	meta.SetStatusCondition(&policy.Status.Conditions, condition)
 	if err := r.Status().Update(ctx, policy); err != nil {
+		if apierrors.IsConflict(err) {
+			// ThreatScoreWatcher writes this same status subresource from
+			// the NATS goroutine, and right after startup the two routinely
+			// collide (a buffered score lands the moment the durable
+			// resubscribes, which is also when the first reconcile runs).
+			// Nothing is lost -- the next reconcile re-derives the condition
+			// from the tracker -- so ask for it quietly instead of logging a
+			// stack trace on every rollout.
+			return time.Second, nil
+		}
 		return 0, fmt.Errorf("update scoring pipeline condition for %s/%s: %w", policy.Namespace, policy.Name, err)
 	}
 	r.Index.Put(policy)

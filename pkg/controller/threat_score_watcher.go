@@ -63,6 +63,20 @@ type ThreatScoreWatcher struct {
 // the controller-runtime manager (started after the informer cache syncs,
 // stopped on shutdown).
 func (w *ThreatScoreWatcher) Start(ctx context.Context) error {
+	// Before touching the bus: Index is populated by Reconciler as it
+	// reconciles each policy, and on a fresh process that happens
+	// concurrently with this Runnable starting. JetStream delivers every
+	// score buffered while the operator was down the instant the durable
+	// re-subscribes below -- so without this, an operator restart consumed
+	// those scores against an empty index, found no matching policy for any
+	// of them, acked, and dropped them with nothing but a V(1) log line.
+	// Found by watching a real score vanish on a real cluster right after a
+	// rollout. Leader-gated runnables start after the cache has synced, so a
+	// List from the cached client here is complete.
+	if err := w.warmIndex(ctx); err != nil {
+		return fmt.Errorf("populate policy index before subscribing: %w", err)
+	}
+
 	bus, err := w.Bus.Wait(ctx)
 	if err != nil {
 		// ctx done before NATS ever connected -- ordinary shutdown, not a
@@ -80,6 +94,25 @@ func (w *ThreatScoreWatcher) Start(ctx context.Context) error {
 	defer func() { _ = unsubscribe() }()
 
 	<-ctx.Done()
+	return nil
+}
+
+// warmIndex seeds Index with every existing policy so scores delivered
+// before Reconciler has visited each one still match. Reconciler's own Put
+// calls remain authoritative afterwards; this only removes the window in
+// which the index is emptier than the cluster.
+func (w *ThreatScoreWatcher) warmIndex(ctx context.Context) error {
+	var policies securityv1alpha1.TelecomSecurityPolicyList
+	if err := w.List(ctx, &policies); err != nil {
+		return err
+	}
+	for i := range policies.Items {
+		if !policies.Items[i].DeletionTimestamp.IsZero() {
+			continue // Reconciler.finalize is about to remove it; don't resurrect it.
+		}
+		w.Index.Put(&policies.Items[i])
+	}
+	w.Log.V(1).Info("policy index warmed before subscribing", "policies", len(policies.Items))
 	return nil
 }
 

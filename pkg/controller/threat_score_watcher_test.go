@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-logr/logr/testr"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	securityv1alpha1 "github.com/FelipeBastosxj/Sentinel5G/api/v1alpha1"
@@ -274,5 +275,54 @@ func TestApplyPolicy_RuleSourcedScoreStillRespectsDetectionOnly(t *testing.T) {
 	}
 	if got.Status.Phase != securityv1alpha1.PolicyPhaseAlerting {
 		t.Fatalf("expected Alerting, got %q", got.Status.Phase)
+	}
+}
+
+// An operator restart must not lose the scores JetStream buffered while it
+// was down. The durable re-delivers them the instant Start subscribes, and
+// Reconciler populates the index only as it visits each policy -- so Start
+// has to seed the index from the cache first or every buffered score is
+// matched against nothing, acked, and gone. Found on a real cluster.
+func TestThreatScoreWatcher_WarmsIndexFromExistingPolicies(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, true, true)
+	pod := newTestPod(policy.Namespace, "amf-0")
+	w, blocklist, _ := newWatcherFixture(t, policy, pod)
+
+	// Simulate the fresh-process state: the cluster has the policy, the
+	// in-memory index does not.
+	w.Index = NewPolicyIndex()
+	if got := w.Index.MatchingPolicies(policy.Namespace, pod.Labels); len(got) != 0 {
+		t.Fatalf("precondition: expected an empty index, got %d", len(got))
+	}
+
+	if err := w.warmIndex(context.Background()); err != nil {
+		t.Fatalf("warmIndex: %v", err)
+	}
+
+	err := w.handle(context.Background(), events.ThreatScoreEvent{
+		Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "203.0.113.7", Score: 0.99,
+	})
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if len(blocklist.blocked) != 1 {
+		t.Fatalf("a score arriving right after start was dropped: blocked=%v", blocklist.blocked)
+	}
+}
+
+func TestThreatScoreWatcher_WarmIndexSkipsPoliciesBeingDeleted(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, true, true)
+	now := metav1.Now()
+	policy.DeletionTimestamp = &now
+	policy.Finalizers = []string{telecomSecurityPolicyFinalizer}
+	pod := newTestPod(policy.Namespace, "amf-0")
+	w, _, _ := newWatcherFixture(t, policy, pod)
+	w.Index = NewPolicyIndex()
+
+	if err := w.warmIndex(context.Background()); err != nil {
+		t.Fatalf("warmIndex: %v", err)
+	}
+	if got := w.Index.MatchingPolicies(policy.Namespace, pod.Labels); len(got) != 0 {
+		t.Fatalf("a policy mid-deletion was resurrected into the index")
 	}
 }

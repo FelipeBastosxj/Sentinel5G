@@ -97,6 +97,12 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   Includes `gen_tunnel_flood.py`, a `SO_BINDTODEVICE` flood generator,
   because both `iperf3 -B` and UERANSIM's `nr-binder` silently bypass the
   tunnel on this topology.
+- `scripts/quickstart.sh` can now deploy the real AI engine
+  (`SENTINEL5G_AI_ENGINE=true`) and drive the mitigation from a real score
+  rather than a forged `ThreatScoreEvent`; `.github/workflows/e2e.yml` does,
+  building and training everything from the PR, so CI's end-to-end test
+  exercises Layer 3 for the first time. Off by default until a release
+  publishes the model artifact.
 
 ### Changed
 - **Breaking for a mixed deployment:** `struct signaling_event` grew from 24
@@ -187,6 +193,13 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   `CreateContainerConfigError`. Now numeric (`65532:65532`), matching every
   other image here. It went unnoticed because
   `deployments/quickstart/ai-engine.yaml` sets no securityContext at all.
+- **Scores buffered during an operator restart were dropped.** JetStream
+  redelivers everything the durable missed the instant `ThreatScoreWatcher`
+  resubscribes, but `PolicyIndex` is only populated as `Reconciler` visits
+  each policy -- so on a fresh process every buffered score was matched
+  against an empty index, acked, and lost with a debug-level log line.
+  `Start` now seeds the index from the cache before subscribing. Found by
+  the e2e above: the very first real score after a rollout vanished.
 - `scripts/quickstart.sh` keeps helm's cache/config alongside its own
   kubeconfig instead of in `$HOME`, so it also works where `$HOME` isn't
   writable (a service account, a container running as an arbitrary uid).
