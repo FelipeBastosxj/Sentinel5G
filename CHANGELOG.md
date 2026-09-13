@@ -165,6 +165,10 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
 - `pkg/ebpf.Attach` now checks `--bpf-interface` resolves to a real
   interface *before* loading the BPF collection into the kernel, instead of
   after -- a typo'd interface name fails faster and without the wasted load.
+- `prometheus-fastapi-instrumentator` 7.x -> 8.x in the AI engine. Not a
+  feature: 7.x pins `starlette <1.0`, and `pip-audit` (which gates CI) now
+  flags ten known vulnerabilities in every `starlette` 0.x release, fixed
+  only in 1.3.1+. 8.x is the first line that allows `starlette` 1.x.
 - CI's CRD drift check (`config/crd/bases` vs. the Helm chart's hand-copied
   `templates/crd.yaml`) compared the two documents for raw equality, but the
   chart legitimately adds `helm.sh/resource-policy: keep` (`crds.keep`, on by
