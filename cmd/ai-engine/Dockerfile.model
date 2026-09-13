@@ -20,7 +20,7 @@
 #   docker build -f cmd/ai-engine/Dockerfile.model -t sentinel5g-model cmd/ai-engine
 # The release workflow does both steps from the committed real dataset, so
 # the published artifact is reproducible from the repository alone.
-FROM busybox:1.37-uclibc@sha256:8d7b1636e974e0adfd8d945955fca609304f0a56c18799dfd032d6e661382d84
+FROM busybox:1.38-uclibc@sha256:297dda192bda2157ddf40abb47a45a1090caff1864db9cfb9ce4b901ba318a3c
 
 # Fails the build rather than publishing an empty artifact: a model image
 # with no model would reintroduce exactly the silent no-op this exists to
