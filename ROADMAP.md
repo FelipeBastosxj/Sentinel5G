@@ -312,15 +312,22 @@ open.
       them, AUC 0.9829, zero false positives on the new capture, and the ML
       path catches a real 3,000 pkt/s in-tunnel flood for the first time
       (70% of its packets above the high threshold).
-- [ ] **Drop or down-weight `rate_per_second` now that
-      `tunnel_rate_per_second` exists.** §2.6.4's bystander row: during a
-      flood, the three well-behaved tunnels on the same gNB score a mean of
-      0.45, with 36/192 packets above the high threshold, because the
-      per-source rate is 3,031 for every packet on that gNB regardless of
-      tunnel. That is per-source cross-attribution surviving inside the
-      model after it was removed from the detector. Measurable now; not
-      decided here because it is a second `FEATURE_VECTOR_SIZE` change in
-      one cycle and deserves its own evaluation.
+- [x] **Drop or down-weight `rate_per_second` now that
+      `tunnel_rate_per_second` exists.** Measured by ablation (§2.6.5) and
+      resolved as neither: the feature is kept for untunneled traffic (SIP,
+      SMPP, off-port probes — it is their only rate signal) and zeroed for
+      any event with a TEID, where the tunnel's own rate speaks instead.
+      Bystander tunnels during a flood went from 150/192 packets above the
+      mitigation threshold to 0/192, with 94% of the flooding tunnel's
+      packets still flagged. Same 12-wide vector, no ONNX shape change.
+- [ ] **A TEID-keyed drop path in eBPF.** Detection is now per subscriber;
+      mitigation still isn't. `ThreatScoreEvent` carries a source IP and the
+      blocklist is keyed by it, and on a real N3 that IP is the gNB's — so a
+      correctly-attributed score for one flooding tunnel still results in
+      `Block(gNB)`, i.e. every subscriber behind it. Closing that needs a
+      `(saddr, TEID)`-keyed drop map in `bpf/packet_filter.c`, a TEID on the
+      `ThreatScoreEvent`, a new action on the CRD, and the same
+      finalizer/de-escalation plumbing the IP blocklist has.
 - [ ] **Wire the AI engine into `scripts/quickstart.sh`'s e2e.** The script
       publishes a forged `ThreatScoreEvent` straight onto NATS to trigger
       mitigation, so CI's end-to-end test has never actually exercised

@@ -130,6 +130,12 @@ Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
   AUC 0.9449 -> 0.9829, recall 0.69-0.73 -> 0.91-0.92 at every tier, zero
   false positives on a capture from a different day, and the ML path
   catches a real 3,000 pkt/s in-tunnel flood for the first time.
+- `rate_per_second_norm` became `untunneled_rate_norm`: same index and
+  width, but zero for any event carrying a TEID. The per-source rate is the
+  same number for every subscriber behind a gNB, so the model was scoring
+  innocent bystanders as anomalous during someone else's flood -- 150/192
+  packets above the mitigation threshold in one training run, 0/192 after
+  (§2.6.5). Kept for untunneled traffic, where it is the only rate signal.
 - **Breaking-ish default:** the operator and the AI engine
   (`AI_ENGINE_MODE=nats`) now refuse to start against a NATS bus with no
   auth/TLS configured, unless `NATS_ALLOW_UNAUTHENTICATED=true`
