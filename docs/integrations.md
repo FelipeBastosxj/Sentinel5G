@@ -214,7 +214,7 @@ Attaching `bpf/packet_filter.c`'s XDP program needs `CAP_BPF` +
 default `securityContext` (both `config/manager/manager.yaml` and the Helm
 chart's `values.yaml`) drops all Linux capabilities, so:
 
-- `EbpfBlock` actions silently no-op until you opt in.
+- `EbpfBlock` and `EbpfBlockTunnel` actions silently no-op until you opt in.
 - To opt in: set `ebpf.enabled: true` in the Helm chart's values (or pass
   `--bpf-object`/`--bpf-interface` directly to `cmd/operator`). The chart
   now also adds `ebpf.capabilities` (default `["BPF", "NET_ADMIN"]`) to the
@@ -278,6 +278,41 @@ silently replaces the first's, breaking that node's event stream. Use
               app.kubernetes.io/name: sentinel5g-operator
           topologyKey: kubernetes.io/hostname
   ```
+
+### Which drop: source address or one tunnel
+
+Two independent actions, and on a GTP-U N3 interface the choice matters
+more than anywhere else:
+
+| Action | Drops | Use when |
+|---|---|---|
+| `actions.ebpfBlock` | every packet from the source address | The source really is the attacker — an external probe, a scanning host. On N3 it is the peer gNB, so this takes out every subscriber behind it. |
+| `actions.ebpfBlockTunnel` | only `(source, TEID)` | Always, on N3. Cuts off the one subscriber the detector identified. |
+
+Enabling both is legitimate — the tunnel drop is attempted first and the
+source-wide one is then an explicit fallback — but understand that it *is*
+a fallback for the case the precise action cannot handle: a score with no
+TEID. That case does not silently widen on its own; it is counted as
+`sentinel5g_mitigations_total{action="ebpf_block_tunnel",result="no_teid"}`
+and nothing is dropped. Two capture paths produce that case
+unconditionally, by construction: Hubble and Falco (see the note in the
+capture-layer section above), so a policy relying only on the tunnel action
+with one of those as its sole source will never mitigate.
+
+Both drop maps are plain `BPF_MAP_TYPE_HASH`, not LRU, and that is
+deliberate: an entry is a mitigation the operator owns the lifetime of, so
+an LRU silently evicting one would un-block traffic nobody asked to
+un-block — a control failing open under exactly the load that created the
+entries. A full map refuses the insert and the refusal surfaces as a
+metric and a failed reconcile. `scripts/loadtest/README.md` has the
+measurement.
+
+Reversal is the same for both: the de-escalation quiet period
+(`DE_ESCALATION_DWELL`) and the policy's finalizer replay
+`status.blockedSourceIPs` and `status.blockedTunnels` respectively. A
+dropped tunnel is deliberately *not* rate-tracked in the kernel while
+blocked — counting traffic that is being discarded would keep its rate at
+the flood level and the quiet period would never elapse.
 
 ## Securing the NATS message bus
 
@@ -355,10 +390,12 @@ Three things worth knowing before tuning it:
   the honest number for your network comes from watching
   `sentinel5g_threshold_crossings_total` during a detection-only pilot.
 
-The mitigation it triggers is still keyed by source IP — on a real N3 that
-is the gNB, i.e. every subscriber behind it. Making the *action* as precise
-as the detection needs a TEID-keyed drop path in eBPF; that is
-`ROADMAP.md` Phase 3.
+The mitigation it triggers can now be as precise as the detection: set
+`actions.ebpfBlockTunnel` on the policy and the drop is keyed by
+`(source, TEID)` — the same key this detector measured — instead of the
+source address every subscriber behind a gNB shares. See the eBPF section
+above for the two actions' blast radius and why a score without a TEID
+leaves the tunnel action a deliberate no-op.
 
 ## Observability
 

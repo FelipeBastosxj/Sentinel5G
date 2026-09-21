@@ -7,7 +7,10 @@
 // tunneling, port 2152) and SIP (VoIP/IMS signaling, port 5060) traffic,
 // maintains a coarse per-source-IP signaling rate counter for storm
 // detection, and drops packets whose source IP has been pushed into
-// `blocklist` — the only way in or out of that map is pkg/ebpf.Loader,
+// `blocklist` — or, for GTP-U, whose (source, TEID) tunnel has been pushed
+// into `tunnel_blocklist`, which drops one subscriber rather than every
+// subscriber behind a shared gNB address. The only way in or out of either
+// map is pkg/ebpf.Loader,
 // driven by pkg/controller.ThreatScoreWatcher in response to an AI-engine
 // threat score. IPv6 traffic is inspected the same way through a parallel
 // set of maps/struct/ringbuf (the `*_v6` declarations below) rather than a
@@ -155,6 +158,25 @@ struct {
 	__type(value, struct signal_rate_entry); // Reused as-is; no tunnel-specific fields.
 } tunnel_rate SEC(".maps");
 
+// tunnel_blocklist is blocklist's per-subscriber counterpart: same
+// "operator-owned drop decision" semantics, keyed by (source, TEID) instead
+// of source alone. It exists because on a real N3 interface every
+// subscriber's traffic arrives from the peer gNB's address, so a
+// source-keyed drop for one flooding subscriber takes out every subscriber
+// behind that gNB -- detection has been per tunnel since Phase 2.5 while
+// mitigation stayed per peer (ROADMAP.md Phase 3).
+//
+// Reuses struct tunnel_key so the rate map and the drop map are addressed
+// identically: the thing the detector measured is exactly the thing the
+// operator blocks. A plain HASH, not LRU -- see
+// MAX_TUNNEL_BLOCKLIST_ENTRIES.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_TUNNEL_BLOCKLIST_ENTRIES);
+	__type(key, struct tunnel_key);
+	__type(value, __u8);
+} tunnel_blocklist SEC(".maps");
+
 // port_scan_entry tracks a bounded, deduplicated set of the distinct
 // destination ports a source has touched within MULTIPORT_SCAN_WINDOW_NS.
 // Deliberately separate from scan_key/scan_rate above (which is keyed by
@@ -243,6 +265,14 @@ struct {
 	__type(key, struct tunnel_key_v6);
 	__type(value, struct signal_rate_entry);
 } tunnel_rate_v6 SEC(".maps");
+
+// tunnel_blocklist_v6 is tunnel_blocklist's IPv6 counterpart.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_TUNNEL_BLOCKLIST_ENTRIES);
+	__type(key, struct tunnel_key_v6);
+	__type(value, __u8);
+} tunnel_blocklist_v6 SEC(".maps");
 
 // port_scan_v6 is port_scan's IPv6 counterpart; reuses port_scan_entry
 // as-is, keyed by in6_key instead of a raw __u32 saddr.
@@ -765,10 +795,20 @@ int xdp_packet_filter(struct xdp_md *ctx)
 			if (dest_port6 == GTPU_PORT) {
 				int rc6 = parse_gtpu((void *)(udph6 + 1), data_end, &teid6);
 				malformed6 = (rc6 == GTPU_PARSE_MALFORMED);
-				// Tracked whenever a TEID was read, malformed or not -- see
-				// parse_gtpu's comment on why the malformed case matters.
-				if (teid6 != 0)
+
+				if (teid6 != 0) {
+					// See the IPv4 branch for why this drop is here and
+					// not before parsing, and why a dropped packet is
+					// neither tracked nor emitted.
+					struct tunnel_key_v6 blocked_key6 = {.teid = teid6};
+					__builtin_memcpy(blocked_key6.saddr, saddr6.addr, 16);
+					__u8 *tunnel_blocked6 =
+						bpf_map_lookup_elem(&tunnel_blocklist_v6, &blocked_key6);
+					if (tunnel_blocked6 && *tunnel_blocked6)
+						return XDP_DROP;
+
 					tunnel_rate6 = track_tunnel_rate_v6(&saddr6, teid6, now6);
+				}
 			}
 
 			emit_signaling_event_v6(saddr6.addr, ip6h->daddr, dest_port6, payload_size6,
@@ -856,10 +896,30 @@ int xdp_packet_filter(struct xdp_md *ctx)
 		if (dest_port == GTPU_PORT) {
 			int rc = parse_gtpu((void *)(udph + 1), data_end, &teid);
 			malformed = (rc == GTPU_PARSE_MALFORMED);
-			// Tracked whenever a TEID was read, malformed or not -- see
-			// parse_gtpu's comment on why the malformed case matters.
-			if (teid != 0)
+
+			if (teid != 0) {
+				// Per-subscriber drop. Unlike the source-IP blocklist at
+				// the top of this function, this check cannot happen
+				// before parsing -- the key does not exist until the
+				// GTP-U header has been read -- so a blocked tunnel still
+				// pays for the parse. That is the cost of being able to
+				// drop one subscriber instead of the whole gNB.
+				//
+				// Dropped packets are deliberately NOT rate-tracked and
+				// NOT emitted: they never reach the workload, so counting
+				// them as load would keep the tunnel's rate pinned at the
+				// flood level forever and de-escalation (which waits for a
+				// quiet period) would never fire. Same reasoning as the
+				// source blocklist returning before track_signal_rate().
+				struct tunnel_key blocked_key = {.saddr = saddr, .teid = teid};
+				__u8 *tunnel_blocked = bpf_map_lookup_elem(&tunnel_blocklist, &blocked_key);
+				if (tunnel_blocked && *tunnel_blocked)
+					return XDP_DROP;
+
+				// Tracked whenever a TEID was read, malformed or not -- see
+				// parse_gtpu's comment on why the malformed case matters.
 				tunnel_rate = track_tunnel_rate(saddr, teid, now);
+			}
 		}
 
 		emit_signaling_event(saddr, iph->daddr, dest_port, payload_size, protocol,

@@ -313,7 +313,8 @@ and the in-tunnel flood were captured from the same UE and therefore carry
 **the same TEID**. On this dataset per-TEID rate is numerically identical to
 per-source rate. Per-tunnel features can be shown *correct* here; they
 cannot be shown *discriminative*. That needs a multi-UE capture, which this
-dataset does not contain (`ROADMAP.md` Phase 3).
+dataset does not contain — §2.6 below is that capture, and is where the
+discrimination is actually demonstrated.
 
 ### 2.5.2 Retraining with tunnel features
 
@@ -610,12 +611,28 @@ same width — no ONNX shape change). Retrained, scored with real timestamps:
 
 Pooled: ROC AUC 0.982, recall 0.915 / 0.913 / 0.911, zero false positives.
 
-**What this does not fix, stated so it isn't assumed:** the score no longer
-implicates bystanders, but the *mitigation* still would. `ThreatScoreEvent`
-carries a source IP, `pkg/ebpf`'s blocklist is keyed by source IP, and on
-this topology that IP is the gNB's. A correctly-attributed score for TEID
-`0x8748` still results in `Block(127.0.0.1)` — all four subscribers. Making
-the action as precise as the detection needs a TEID-keyed drop path in
-`bpf/packet_filter.c` and a TEID on the wire event that drives it; that is
-a new eBPF map, a new action, and a CRD change, and it is recorded in
-`ROADMAP.md` Phase 3 rather than started here.
+**What this did not fix, and how that was closed (2026-09-21):** when this
+section was written the score no longer implicated bystanders but the
+*mitigation* still would. `ThreatScoreEvent` carried only a source IP,
+`pkg/ebpf`'s blocklist was keyed by source IP, and on this topology that IP
+is the gNB's — so a correctly-attributed score for TEID `0x8748` still
+resulted in `Block(127.0.0.1)`, all four subscribers.
+
+That gap is now closed, as `ROADMAP.md` Phase 3 item 1. `bpf/packet_filter.c`
+carries a second enforcement map, `tunnel_blocklist`, keyed by
+`(saddr, TEID)` and checked in the GTP-U branch right after the header is
+parsed; `ThreatScoreEvent` carries the `teid`; the CRD grew
+`actions.ebpfBlockTunnel` and `status.blockedTunnels`, and the same
+finalizer and de-escalation plumbing that reverses an IP block reverses a
+tunnel block. A score arriving **without** a TEID does not fall back to
+blocking the source — it is a counted no-op
+(`sentinel5g_mitigations_total{action="ebpf_block_tunnel",result="no_teid"}`),
+because widening a per-tunnel decision into a per-gNB one is exactly the
+failure this section named. The drop sits *after* the GTP-U header is parsed
+(the key does not exist before that) but *before* rate tracking and event
+emission, so a blocked tunnel stops feeding its own rate counter, that rate
+decays, and de-escalation's quiet period can actually elapse.
+
+See `docs/paper-data/03-architecture-engineering-decisions.md` for the four
+design decisions behind that path, and §1.4 of the performance document for
+what the drop costs per packet.

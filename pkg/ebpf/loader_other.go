@@ -24,6 +24,12 @@ func (l *Loader) Block(ip net.IP) error { return nil }
 // Unblock is a no-op on non-Linux platforms.
 func (l *Loader) Unblock(ip net.IP) error { return nil }
 
+// BlockTunnel is a no-op on non-Linux platforms.
+func (l *Loader) BlockTunnel(ip net.IP, teid uint32) error { return nil }
+
+// UnblockTunnel is a no-op on non-Linux platforms.
+func (l *Loader) UnblockTunnel(ip net.IP, teid uint32) error { return nil }
+
 // Close is a no-op on non-Linux platforms.
 func (l *Loader) Close() error { return nil }
 

@@ -18,9 +18,22 @@ import (
 // ip's address family (see ipv4Key/ipv6Key).
 type BlocklistUpdater interface {
 	// Block causes packets sourced from ip to be dropped at the XDP layer.
+	//
+	// On a GTP-U N3 interface this is a blunt instrument: every subscriber
+	// behind a peer gNB shares its source address, so blocking it drops all
+	// of them. BlockTunnel below is the per-subscriber form; prefer it
+	// whenever the score that triggered the mitigation carries a TEID.
 	Block(ip net.IP) error
 	// Unblock removes a previously blocked ip, restoring normal delivery.
 	Unblock(ip net.IP) error
+	// BlockTunnel drops only the GTP-U tunnel (ip, teid), leaving every
+	// other tunnel from the same source untouched. teid must be non-zero:
+	// 0 is the schema's "no tunnel identity" sentinel (see
+	// events.NormalizedEvent), and blocking it would mean blocking every
+	// packet the parser couldn't attribute.
+	BlockTunnel(ip net.IP, teid uint32) error
+	// UnblockTunnel reverses BlockTunnel.
+	UnblockTunnel(ip net.IP, teid uint32) error
 	// Close detaches the XDP program and releases the underlying resources.
 	Close() error
 }

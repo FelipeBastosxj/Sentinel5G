@@ -12,7 +12,7 @@
 
 * **Kernel-Level Visibility (eBPF):** Non-intrusive packet and event inspection for 3GPP/SIP/SMPP protocols at the XDP/TC layer — including parsing the GTP-U header itself (3GPP TS 29.281) to rate traffic **per tunnel (TEID)**, which is what tells one flooding subscriber apart from the gNB every subscriber shares.
 * **AI-Driven Anomaly Detection:** Machine learning inference engine (ONNX Runtime) that learns a per-workload signaling baseline and flags deviations as zero-day candidates. The published model trains on **real** GTP-U captured from a live Open5GS+UERANSIM core ([`docs/paper-data/real-dataset/`](docs/paper-data/real-dataset/README.md)) — read that directory's stated scope limits before treating it as a model of your own network. Paired with an explicit non-ML detector for the one anomaly class the autoencoder provably cannot catch; the measurement is in [`docs/paper-data/02-ai-training-inference.md`](docs/paper-data/02-ai-training-inference.md) §2.5–§2.6.
-* **Closed-Loop Automation:** Automated network isolation and eBPF-level packet dropping triggered instantly upon anomaly detection.
+* **Closed-Loop Automation:** Automated network isolation and eBPF-level packet dropping triggered instantly upon anomaly detection — droppable **per GTP-U tunnel**, so a flooding subscriber is cut off without taking down every other subscriber behind the same gNB.
 * **Kubernetes-Native:** Full declarative control via custom CRDs (`TelecomSecurityPolicy`).
 * **Zero-Trust Telecom Architecture:** Aligned with CISA and NIST guidelines for U.S. Critical Infrastructure Security.
 
@@ -187,17 +187,20 @@ kubectl delete -f deployments/quickstart/nats.yaml
 
 ## 📊 Design Targets
 
-These are the latency/overhead budgets the architecture is designed around,
-**not** measured benchmarks — no sustained-load harness is wired into CI
-yet (a one-off in-program XDP cost of ~0.8µs/packet was measured before the
-GTP-U parser existed; `docs/paper-data/01-performance-benchmarks.md`).
-See [`docs/observability.md`](docs/observability.md) for how they're intended
-to be measured and tracked, and [`ROADMAP.md`](ROADMAP.md) for the harness
-that will validate them under sustained load.
+Two of the three are now **measured**, with a reproducible harness
+(`scripts/loadtest/`, results in
+[`docs/paper-data/01-performance-benchmarks.md`](docs/paper-data/01-performance-benchmarks.md)
+§1.4). None is enforced by CI, which would need real hardware rather than a
+synthetic replay — read that directory's README for what the methods can
+and cannot see before quoting the numbers.
+See [`docs/observability.md`](docs/observability.md) for how they're
+measured and tracked in a running deployment, and
+[`scripts/loadtest/README.md`](scripts/loadtest/README.md) for how to
+reproduce the numbers yourself.
 
-* **Latency Impact:** < 0.2ms added per packet at the XDP layer.
-* **CPU Overhead:** < 2% per worker node at 100k req/sec (target).
-* **Mitigation Speed:** single-digit-millisecond closed-loop response once a threat score crosses threshold (target).
+* **Latency Impact:** < 0.2ms added per packet at the XDP layer — measured at **~195–211 ns** for a full GTP-U parse.
+* **Mitigation Speed:** single-digit-millisecond closed-loop response once a threat score crosses threshold — measured at **~2 ms** end to end.
+* **CPU Overhead:** < 2% per worker node at 100k req/sec — still a target, not measured.
 
 ---
 

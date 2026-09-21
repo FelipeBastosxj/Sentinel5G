@@ -283,6 +283,19 @@ func (r *Reconciler) tryDeEscalate(ctx context.Context, log logr.Logger, policy 
 				return ctrl.Result{}, fmt.Errorf("de-escalate: unblock %s for %s/%s: %w", raw, policy.Namespace, policy.Name, err)
 			}
 		}
+		for _, entry := range policy.Status.BlockedTunnels {
+			ip, teid, err := parseTunnel(entry)
+			if err != nil {
+				// A status entry we can't parse is one we can't undo.
+				// Log and drop it rather than wedging de-escalation for
+				// every other tunnel behind it forever.
+				log.Error(err, "skipping an unparseable blocked-tunnel entry during de-escalation")
+				continue
+			}
+			if err := r.Blocklist.UnblockTunnel(ip, teid); err != nil {
+				return ctrl.Result{}, fmt.Errorf("de-escalate: unblock tunnel %s for %s/%s: %w", entry, policy.Namespace, policy.Name, err)
+			}
+		}
 	}
 
 	if r.Mesh != nil && policy.Spec.Actions.IsolatePod {
@@ -294,7 +307,9 @@ func (r *Reconciler) tryDeEscalate(ctx context.Context, log logr.Logger, policy 
 	}
 
 	unblockedCount := len(policy.Status.BlockedSourceIPs)
+	unblockedTunnels := len(policy.Status.BlockedTunnels)
 	policy.Status.BlockedSourceIPs = nil
+	policy.Status.BlockedTunnels = nil
 	policy.Status.Phase = securityv1alpha1.PolicyPhaseMonitoring
 	if err := r.Status().Update(ctx, policy); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status after de-escalating %s/%s: %w", policy.Namespace, policy.Name, err)
@@ -303,7 +318,8 @@ func (r *Reconciler) tryDeEscalate(ctx context.Context, log logr.Logger, policy 
 	SetPolicyPhase(policy.Namespace, policy.Name, policy.Status.Phase)
 
 	log.Info("de-escalated policy after quiet dwell period",
-		"dwell", r.deEscalationDwell(), "unblockedIPs", unblockedCount, "meshReleaseAttempted", policy.Spec.Actions.IsolatePod)
+		"dwell", r.deEscalationDwell(), "unblockedIPs", unblockedCount, "unblockedTunnels", unblockedTunnels,
+		"meshReleaseAttempted", policy.Spec.Actions.IsolatePod)
 	return ctrl.Result{}, nil
 }
 
@@ -340,11 +356,24 @@ func (r *Reconciler) finalize(ctx context.Context, log logr.Logger, policy *secu
 				return ctrl.Result{}, fmt.Errorf("unblock %s for %s/%s: %w", raw, policy.Namespace, policy.Name, err)
 			}
 		}
+		for _, entry := range policy.Status.BlockedTunnels {
+			ip, teid, err := parseTunnel(entry)
+			if err != nil {
+				// Same reasoning as tryDeEscalate's: an entry we can't
+				// parse must not block the policy's deletion forever.
+				log.Error(err, "skipping an unparseable blocked-tunnel entry during finalization")
+				continue
+			}
+			if err := r.Blocklist.UnblockTunnel(ip, teid); err != nil {
+				return ctrl.Result{}, fmt.Errorf("unblock tunnel %s for %s/%s: %w", entry, policy.Namespace, policy.Name, err)
+			}
+		}
 	}
 
 	log.Info("released mitigations for deleted policy",
 		"quarantineReleaseAttempted", policy.Spec.Actions.IsolatePod,
-		"unblockedIPs", len(policy.Status.BlockedSourceIPs))
+		"unblockedIPs", len(policy.Status.BlockedSourceIPs),
+		"unblockedTunnels", len(policy.Status.BlockedTunnels))
 
 	controllerutil.RemoveFinalizer(policy, telecomSecurityPolicyFinalizer)
 	if err := r.Update(ctx, policy); err != nil {

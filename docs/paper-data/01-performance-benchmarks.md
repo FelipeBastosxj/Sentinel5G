@@ -1,13 +1,14 @@
 # 1. Performance & Latency Metrics (Benchmarks)
 
-Status up front, because it governs how to read everything below: **no
-load-testing harness exists yet.** `ROADMAP.md` Phase 3 lists it as future
-work ("Load-testing harness validating the <0.2ms/packet and single-digit-ms
-mitigation-latency targets... under sustained throughput, not just unit
-tests"). `README.md` and `docs/observability.md` both explicitly label the
-`<0.2ms` / `<2%` CPU / single-digit-ms figures as **design targets**, not
-measured benchmarks. This file keeps that distinction — it does not restate
-the targets as if they were measurements.
+Status up front, because it governs how to read everything below: **two of
+the three design targets are now measured, one is not.** The load-testing
+harness asked for by `ROADMAP.md` Phase 3 exists (`scripts/loadtest/`) and
+§1.4 records what it found for the `<0.2ms`/packet and single-digit-ms
+mitigation-latency targets, together with the limits of each method. The
+`<2%` CPU-per-node target has **no** sustained-load measurement behind it
+and remains a design target, labelled as one everywhere it appears. Sections
+1.1–1.3 predate the harness and keep their own, narrower provenance notes;
+they are not retro-fitted with §1.4's numbers.
 
 ## 1.1 Processing delay: eBPF (XDP) runtime inspecting GTP-U/SIP/SMPP
 
@@ -92,7 +93,8 @@ maps, a real NIC driver path, and a userspace reader draining the ring —
 while `prog run` replays one packet with hot caches and no consumer, so it
 measures the program's own instructions rather than a deployment. Both
 answer the CLAUDE.md question the same way; neither is a sustained-load
-benchmark, which stays `ROADMAP.md` Phase 3.
+benchmark — that is §1.4, which re-measures the same program under a
+repeat sweep up to a million iterations and against a saturated map.
 
 ```sh
 # packets: Ethernet + IPv4 127.0.0.1 -> 127.0.0.7 + UDP; see the git history
@@ -166,12 +168,13 @@ resource leak or crash.
 closed — `sentinel5g_ai_score_latency_seconds` (ROADMAP.md Phase 2) records
 every `ScoringEngine.score_event`, in both run modes — and the operator now
 has its own decision-path metrics too (`docs/observability.md`). The
-higher-throughput load driver on the *bus* is still pending. Note, though,
+higher-throughput load driver on the *bus* is still pending: §1.4's harness
+drives the kernel path and the closed loop, not NATS itself. Note, though,
 that the ~60-70 pkt/s figure this environment could push through a GTP-U
 tunnel turned out not to be an environment limit at all: the same tunnel
 on the native-Linux lab carries ~125,000 pkt/s from a real UDP generator
-(`test-environment.md`), so the harness in ROADMAP.md Phase 3 can be built
-against real rates rather than around WSL2.
+(`test-environment.md`), which is what made §1.4 measurable at real rates
+rather than around WSL2.
 
 ## 1.3 NATS JetStream metrics: pub/sub latency and throughput
 
@@ -205,3 +208,96 @@ The burst now exists as a committed, reproducible artifact:
 `real-dataset-v2/multi_ue_one_flooding.pcap` (3,000 pkt/s through one
 tunnel) and the `gen_tunnel_flood.py` that produces it at any rate the lab
 supports.
+
+## 1.4 Load-testing harness: both SLOs measured, both open questions settled
+
+**Measured** on 2026-09-21 on the native-Linux host
+([`test-environment.md`](test-environment.md), Linux 6.14), against the
+current program — the one with GTP-U parsing, per-TEID rate tracking and
+the per-tunnel drop map. Reproduce with `scripts/loadtest/`; that
+directory's README states what each method can and cannot see, and those
+caveats are load-bearing for how these numbers should be read.
+
+```sh
+make -C bpf
+sudo scripts/loadtest/xdp_bench.sh
+sudo KUBECONFIG=... scripts/loadtest/mitigation_latency.sh
+```
+
+### Per-packet XDP cost (`< 0.2 ms` target)
+
+`bpftool prog run` replays one real frame N times through the real loaded
+program. The repeat sweep matters: the ring buffer holds 8,192 records
+(256 KB ÷ 32 B) and this method has no consumer draining it, so past that
+point every submit fails fast and the cost *drops*. The `live` rows are the
+honest figure.
+
+| Packet | ring live (1k / 4k / 8,192) | ring saturated (50k / 1M) |
+|---|---|---|
+| GTP-U T-PDU, flags `0x34`, one ext header | 204 / 195 / 211 ns | 182 / 170 ns |
+| SIP (port 5060) | 194 / 151 / 144 ns | 137 / 137 ns |
+| Zero-filled UDP at port 2152 (fails validation) | 149 / 151 / 208 ns | 123 / 125 ns |
+| UDP at an off-signaling port | 144 / 112 / 107 ns | 119 / 127 ns |
+
+**~195–211 ns for a full GTP-U parse — roughly 1,000× under the 0.2 ms
+target.** The parse, the tunnel-rate update and the tunnel-blocklist lookup
+together cost about 60 ns over the off-port path.
+
+### Closed-loop mitigation latency (single-digit-ms target)
+
+Two halves, because they fail for different reasons:
+
+| Half | Measured |
+|---|---|
+| `Block(ip)` — the eBPF map write | 733 ns/op, 2 allocs |
+| `BlockTunnel(ip, teid)` | 762 ns/op, 2 allocs |
+| `BlockTunnel`, distinct TEIDs (a mitigation storm: every write a new insert) | 865 ns/op |
+| Published score → `Phase: Mitigating` (kind cluster) | **2 ms** mean over 6 samples |
+
+Every eBPF map write is visible to the XDP program on the very next packet,
+so the first three rows *are* the time from decision to enforcement — there
+is no propagation delay to add.
+
+The 2 ms figure needed method work to be worth anything: polling
+`kubectl get` cannot resolve it, because one round trip to this API server
+costs **32 ms** — more than the thing being measured. An earlier run using
+polling reported 33 ms and was measuring `kubectl`. The harness now opens a
+`--watch` before publishing and times the first `Mitigating` the API server
+streams, and prints the round-trip cost first so the floor is visible
+rather than implied.
+
+### The two questions `ROADMAP.md` Phase 3 attached to this item
+
+**Does `blocklist` need LRU semantics?** No, and the reasoning is a
+security one rather than a performance one. An entry is a mitigation the
+operator owns the lifetime of — removed by de-escalation or a policy's
+finalizer — so an LRU silently evicting one would un-block traffic nobody
+asked to un-block: a control failing *open* under exactly the load that
+created the entries. `blocklist` and `tunnel_blocklist` are both plain
+`HASH`; a full map refuses the insert, and the refusal surfaces as
+`sentinel5g_mitigations_total{result="error"}` and a failed reconcile.
+Pinned by `TestBlocklistIsBoundedAndFailsLoudlyWhenFull`
+(`go test -tags privileged`): at 16,384 entries the next insert is refused
+with `key too big for map`, not swallowed. The rate maps are LRU precisely
+because they are the opposite case — an evicted counter costs one missed
+observation, never a wrong enforcement decision.
+
+**Does `signaling_events` hold up under telecom-scale volume?** It holds up
+in the way it was designed to, and the design's trade is worth stating
+plainly. The ring holds 8,192 in-flight records; when it fills,
+`emit_signaling_event` drops *the observation* and the packet still passes
+— Layer 1 never drops traffic because Layer 2 fell behind. The saturated
+column above is that path, and it is *cheaper* than the live one, so
+overload does not compound. At ~200 ns/packet, 8,192 records is ~1.6 ms of
+drain headroom at line rate. That is comfortable for a consumer doing a
+channel send and would not be for one doing blocking I/O — which is the
+real constraint this establishes on anything added to
+`pkg/ingestion.Publisher`'s hot path, and why it drains the ring even while
+NATS is disconnected.
+
+### Still not measured
+
+Sustained line-rate traffic through a real NIC, and the `< 2%` CPU per
+worker node at 100k req/s. Both need a load generator on real hardware
+rather than a synthetic replay; §1.4's methods deliberately do not claim
+to cover them.

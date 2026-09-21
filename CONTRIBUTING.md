@@ -52,10 +52,27 @@ docs(readme): update helm installation instructions
   decodes silently, it doesn't fail — and load the object through a real
   verifier (`sudo bpftool prog load bpf/packet_filter.o /sys/fs/bpf/x`)
   to confirm it's accepted and to read back the stack depth and map sizes
-  the source comments cite.
+  the source comments cite. A **new map** also has to be looked up in
+  `pkg/ebpf.Attach` or it is simply never wired; doing so deliberately
+  makes every older `.o` fail loudly at attach time, which is the intent —
+  call it out in `CHANGELOG.md` as breaking for anyone overriding
+  `--bpf-object`. Choose the map type by what it holds: enforcement
+  decisions are `HASH` (must fail loudly when full), observations are
+  `LRU_HASH` (see `CLAUDE.md`).
+- **Privileged eBPF tests** (`pkg/ebpf/loader_privileged_test.go`, build tag
+  `privileged`) exercise a real attach and real map writes, so they are not
+  in CI. Run them by hand when you touch the loader or a map:
+  `sudo SENTINEL5G_BPF_OBJECT=bpf/packet_filter.o go test -tags privileged ./pkg/ebpf/`.
+  They are the only thing pinning the blocklist's bounded-and-refuses
+  behaviour.
+- **Performance-affecting eBPF or ingestion changes** should be re-measured
+  with `scripts/loadtest/` and the numbers updated in
+  `docs/paper-data/01-performance-benchmarks.md` §1.4.
 - **Cross-language schema (`pkg/events/types.go` ↔
-  `cmd/ai-engine/sentinel_ai/features.py` ↔ `docs/event-model.md`):** kept
-  in sync by hand; change all three together. Changing
+  `cmd/ai-engine/sentinel_ai/features.py` ↔
+  `cmd/ai-engine/sentinel_ai/server.py`, which builds the
+  `ThreatScoreEvent` ↔ `docs/event-model.md`):** kept in sync by hand;
+  change all of them together. Changing
   `FEATURE_VECTOR_SIZE` changes the ONNX input shape, which invalidates
   every deployed model — say so in the CHANGELOG under a breaking heading,
   and re-export with `make ai-engine-train-real`.
