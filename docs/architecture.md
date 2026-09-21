@@ -310,7 +310,7 @@ policy.
 What remains blunter than the detection is the *mesh* action: `isolatePod`
 quarantines the whole workload, because `pkg/mesh.Adapter` sees label
 selectors and not GTP-U tunnels. That is inherent to the layer rather than
-an oversight, and it is recorded in `ROADMAP.md` Phase 3.
+an oversight, and it is recorded in `ROADMAP.md` Phase 5.
 
 `ThreatScoreWatcher` calls `Block`/`Quarantine` but never `Unblock`/`Release`
 itself, and a later low score does not touch a `Mitigating` policy's phase
