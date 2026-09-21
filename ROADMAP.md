@@ -180,10 +180,11 @@ in production?", and answered here rather than in a thread. Nothing in
 this section is a bug in what's built; it's what's missing *around* it.
 The two load-bearing items were the detection gap and the load-testing
 harness (Phase 3 below): until both moved, automated mitigation on real
-traffic was a false-positive risk without the compensating benefit. The
-detection gap is now closed (see its entry for what did and did not close
-it, and for what remains unvalidated); the load-testing harness is still
-open.
+traffic was a false-positive risk without the compensating benefit. Both
+have now moved: the detection gap is closed (see its entry for what did and
+did not close it, and for what remains unvalidated), and the load-testing
+harness exists as `scripts/loadtest/`, with its results in
+`docs/paper-data/01-performance-benchmarks.md` §1.4.
 
 - [x] **The operator hard-exits when NATS is unreachable.** Fixed:
       `pkg/events.Connector` connects in the background with retry/backoff
@@ -320,14 +321,27 @@ open.
       Bystander tunnels during a flood went from 150/192 packets above the
       mitigation threshold to 0/192, with 94% of the flooding tunnel's
       packets still flagged. Same 12-wide vector, no ONNX shape change.
-- [ ] **A TEID-keyed drop path in eBPF.** Detection is now per subscriber;
-      mitigation still isn't. `ThreatScoreEvent` carries a source IP and the
-      blocklist is keyed by it, and on a real N3 that IP is the gNB's — so a
-      correctly-attributed score for one flooding tunnel still results in
-      `Block(gNB)`, i.e. every subscriber behind it. Closing that needs a
-      `(saddr, TEID)`-keyed drop map in `bpf/packet_filter.c`, a TEID on the
-      `ThreatScoreEvent`, a new action on the CRD, and the same
-      finalizer/de-escalation plumbing the IP blocklist has.
+- [x] **A TEID-keyed drop path in eBPF.** Done: detection and mitigation
+      are now the same granularity. `bpf/packet_filter.c` gained a
+      `tunnel_blocklist` map keyed by the *same* `(source, TEID)` struct
+      `tunnel_rate` is addressed by — so what the detector measured is
+      exactly what gets dropped — plus its IPv6 twin. `ThreatScoreEvent`
+      carries the `teid`, `Actions.EbpfBlockTunnel` is the new opt-in
+      action, `Status.BlockedTunnels` is what the finalizer and the
+      de-escalation timer replay to undo it.
+
+      Two decisions worth recording. A score arriving without a TEID (every
+      Hubble- and Falco-sourced one, by construction) does **not** fall
+      back to blocking the whole source: the operator asked for one
+      subscriber and would silently get the gNB, so the action is a no-op
+      and says so in a metric. And a dropped packet is deliberately not
+      rate-tracked — counting traffic the kernel is discarding would pin
+      the tunnel's rate at the flood level and de-escalation's quiet period
+      would never fire.
+
+      Verified against the real verifier: blocking `(127.0.0.1, 0x4d84)`
+      drops that tunnel while a second tunnel *from the same source IP*,
+      SIP, and off-port traffic all still pass, and unblocking restores it.
 - [x] **Wire the AI engine into `scripts/quickstart.sh`'s e2e.** Done:
       `SENTINEL5G_AI_ENGINE=true` installs `charts/sentinel5g-ai-engine`
       and publishes a *NormalizedEvent* (a 3,000 pkt/s tunnel-flood shape)
@@ -342,12 +356,44 @@ open.
       restart, `ThreatScoreWatcher` consumed the scores JetStream had
       buffered before `PolicyIndex` was populated, and dropped every one of
       them silently. `Start` now seeds the index from the cache first.
+- [ ] **Mesh quarantine is still per workload, not per subscriber.** The
+      eBPF drop is now per tunnel; `IsolatePod` still quarantines the whole
+      Pod, because `pkg/mesh.Adapter.Quarantine`'s signature carries a
+      label selector and nothing finer. A policy running
+      `ebpfBlockTunnel: true, isolatePod: true` therefore has one precise
+      action and one blunt one — which is the right default (the mesh layer
+      cannot see a GTP-U tunnel at all) but worth knowing before enabling
+      both.
 - [ ] Multi-cluster policy propagation.
-- [ ] Load-testing harness for the <0.2ms/packet and mitigation-latency
-      targets in `docs/observability.md`. Also where to settle two open
-      questions: whether the `blocklist` eBPF map needs LRU semantics, and
-      whether the `signaling_events` ring buffer holds up under real
-      telecom-scale volume.
+- [x] **Load-testing harness for the `<0.2ms`/packet and
+      mitigation-latency targets in `docs/observability.md`.** Done:
+      `scripts/loadtest/` (its README explains what each method can and
+      cannot see), results in
+      `docs/paper-data/01-performance-benchmarks.md` §1.4. Both SLOs are
+      met with room: **~195-211 ns/packet** for full GTP-U parsing with the
+      ring buffer live (~1,000x under the 0.2 ms target) and **~2 ms** from
+      a published score to `Phase: Mitigating`, of which the eBPF map write
+      is ~760 ns.
+
+      Both attached questions are settled. **`blocklist` does not need LRU
+      semantics** — neither does `tunnel_blocklist` — and that is a
+      security property, not a performance one: an entry is a mitigation
+      the operator owns the lifetime of, so an LRU silently evicting one
+      would un-block traffic nobody asked to un-block, a control failing
+      open under load. Both are plain HASH; a full map refuses the insert
+      (pinned at 16,384 by a privileged test) and the refusal surfaces as a
+      metric and a failed reconcile. **The `signaling_events` ring buffer
+      holds up as designed**: 8,192 in-flight records, and when it fills
+      the observation is dropped while the packet still passes — Layer 1
+      never drops traffic because Layer 2 fell behind. At the measured
+      per-packet cost that is ~1.6 ms of drain headroom at line rate, which
+      is the real constraint on anything ever added to `Publisher`'s hot
+      path.
+
+      Still open, and now precisely bounded rather than unmeasured:
+      sustained line-rate traffic through a real NIC, and the `<2%` CPU per
+      worker node at 100k req/s. Both need a load generator on real
+      hardware rather than a synthetic replay.
 - [ ] Poetry-based lockfile for `cmd/ai-engine`, if wanted.
 
 Have an idea that isn't here? Open an issue — see

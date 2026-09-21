@@ -25,7 +25,9 @@ That second row is the measurement the whole per-TEID design rests on. A
 per-source counter reports 3,031 for *all four* subscribers — it cannot say
 which one is flooding, and a mitigation keyed on it blocklists the gNB, i.e.
 everyone. A per-tunnel counter reports 3,001 for one TEID and 10 for the
-other three.
+other three. Since 2026-09-21 the *mitigation* is keyed the same way — see
+`ROADMAP.md` Phase 3 and `bpf/packet_filter.c`'s `tunnel_blocklist` — so
+this capture is also what the per-tunnel drop path was validated against.
 
 **Snaplen is 128 bytes.** Enough for Ethernet + IPv4 + UDP + the full GTP-U
 header with its optional block and one extension header (58 bytes), with

@@ -145,6 +145,10 @@ func (d *GTPUFloodDetector) Evaluate(evt events.NormalizedEvent, now time.Time) 
 		Namespace:     evt.Namespace,
 		PodName:       evt.PodName,
 		SourceIP:      evt.SourceIP,
+		// The whole point of this detector is that it knows WHICH tunnel;
+		// carrying it through is what lets the mitigation be equally
+		// precise (Actions.EbpfBlockTunnel).
+		TEID: evt.TEID,
 		// 1.0, not the configured threshold scaled to something: a
 		// deterministic rule has no uncertainty to express. It also has to
 		// clear the most conservative policy tier, where the effective

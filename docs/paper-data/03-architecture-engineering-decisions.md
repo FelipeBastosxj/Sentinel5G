@@ -16,7 +16,8 @@ flowchart TD
         B -->|"malformed UDP, or<br/>invalid GTP-U framing"| C
         A --> D["signal_rate LRU map<br/>(per-source rate)"]
         A --> D2["tunnel_rate LRU map<br/>(per source+TEID rate, carried in-band)"]
-        A --> E["blocklist map<br/>(XDP_DROP on match)"]
+        A --> E["blocklist map<br/>(per source IP, XDP_DROP on match)"]
+        A --> E2["tunnel_blocklist map<br/>(per source+TEID, XDP_DROP on match)"]
     end
 
     subgraph L2["Layer 2 — Ingestion (pkg/ingestion, pkg/events)"]
@@ -41,14 +42,19 @@ flowchart TD
         O --> P{"score ≥ policy threshold?<br/>(BaseThreshold × sensitivityMultiplier)"}
         P -->|no| Q["Status.Phase = Monitoring"]
         P -->|"yes, autoMitigate=false"| Q2["Status.Phase = Alerting<br/>threshold_crossings_total{outcome=alerting}"]
+        P -->|"yes, autoMitigate=true"| R0{"score carries a TEID?"}
+        R0 -->|yes| R1["EbpfBlockTunnel:<br/>push (sourceIP, TEID) to tunnel_blocklist"]
+        R0 -->|"no — counted no-op,<br/>never widened to the source"| RN["mitigations_total<br/>{action=ebpf_block_tunnel,result=no_teid}"]
         P -->|"yes, autoMitigate=true"| R["EbpfBlock:<br/>push sourceIP to blocklist map"]
         P -->|"yes, autoMitigate=true"| S["IsolatePod:<br/>mesh adapter DENY (Istio/Cilium/Linkerd)"]
         R --> E
-        P --> T["TelecomSecurityPolicy.status updated<br/>(phase, observedThreatScore, lastMitigationTime,<br/>ScoringPipelineReady condition)"]
+        R1 --> E2
+        P --> T["TelecomSecurityPolicy.status updated<br/>(phase, observedThreatScore, lastMitigationTime,<br/>blockedIPs, blockedTunnels,<br/>ScoringPipelineReady condition)"]
         O --> U["Prometheus: threat_scores_received_total,<br/>threat_score, mitigations_total, policy_phase"]
     end
 
     E -.->|"drops future packets<br/>from blocked source"| A
+    E2 -.->|"drops future packets<br/>of that one tunnel"| A
 ```
 
 Design principle this enforces (from `docs/architecture.md`): every layer
@@ -156,8 +162,10 @@ the alternative lost. Commit messages carry the full reasoning.
   the 1-second window roll and can return 1 for the very packet the kernel
   counted as the three-thousandth — worst exactly during the flood the
   counter exists to catch. The record grew 24 → 32 bytes, and `Attach` now
-  refuses an object without the `tunnel_rate` map so a stale `.o` fails
-  loudly instead of decoding every record at the wrong length.
+  refuses an object without the `tunnel_rate` map — and, since Phase 3,
+  without `tunnel_blocklist` either — so a stale `.o` fails loudly instead
+  of decoding every record at the wrong length or accepting a block that
+  can never take effect.
 - **A rule, not a retune, for the in-tunnel flood (`6102a6d`).** The
   measured anomaly reconstructed *better* than normal traffic (0.0679 vs
   0.0811); no threshold on reconstruction error separates that. The rule
@@ -191,3 +199,48 @@ the alternative lost. Commit messages carry the full reasoning.
   and two load generators (`iperf3 -B`, UERANSIM's `nr-binder`) that report
   success while never entering the GTP-U tunnel. All four are the kind of
   thing that looks fine in a template render and a unit test.
+
+### Phase 3 decisions (`feat/phase-3-teid-drop-and-load-harness`, 2026-09-21)
+
+- **A second enforcement map keyed by `(saddr, TEID)`, not a widened
+  `blocklist`.** The alternative — encode the TEID into the existing map's
+  value, or block the source and hope — was rejected because the two
+  controls have different lifetimes and different blast radii, and the
+  operator's `status` has to be able to say which one it took. The cost is
+  one extra lookup on the GTP-U path only; §1.4 of the performance
+  document measures it.
+- **`BPF_MAP_TYPE_HASH`, not `BPF_MAP_TYPE_LRU_HASH`, for both
+  blocklists.** This is the one place the two map families differ in a way
+  that matters for security rather than for memory. An entry in a rate map
+  is an observation: evicting the coldest one loses a data point. An entry
+  in a blocklist is a decision the operator made and owns the lifetime of;
+  an LRU silently evicting it un-blocks a tunnel nobody asked to un-block,
+  i.e. the control fails *open* under exactly the pressure — many distinct
+  attacking tunnels — that it exists for. A plain hash instead fails
+  *closed* and loudly: the insert returns `E2BIG`, the operator logs it and
+  counts it. `TestBlocklistIsBoundedAndFailsLoudlyWhenFull` pins that
+  behaviour at 16,384 entries so nobody "optimises" it back to an LRU.
+  This settles the first of the two questions `ROADMAP.md` Phase 3 attached
+  to the harness.
+- **A score with no TEID is a counted no-op, never a fallback to blocking
+  the source.** Falling back would mean the imprecise action fires exactly
+  when the precise one cannot — the opposite of the intent — and it would
+  do so invisibly, since the status would show a source block the policy
+  never asked for. The no-op is visible instead, as
+  `mitigations_total{action="ebpf_block_tunnel",result="no_teid"}` plus a
+  V(1) log. `pkg/ebpf` refuses TEID 0 at the map boundary too: 0 means "no
+  tunnel identity", not "tunnel number zero".
+- **The drop is checked after GTP-U parsing but before rate tracking.**
+  Before parsing there is no key to check. After rate tracking, a blocked
+  tunnel would keep feeding its own counter from packets it never
+  forwarded, its rate would never decay, and de-escalation's quiet period
+  would never elapse — the block would become permanent by construction.
+- **The harness is `scripts/loadtest/`, three small scripts, not a
+  framework.** `bpftool prog run` for per-packet cost, a privileged Go
+  benchmark for the map-update half of mitigation, and a `kubectl --watch`
+  opened *before* the score is published for the cluster half. That last
+  detail is the whole measurement: an earlier `kubectl get` poll reported
+  33 ms, which was its own round trip, not the system's latency. The
+  script now prints the round-trip cost first so the resolution floor is
+  visible next to the 2 ms result. None of it is CI-gated — it needs root,
+  a kernel and a cluster.

@@ -21,10 +21,12 @@ SCORING column existed that looked identical to a healthy, quiet cluster.
 
 {{- if not .Values.ebpf.enabled }}
 
-NOTE: eBPF blocklist enforcement (EbpfBlock actions) is disabled
-(ebpf.enabled=false). The operator still reconciles policies and can drive
-mesh-layer isolation, but source-IP drops at the XDP layer are no-ops until
-you set ebpf.enabled=true (the chart then adds ebpf.capabilities -- CAP_BPF +
+NOTE: eBPF enforcement is disabled (ebpf.enabled=false). That covers BOTH
+drop actions -- actions.ebpfBlock (per source IP) and actions.ebpfBlockTunnel
+(per GTP-U tunnel, i.e. one subscriber rather than everyone behind the peer
+gNB). The operator still reconciles policies and can drive mesh-layer
+isolation, but neither drop reaches the XDP layer until you set
+ebpf.enabled=true (the chart then adds ebpf.capabilities -- CAP_BPF +
 CAP_NET_ADMIN by default; override on pre-5.8 kernels). See docs/integrations.md.
 {{- end }}
 

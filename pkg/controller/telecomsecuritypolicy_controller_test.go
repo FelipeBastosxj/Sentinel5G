@@ -323,3 +323,89 @@ func TestReconciler_DoesNotDeEscalateBeforeQuietDwellPeriod(t *testing.T) {
 		t.Fatalf("expected BlockedSourceIPs untouched before de-escalation, got %v", got.Status.BlockedSourceIPs)
 	}
 }
+
+// Blocked tunnels need the same reversal plumbing blocked IPs have: without
+// it a per-tunnel drop is permanent, which is worse than the source-wide
+// one it replaces.
+func TestTryDeEscalate_UnblocksTunnelsAfterTheQuietPeriod(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, false, false)
+	policy.Spec.Actions.EbpfBlockTunnel = true
+	policy.Status.Phase = securityv1alpha1.PolicyPhaseMitigating
+	policy.Status.BlockedTunnels = []string{"10.0.0.1/0x4d84", "10.0.0.1/0xc9c7"}
+	long := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	policy.Status.LastMitigationTime = &long
+
+	r, blocklist, _ := newReconcilerFixtureWithDoubles(t, policy)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: nnFor(policy)}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if len(blocklist.unblockedTunnels) != 2 {
+		t.Fatalf("expected both tunnels unblocked, got %v", blocklist.unblockedTunnels)
+	}
+	var got securityv1alpha1.TelecomSecurityPolicy
+	if err := r.Get(context.Background(), nnFor(policy), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.BlockedTunnels) != 0 || got.Status.Phase != securityv1alpha1.PolicyPhaseMonitoring {
+		t.Fatalf("after de-escalation: phase=%s tunnels=%v", got.Status.Phase, got.Status.BlockedTunnels)
+	}
+}
+
+// A status entry that can't be parsed must not wedge de-escalation for the
+// tunnels behind it, or a single bad write strands every other drop.
+func TestTryDeEscalate_SkipsAnUnparseableTunnelEntry(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, false, false)
+	policy.Spec.Actions.EbpfBlockTunnel = true
+	policy.Status.Phase = securityv1alpha1.PolicyPhaseMitigating
+	policy.Status.BlockedTunnels = []string{"garbage", "10.0.0.1/0x4d84"}
+	long := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	policy.Status.LastMitigationTime = &long
+
+	r, blocklist, _ := newReconcilerFixtureWithDoubles(t, policy)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: nnFor(policy)}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(blocklist.unblockedTunnels) != 1 || blocklist.unblockedTunnels[0] != "10.0.0.1/0x4d84" {
+		t.Fatalf("the good entry should still be unblocked, got %v", blocklist.unblockedTunnels)
+	}
+}
+
+func TestFinalize_UnblocksTunnels(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, false, false)
+	policy.Spec.Actions.EbpfBlockTunnel = true
+	policy.Finalizers = []string{telecomSecurityPolicyFinalizer}
+	now := metav1.Now()
+	policy.DeletionTimestamp = &now
+	policy.Status.BlockedTunnels = []string{"10.0.0.1/0x4d84"}
+
+	r, blocklist, _ := newReconcilerFixtureWithDoubles(t, policy)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: nnFor(policy)}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(blocklist.unblockedTunnels) != 1 {
+		t.Fatalf("deleting a policy must release its tunnel drops, got %v", blocklist.unblockedTunnels)
+	}
+}
+
+// newReconcilerFixtureWithDoubles builds a Reconciler over a fake client
+// preloaded with policy, returning the recording doubles so a test can
+// assert what the reconciler actually asked the kernel and the mesh to do.
+func newReconcilerFixtureWithDoubles(t *testing.T, policy *securityv1alpha1.TelecomSecurityPolicy) (*Reconciler, *recordingBlocklist, *recordingMesh) {
+	t.Helper()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(policy).
+		WithStatusSubresource(&securityv1alpha1.TelecomSecurityPolicy{}).
+		Build()
+
+	blocklist := &recordingBlocklist{}
+	meshAdapter := &recordingMesh{}
+	return &Reconciler{
+		Client:    fakeClient,
+		Log:       testr.New(t),
+		Index:     NewPolicyIndex(),
+		Blocklist: blocklist,
+		Mesh:      meshAdapter,
+	}, blocklist, meshAdapter
+}
