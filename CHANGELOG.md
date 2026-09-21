@@ -5,8 +5,15 @@ planned next.
 
 ## [Unreleased]
 
-Phase 2.5 (production readiness) is complete; Phase 3 in progress -- see
-`ROADMAP.md`.
+Phases 2.5 and 3 are complete. `ROADMAP.md` was restructured on the
+strength of a gap review rather than a plan: the production-readiness work
+that review turned up is now **Phase 4** (validation, scale, robustness --
+17 items, each naming the file or measurement it came from), and the
+scale/multi-cluster items that used to sit in Phase 3 moved to **Phase 5**,
+deliberately gated behind it. The headline from that review, and the reason
+for the gating: an operator restart currently un-blocks everything it had
+blocked, silently, because the eBPF maps are not pinned and nothing replays
+`status.blockedTunnels` into the kernel on startup.
 
 ### Added
 - **A per-tunnel (TEID-keyed) eBPF drop path**, closing `ROADMAP.md`

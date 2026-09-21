@@ -193,7 +193,7 @@ permanently inert on their own.
 
 What is still blunter than the detection: `isolatePod` quarantines the
 whole workload, because the mesh layer cannot see a GTP-U tunnel
-(`ROADMAP.md` Phase 3).
+(`ROADMAP.md` Phase 5).
 
 ## 6. Wire up observability
 
