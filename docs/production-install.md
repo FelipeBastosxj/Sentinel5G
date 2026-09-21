@@ -172,14 +172,28 @@ Pod (`kubectl describe pod`/`kubectl get events -n sentinel5g-system`) — it
 degrades to mesh-isolation-only rather than crash-looping, but check for
 that event rather than assuming enforcement is active.
 
-Read what an eBPF block actually blocks before relying on it on an N3
-interface: the blocklist is keyed by **source IP**, and on N3 every
-subscriber's traffic arrives from the peer gNB's address. Detection is
-per tunnel (the probe parses GTP-U and rates each TEID separately); the
-drop is not, so a mitigation triggered by one flooding subscriber drops
-every subscriber behind that gNB. A TEID-keyed drop path is `ROADMAP.md`
-Phase 3. Until then, on N3 specifically, prefer `autoMitigate: false`
-plus your own action on the alert, or mesh isolation of the workload.
+**On an N3 interface, choose the right eBPF action.** There are two, and
+they differ in blast radius:
+
+- `actions.ebpfBlock` drops by **source address**. On N3 that address is
+  the peer gNB's and every subscriber behind it shares it, so a mitigation
+  triggered by one flooding subscriber drops them all.
+- `actions.ebpfBlockTunnel` drops by **(source, TEID)** — the same key the
+  detector measures — so exactly the subscriber that was identified is cut
+  off and the others keep working. This is what you want on N3.
+
+They are independent. Enabling only the tunnel action means a score that
+carries no TEID results in no drop at all (deliberately: it will not
+silently widen to the whole gNB), which you can watch as
+`sentinel5g_mitigations_total{action="ebpf_block_tunnel",result="no_teid"}`.
+Enable `ebpfBlock` alongside it only if a source-wide drop is a fallback
+you actually want. Note the two capture paths that cannot produce a TEID at
+all — Hubble and Falco (`docs/integrations.md`) — make the tunnel action
+permanently inert on their own.
+
+What is still blunter than the detection: `isolatePod` quarantines the
+whole workload, because the mesh layer cannot see a GTP-U tunnel
+(`ROADMAP.md` Phase 3).
 
 ## 6. Wire up observability
 
@@ -193,8 +207,10 @@ still need a working scrape path either way. The one alert to wire before
 anything else: `sum(rate(sentinel5g_threat_scores_received_total[15m])) == 0`
 for longer than you'd tolerate, which is "the scoring half is dead" as a
 number. See `docs/observability.md` for the metrics exposed
-and the (currently unmeasured — see `ROADMAP.md` Phase 3) latency targets
-they're meant to validate against.
+and the latency targets they're meant to validate against — two of the
+three are measured (`docs/paper-data/01-performance-benchmarks.md` §1.4,
+reproducible via `scripts/loadtest/`); the CPU-per-node target is not, and
+is labelled as a target rather than a result.
 
 ## 7. Turn on automated mitigation, per policy
 

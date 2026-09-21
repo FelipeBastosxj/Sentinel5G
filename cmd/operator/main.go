@@ -404,6 +404,8 @@ func hubbleTLSConfig(log logr.Logger, cfg config.OperatorConfig) *tls.Config {
 
 type noopBlocklist struct{}
 
-func (noopBlocklist) Block(net.IP) error   { return nil }
-func (noopBlocklist) Unblock(net.IP) error { return nil }
-func (noopBlocklist) Close() error         { return nil }
+func (noopBlocklist) Block(net.IP) error                 { return nil }
+func (noopBlocklist) Unblock(net.IP) error               { return nil }
+func (noopBlocklist) BlockTunnel(net.IP, uint32) error   { return nil }
+func (noopBlocklist) UnblockTunnel(net.IP, uint32) error { return nil }
+func (noopBlocklist) Close() error                       { return nil }

@@ -48,8 +48,26 @@ type ThreatDetectionSpec struct {
 type ActionsSpec struct {
 	// EbpfBlock instructs the operator to push the offending source IP(s)
 	// into the eBPF blocklist map on the affected node(s).
+	//
+	// On a GTP-U N3 interface this is deliberately blunt: every subscriber
+	// behind a peer gNB shares its source address, so this drops all of
+	// them. Prefer EbpfBlockTunnel there.
 	// +kubebuilder:default=false
 	EbpfBlock bool `json:"ebpfBlock,omitempty"`
+
+	// EbpfBlockTunnel instructs the operator to drop only the offending
+	// GTP-U tunnel — the (source IP, TEID) pair — instead of the whole
+	// source address, leaving every other subscriber behind the same gNB
+	// untouched.
+	//
+	// Requires the score to carry a TEID, which the kernel capture path
+	// and pkg/detect both provide and the Hubble/Falco paths structurally
+	// cannot (see docs/event-model.md). A score without one leaves this
+	// action a no-op rather than silently falling back to blocking the
+	// whole source; set EbpfBlock as well if that fallback is what you
+	// want, and read docs/integrations.md before doing so.
+	// +kubebuilder:default=false
+	EbpfBlockTunnel bool `json:"ebpfBlockTunnel,omitempty"`
 
 	// IsolatePod instructs the operator to apply a service-mesh quarantine
 	// policy (see pkg/mesh) around the affected workload.
@@ -111,6 +129,16 @@ type TelecomSecurityPolicyStatus struct {
 	// +optional
 	// +listType=set
 	BlockedSourceIPs []string `json:"blockedSourceIPs,omitempty"`
+
+	// BlockedTunnels lists the GTP-U tunnels this policy has pushed into
+	// the eBPF per-tunnel blocklist, formatted "<source ip>/<teid hex>"
+	// (e.g. "10.0.0.1/0x4d84"). Same role BlockedSourceIPs plays for the
+	// source-keyed blocklist: it is what the finalizer and the
+	// de-escalation timer replay to undo the drops. Only populated when
+	// Actions.EbpfBlockTunnel is enabled and has actually fired.
+	// +optional
+	// +listType=set
+	BlockedTunnels []string `json:"blockedTunnels,omitempty"`
 
 	// Conditions represent the latest available observations of the policy's state.
 	// +optional

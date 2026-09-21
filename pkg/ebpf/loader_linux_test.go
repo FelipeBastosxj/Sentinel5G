@@ -289,3 +289,31 @@ func TestDecodeSignalingEventV6_CopiesAddressesOutOfTheSample(t *testing.T) {
 		t.Fatalf("SourceIP aliased the ring buffer memory: now %s", evt.SourceIP)
 	}
 }
+
+// tunnel_blocklist reuses tunnel_rate's key struct on purpose -- what the
+// detector measured is exactly what gets dropped -- so the size guard is
+// the same one, and this records that they must not diverge.
+func TestTunnelBlocklistSharesTheRateMapKey(t *testing.T) {
+	const kernelKeySize = 8 // struct tunnel_key, confirmed via `bpftool map show`.
+	if got := binary.Size(tunnelRateKey{}); got != kernelKeySize {
+		t.Fatalf("binary.Size(tunnelRateKey{}) = %d, want %d", got, kernelKeySize)
+	}
+	const kernelKeySizeV6 = 24 // struct tunnel_key_v6.
+	if got := binary.Size(tunnelRateKeyV6{}); got != kernelKeySizeV6 {
+		t.Fatalf("binary.Size(tunnelRateKeyV6{}) = %d, want %d", got, kernelKeySizeV6)
+	}
+}
+
+// TEID 0 is the schema's "no tunnel identity" sentinel. A blocklist entry
+// for it would drop every GTP-U packet whose header the parser couldn't
+// read -- the opposite of the precision this map exists for -- so it is
+// refused before it can reach the kernel.
+func TestTunnelBlocklistRefusesTEIDZero(t *testing.T) {
+	l := &Loader{}
+	if err := l.BlockTunnel(net.ParseIP("10.0.0.1"), 0); err == nil {
+		t.Fatal("BlockTunnel accepted teid 0")
+	}
+	if err := l.UnblockTunnel(net.ParseIP("10.0.0.1"), 0); err == nil {
+		t.Fatal("UnblockTunnel accepted teid 0")
+	}
+}

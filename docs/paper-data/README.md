@@ -7,8 +7,9 @@ an evidentiary dossier (e.g. extraordinary-ability immigration filings).
 
 Snapshot baseline: commit `3746a89` (2026-09-06), repo
 [`FelipeBastosxj/Sentinel5G`](https://github.com/FelipeBastosxj/Sentinel5G).
-Measurements since then cite their own commit inline (§2.5, §2.6 of the AI
-document were taken on 2026-09-11/13 against the Phase 2.5 branch).
+Measurements since then cite their own commit inline: §2.5 and §2.6 of the
+AI document on 2026-09-11/13 (the Phase 2.5 branch), §1.4 of the
+performance document on 2026-09-21 (the Phase 3 branch).
 
 ## Ground rule: no fabricated numbers
 
@@ -22,11 +23,14 @@ Every figure in this folder is one of exactly three things, and says which:
 3. **Pending** — explicitly not yet available, with the reason and the exact
    next step to produce it. Never presented as a number.
 
-This distinction matters most for category 1 (benchmarks): `README.md` and
-`docs/observability.md` are explicit that the `<0.2ms` / `<2%` / single-digit-ms
-figures are **design targets**, not measurements — no load-testing harness
-exists yet (`ROADMAP.md` Phase 3). This folder preserves that distinction
-rather than laundering a target into an implied benchmark.
+This distinction matters most for category 1 (benchmarks). Two of the three
+design targets are now **measured** — per-packet XDP cost and closed-loop
+mitigation latency — by the harness in `scripts/loadtest/`, recorded in
+[`01-performance-benchmarks.md`](01-performance-benchmarks.md) §1.4 with the
+method's own limits stated. The `<2%` CPU-per-node target remains exactly
+that, a target, and is labelled as one. This folder preserves the
+distinction rather than laundering a target into an implied benchmark, in
+both directions: a measurement is not softened into a target either.
 
 ## Contents
 
@@ -37,6 +41,7 @@ rather than laundering a target into an implied benchmark.
 | [`03-architecture-engineering-decisions.md`](03-architecture-engineering-decisions.md) | Architecture diagrams and real engineering decisions/bottlenecks resolved, sourced from commit history |
 | [`04-validation-testing-logs.md`](04-validation-testing-logs.md) | Integration test output (`go test -v`, `pytest`), CI/CD reports: coverage, SAST, SBOM |
 | [`05-community-metrics.md`](05-community-metrics.md) | GitHub/registry community metrics (stars, forks, clones, image pulls) |
+| [`../../scripts/loadtest/README.md`](../../scripts/loadtest/README.md) | The performance harness behind §1.4 — what each method measures, and what it deliberately cannot see |
 | [`test-environment.md`](test-environment.md) | The two lab environments every measurement here was taken on: the original WSL2 core (single UE) and the native-Linux core (four UEs) that replaced it, with build steps and the generator traps found on the way |
 | [`real-dataset/`](real-dataset/README.md) | Single-UE real GTP-U captures (2026-09-07), the training set for §2.4–§2.5 |
 | [`real-dataset-v2/`](real-dataset-v2/README.md) | Multi-UE captures (2026-09-11): four tunnels behind one gNB, one flooding — the data behind §2.6 |

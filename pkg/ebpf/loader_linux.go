@@ -22,11 +22,13 @@ const (
 	signalRateMapName        = "signal_rate"
 	scanRateMapName          = "scan_rate"
 	tunnelRateMapName        = "tunnel_rate"
+	tunnelBlocklistMapName   = "tunnel_blocklist"
 	signalingEventsMapName   = "signaling_events"
 	blocklistV6MapName       = "blocklist_v6"
 	signalRateV6MapName      = "signal_rate_v6"
 	scanRateV6MapName        = "scan_rate_v6"
 	tunnelRateV6MapName      = "tunnel_rate_v6"
+	tunnelBlocklistV6MapName = "tunnel_blocklist_v6"
 	signalingEventsV6MapName = "signaling_events_v6"
 	xdpProgramName           = "xdp_packet_filter"
 	blockedValue             = uint8(1)
@@ -43,12 +45,14 @@ type Loader struct {
 	signalRate      *ebpf.Map
 	scanRate        *ebpf.Map
 	tunnelRate      *ebpf.Map
+	tunnelBlocklist *ebpf.Map
 	signalingEvents *ebpf.Map
 
 	blocklistV6       *ebpf.Map
 	signalRateV6      *ebpf.Map
 	scanRateV6        *ebpf.Map
 	tunnelRateV6      *ebpf.Map
+	tunnelBlocklistV6 *ebpf.Map
 	signalingEventsV6 *ebpf.Map
 
 	// bootTime is wall-clock "now" minus CLOCK_MONOTONIC "now", read once at
@@ -117,6 +121,12 @@ func Attach(objPath, iface string) (*Loader, error) {
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, tunnelRateMapName)
 	}
 
+	tunnelBlocklist, ok := coll.Maps[tunnelBlocklistMapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, tunnelBlocklistMapName)
+	}
+
 	signalingEvents, ok := coll.Maps[signalingEventsMapName]
 	if !ok {
 		coll.Close()
@@ -145,6 +155,12 @@ func Attach(objPath, iface string) (*Loader, error) {
 	if !ok {
 		coll.Close()
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, tunnelRateV6MapName)
+	}
+
+	tunnelBlocklistV6, ok := coll.Maps[tunnelBlocklistV6MapName]
+	if !ok {
+		coll.Close()
+		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, tunnelBlocklistV6MapName)
 	}
 
 	signalingEventsV6, ok := coll.Maps[signalingEventsV6MapName]
@@ -176,11 +192,13 @@ func Attach(objPath, iface string) (*Loader, error) {
 		signalRate:        signalRate,
 		scanRate:          scanRate,
 		tunnelRate:        tunnelRate,
+		tunnelBlocklist:   tunnelBlocklist,
 		signalingEvents:   signalingEvents,
 		blocklistV6:       blocklistV6,
 		signalRateV6:      signalRateV6,
 		scanRateV6:        scanRateV6,
 		tunnelRateV6:      tunnelRateV6,
+		tunnelBlocklistV6: tunnelBlocklistV6,
 		signalingEventsV6: signalingEventsV6,
 		bootTime:          bootTime,
 	}, nil
@@ -225,6 +243,57 @@ func (l *Loader) Unblock(ip net.IP) error {
 
 // blocklistMapAndKey picks blocklist vs blocklist_v6 and the matching key
 // encoding based on ip's address family (see isIPv4/ipv4Key/ipv6Key).
+// BlockTunnel implements BlocklistUpdater: drops only (ip, teid), leaving
+// every other tunnel from the same source alone. The key is byte-identical
+// to the one tunnel_rate is addressed by, so what the detector measured is
+// exactly what gets dropped.
+func (l *Loader) BlockTunnel(ip net.IP, teid uint32) error {
+	m, key, err := l.tunnelBlocklistMapAndKey(ip, teid)
+	if err != nil {
+		return err
+	}
+	if err := m.Put(key, blockedValue); err != nil {
+		// A full map is a real, reportable condition here rather than a
+		// silent eviction: tunnel_blocklist is a plain HASH precisely so an
+		// operator-owned drop is never un-done by capacity pressure.
+		return fmt.Errorf("insert tunnel %s/%#x into tunnel blocklist map: %w", ip, teid, err)
+	}
+	return nil
+}
+
+// UnblockTunnel implements BlocklistUpdater.
+func (l *Loader) UnblockTunnel(ip net.IP, teid uint32) error {
+	m, key, err := l.tunnelBlocklistMapAndKey(ip, teid)
+	if err != nil {
+		return err
+	}
+	if err := m.Delete(key); err != nil {
+		return fmt.Errorf("remove tunnel %s/%#x from tunnel blocklist map: %w", ip, teid, err)
+	}
+	return nil
+}
+
+// tunnelBlocklistMapAndKey picks the address family's map and builds its
+// key. Rejects teid 0: that is the "no tunnel identity" sentinel, and a
+// blocklist entry for it would mean dropping every GTP-U packet whose
+// header the parser could not read -- a blunt outcome from what is meant to
+// be the precise mitigation.
+func (l *Loader) tunnelBlocklistMapAndKey(ip net.IP, teid uint32) (*ebpf.Map, any, error) {
+	if teid == 0 {
+		return nil, nil, fmt.Errorf("refusing to block tunnel 0 for %s: 0 means \"no tunnel identity\", not a tunnel", ip)
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return l.tunnelBlocklist, &tunnelRateKey{Saddr: binary.LittleEndian.Uint32(v4), TEID: teid}, nil
+	}
+	v6, err := ipv6Key(ip)
+	if err != nil {
+		return nil, nil, err
+	}
+	key := tunnelRateKeyV6{TEID: teid}
+	copy(key.Saddr[:], v6)
+	return l.tunnelBlocklistV6, &key, nil
+}
+
 func (l *Loader) blocklistMapAndKey(ip net.IP) (*ebpf.Map, []byte, error) {
 	if isIPv4(ip) {
 		key, err := ipv4Key(ip)

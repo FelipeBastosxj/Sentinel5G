@@ -155,6 +155,14 @@ nats pub sentinel5g.threats.scored '{
 (`amf-0` must exist and carry `app: amf-service` for the watcher to match it
 against the sample policy — `kubectl label pod amf-0 app=amf-service -n telecom-core`.)
 
+Note it carries no `teid`. That is deliberate and worth understanding: with
+`actions.ebpfBlockTunnel: true` a score without a tunnel identity is a
+**counted no-op** (`sentinel5g_mitigations_total{action="ebpf_block_tunnel",
+result="no_teid"}`), not a fallback to blocking the whole source IP —
+widening a per-subscriber decision into a per-gNB one is exactly what that
+action exists to avoid. To see a real tunnel block, use the
+`NormalizedEvent` below instead, which carries one.
+
 That forged score exercises the operator's closed loop but skips the
 scoring half entirely. With the AI engine from step 2 running in NATS mode
 (`AI_ENGINE_MODE=nats`), publish a *NormalizedEvent* instead and let the
@@ -202,7 +210,8 @@ The AI engine chart pulls a published model artifact by default and
 refuses to install without a model source at all — see
 `docs/production-install.md` step 3 for that and for bringing your own via
 `model.existingSecret`. See `charts/sentinel5g-operator/values.yaml` for the
-`ebpf.enabled` toggle, `config.gtpuTunnelFlood` (the deterministic
+`ebpf.enabled` toggle (which gates both `actions.ebpfBlock` and
+`actions.ebpfBlockTunnel`), `config.gtpuTunnelFlood` (the deterministic
 tunnel-flood detector, on by default) and `docs/integrations.md` for what
 enabling eBPF requires. The README's
 [Quick Start](../README.md#-quick-start) walks this same path end to end,

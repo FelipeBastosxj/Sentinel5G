@@ -221,6 +221,10 @@ async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
                 "namespace": payload.get("namespace", ""),
                 "podName": payload.get("podName", ""),
                 "sourceIp": payload.get("sourceIp", ""),
+                # Carried through so a mitigation can target the tunnel the
+                # score was actually about, not just the peer address every
+                # subscriber shares -- see pkg/events.ThreatScoreEvent.TEID.
+                "teid": payload.get("teid", 0),
                 "score": threat_score,
                 "model": "autoencoder-v1",
                 "detectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

@@ -37,7 +37,10 @@ def test_the_in_tunnel_flood_shares_the_normal_capture_s_tunnel():
     identical to per-source rate here. Per-tunnel features therefore cannot
     be shown to be *discriminative* on this data, only correct; closing the
     gap on it is the deterministic detector's doing, not the model's. Getting
-    real tunnel diversity needs a multi-UE capture (ROADMAP.md Phase 3).
+    real tunnel diversity needed a multi-UE capture, which now exists as
+    docs/paper-data/real-dataset-v2/ (see 02-ai-training-inference.md §2.6);
+    this test still pins the v1 dataset's single-TEID property so the
+    limitation stays stated rather than assumed away.
     """
     normal = read_udp_packets(_REAL_DATASET_DIR / "real_normal.pcap")
     flood = read_udp_packets(_REAL_DATASET_DIR / "real_storm_pingflood.pcap")

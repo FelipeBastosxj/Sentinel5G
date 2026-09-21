@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -193,6 +195,31 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 
 	ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "mitigating").Inc()
 
+	// Per-tunnel first: it is the precise action, and a policy that enables
+	// both wants the source-wide block only as the fallback for a score
+	// that carried no tunnel identity.
+	if policy.Spec.Actions.EbpfBlockTunnel {
+		switch ip := net.ParseIP(event.SourceIP); {
+		case ip == nil:
+		case event.TEID == 0:
+			// Deliberately not a silent widening to Block(sourceIP): the
+			// operator asked for one subscriber and would get the whole
+			// gNB. Logged so a policy configured for tunnel blocking
+			// against a capture path that cannot produce a TEID (Hubble,
+			// Falco) is visible rather than mysteriously inert.
+			w.Log.V(1).Info("tunnel block requested but the score carries no TEID; taking no per-tunnel action",
+				"policy", policy.Name, "sourceIp", event.SourceIP)
+			Mitigations.WithLabelValues("ebpf_block_tunnel", "no_teid").Inc()
+		default:
+			if err := w.Blocklist.BlockTunnel(ip, event.TEID); err != nil {
+				Mitigations.WithLabelValues("ebpf_block_tunnel", "error").Inc()
+				return fmt.Errorf("ebpf block tunnel %s/%#x: %w", event.SourceIP, event.TEID, err)
+			}
+			Mitigations.WithLabelValues("ebpf_block_tunnel", "success").Inc()
+			latest.Status.BlockedTunnels = appendUnique(latest.Status.BlockedTunnels, formatTunnel(event.SourceIP, event.TEID))
+		}
+	}
+
 	if policy.Spec.Actions.EbpfBlock {
 		if ip := net.ParseIP(event.SourceIP); ip != nil {
 			if err := w.Blocklist.Block(ip); err != nil {
@@ -252,6 +279,31 @@ func appendUnique(ips []string, ip string) []string {
 		}
 	}
 	return append(ips, ip)
+}
+
+// formatTunnel / parseTunnel are the single definition of how a blocked
+// tunnel is written into Status.BlockedTunnels ("<ip>/<teid hex>"). The
+// status field is the only record the finalizer and the de-escalation timer
+// have of what to undo, so the two directions live next to each other and
+// are round-tripped by a test.
+func formatTunnel(sourceIP string, teid uint32) string {
+	return fmt.Sprintf("%s/%#x", sourceIP, teid)
+}
+
+func parseTunnel(entry string) (net.IP, uint32, error) {
+	sourceIP, rawTEID, found := strings.Cut(entry, "/")
+	if !found {
+		return nil, 0, fmt.Errorf("malformed tunnel entry %q: want \"<ip>/<teid>\"", entry)
+	}
+	ip := net.ParseIP(sourceIP)
+	if ip == nil {
+		return nil, 0, fmt.Errorf("malformed tunnel entry %q: %q is not an IP", entry, sourceIP)
+	}
+	teid, err := strconv.ParseUint(strings.TrimPrefix(rawTEID, "0x"), 16, 32)
+	if err != nil {
+		return nil, 0, fmt.Errorf("malformed tunnel entry %q: %w", entry, err)
+	}
+	return ip, uint32(teid), nil
 }
 
 func firstMatchLabels(selectors []securityv1alpha1.WorkloadSelector) map[string]string {

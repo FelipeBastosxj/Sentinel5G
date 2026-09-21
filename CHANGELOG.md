@@ -5,9 +5,47 @@ planned next.
 
 ## [Unreleased]
 
-Phase 2.5 (production readiness) work-in-progress -- see `ROADMAP.md`.
+Phase 2.5 (production readiness) is complete; Phase 3 in progress -- see
+`ROADMAP.md`.
 
 ### Added
+- **A per-tunnel (TEID-keyed) eBPF drop path**, closing `ROADMAP.md`
+  Phase 3's largest gap: detection has been per subscriber since Phase 2.5
+  while mitigation was still per peer address. `bpf/packet_filter.c` gained
+  `tunnel_blocklist` (and its IPv6 twin), keyed by the *same*
+  `(source, TEID)` struct `tunnel_rate` is measured by, so what the
+  detector identified is exactly what gets dropped. `ThreatScoreEvent`
+  carries `teid`, `actions.ebpfBlockTunnel` is the new opt-in action, and
+  `status.blockedTunnels` is what the finalizer and the de-escalation timer
+  replay to undo it. On a real N3 interface this is the difference between
+  cutting off one flooding subscriber and cutting off every subscriber
+  behind that gNB.
+
+  A score without a TEID (every Hubble- and Falco-sourced one, by
+  construction) leaves the action a **no-op** rather than silently widening
+  to the whole source, counted as
+  `sentinel5g_mitigations_total{action="ebpf_block_tunnel",result="no_teid"}`.
+  And a dropped packet is deliberately not rate-tracked: counting traffic
+  the kernel is discarding would pin the tunnel's rate at the flood level
+  and de-escalation's quiet period would never fire.
+- **A load-testing harness** (`scripts/loadtest/`), closing the other
+  Phase 3 item, with results in
+  `docs/paper-data/01-performance-benchmarks.md` §1.4. Both measurable SLOs
+  are met with room: **~195-211 ns/packet** for a full GTP-U parse (~1,000x
+  under the 0.2 ms target) and **~2 ms** from a published score to
+  `Phase: Mitigating`, of which the eBPF map write is ~760 ns. The CPU
+  target remains unmeasured and is now labelled as such rather than
+  implied.
+
+  Both questions the roadmap attached to the item are settled with data.
+  `blocklist` does **not** need LRU semantics -- neither does
+  `tunnel_blocklist` -- because an LRU evicting an operator-owned
+  mitigation is a control failing open under load; both are plain HASH and
+  a full map refuses the insert (pinned at 16,384 by a privileged test).
+  And `signaling_events` holds up as designed: 8,192 in-flight records,
+  and when it fills the observation is dropped while the packet still
+  passes -- ~1.6 ms of drain headroom at line rate, which is the real
+  constraint on anything added to `Publisher`'s hot path.
 - `SECURITY.md`: vulnerability disclosure policy (GitHub private
   vulnerability reporting), response targets, and severity guidance.
 - `docs/production-install.md`: ordered checklist for a real install,

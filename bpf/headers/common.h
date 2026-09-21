@@ -94,6 +94,15 @@
  * IPv4 and ~2.6MB for the 24-byte-keyed IPv6 twin. */
 #define MAX_TUNNEL_ENTRIES 65536
 
+/* Bounded capacity of tunnel_blocklist/tunnel_blocklist_v6. A plain HASH,
+ * not LRU, for the same reason `blocklist` is: an entry here is a decision
+ * the operator made and owns the lifetime of (it is removed by
+ * de-escalation or by a policy's finalizer), so silently evicting one would
+ * un-block a tunnel nobody asked to un-block. Full means Block fails loudly
+ * instead. Sized well below blocklist's 65536 because a mitigation targets
+ * individual subscribers, not whole peers. */
+#define MAX_TUNNEL_BLOCKLIST_ENTRIES 16384
+
 /* Rolling window used by track_signal_rate()/track_scan_rate() to bucket
  * packet counts. */
 #define SIGNALING_RATE_WINDOW_NS 1000000000ULL /* 1 second */

@@ -23,7 +23,8 @@ Please include, as far as you're able to:
   chart template, etc.) and version/commit.
 - A description of the vulnerability and its impact — for Sentinel5G
   specifically, that often means: can it forge/suppress a `ThreatScoreEvent`
-  and trigger or block a real mitigation, bypass the eBPF blocklist, escape
+  and trigger or block a real mitigation, bypass the eBPF blocklists
+  (source-keyed or per-tunnel), escape
   the AI engine's `/v1/score` input handling, or escalate the elevated
   capabilities `ebpf.enabled: true` grants the manager container.
 - Steps to reproduce, or a proof of concept if you have one.
@@ -55,7 +56,7 @@ are triaged along these lines:
   mitigation against a real workload without reachable NATS credentials (see
   `docs/integrations.md`'s "Securing the NATS message bus"); privilege
   escalation via the elevated capabilities `ebpf.enabled: true` grants.
-- **High:** a way to bypass the eBPF blocklist or mesh quarantine once
+- **High:** a way to bypass either eBPF blocklist or the mesh quarantine once
   applied; a way to suppress or delay real detections; a supply-chain issue
   in the published images/SBOM/signing pipeline (`.github/workflows/release.yml`).
 - **Medium/Low:** issues that need an already-privileged position to
@@ -73,7 +74,12 @@ yet — upgrading to the latest release is the supported way to pick up a fix.
 ## Things worth knowing when assessing a report
 
 - Anything that can publish to `NATS_THREATS_SUBJECT` can trigger a real
-  mitigation, which is why both the operator and the AI engine refuse an
+  mitigation — and since a score now carries a `teid`, a forged one can
+  drop a *chosen subscriber's* tunnel rather than only a whole source,
+  which is more targeted, not less serious. By rotating TEIDs it can also
+  exhaust the 16,384-entry `tunnel_blocklist`, after which legitimate
+  blocks error rather than being evicted (see below). Bus authentication
+  remains the control; which is why both the operator and the AI engine refuse an
   unauthenticated bus unless told otherwise. A forged event with
   `model: "rule:..."` and `score: 1.0` clears every sensitivity tier by
   design (`pkg/detect` relies on exactly that), so bus authentication is the
@@ -84,6 +90,14 @@ yet — upgrading to the latest release is the supported way to pick up a fix.
 - Wire-derived strings never become Prometheus label values as-is
   (`pkg/controller/metrics.go`'s `scoreSourceLabel` maps them to a closed
   set), so a forged `model` string is not a series-cardinality vector.
+- Both enforcement maps (`blocklist`, `tunnel_blocklist`) are plain HASH,
+  bounded, and **refuse** inserts when full rather than evicting. That is
+  deliberate — an LRU would make the control fail open under exactly the
+  load that filled it — and the trade is explicit: exhausting a map makes
+  subsequent blocks error, which is an in-scope report.
+- `BlockTunnel` refuses `teid == 0`, so the schema's "no tunnel identity"
+  sentinel can never be turned into a blanket drop of every GTP-U packet
+  whose header the parser could not read.
 
 ## Scope
 

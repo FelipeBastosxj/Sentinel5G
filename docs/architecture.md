@@ -57,13 +57,16 @@ as an untagged one), with the VLAN ID carried through to
 `signaling_events` — QinQ (double-tagged, `0x88a8`) frames are not unwrapped
 and fall through unparsed, same as any other unhandled EtherType. It
 maintains a coarse per-source-IP signaling-rate counter (storm detection), a
-per-`(source, TEID)` tunnel-rate counter for GTP-U, and consults a
-`blocklist` BPF map populated exclusively
+per-`(source, TEID)` tunnel-rate counter for GTP-U, and consults two drop
+maps — `blocklist` (by source address) and `tunnel_blocklist` (by
+`(source, TEID)`, so one subscriber can be dropped without touching the
+others behind the same gNB) — both populated exclusively
 by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
 at the kernel/NIC level.
 
 IPv6 traffic is inspected through a parallel set of maps (`blocklist_v6`,
-`signal_rate_v6`, `scan_rate_v6`, `tunnel_rate_v6`, `port_scan_v6`) and a separate ring buffer
+`tunnel_blocklist_v6`, `signal_rate_v6`, `scan_rate_v6`, `tunnel_rate_v6`,
+`port_scan_v6`) and a separate ring buffer
 (`signaling_events_v6`) rather than a unified 128-bit-capable scheme on the
 IPv4 ones — this keeps every IPv4 map/key/wire-struct byte-for-byte
 unchanged by IPv6 support existing, at the cost of near-duplicate
@@ -109,6 +112,16 @@ End Marker — real GTP-U, but no user-plane payload and a legitimate TEID of
 bounded extension-header chain. `tunnel_rate` (and `tunnel_rate_v6`) then
 counts packets per `(source IP, TEID)` in the same 1-second window, an LRU
 map bounded by `MAX_TUNNEL_ENTRIES`.
+
+`tunnel_blocklist` is addressed by that same key, which is what makes the
+mitigation exactly as granular as the measurement. The drop check has to
+sit *after* the parse — the key does not exist until the header is read —
+so unlike the source blocklist at the top of the program, a blocked tunnel
+still pays for the parse. That is the price of dropping one subscriber
+instead of a whole peer. Both drop maps are plain `HASH`, not LRU: an entry
+is an operator-owned decision, and an LRU evicting one would un-block
+traffic nobody asked to un-block (`scripts/loadtest/README.md` has the
+measurement behind that).
 
 The resulting count travels **inside** the `signaling_events` record rather
 than being looked up from userspace afterwards. That is deliberate: a
@@ -243,7 +256,9 @@ mitigations are permitted. `pkg/controller.ThreatScoreWatcher` consumes
 scored threats, matches them against active policies, and — when a policy's
 `autoMitigate` is enabled — drives:
 
-- `pkg/ebpf`: pushes the offending source IP into the XDP blocklist map.
+- `pkg/ebpf`: drops the offending traffic at the XDP layer — either the
+  whole source address (`ebpfBlock`) or, when the score carries a TEID,
+  just that one GTP-U tunnel (`ebpfBlockTunnel`).
 - `pkg/mesh`: quarantines the workload via an Istio `AuthorizationPolicy`
   (or a no-op adapter in detection-only deployments).
 
@@ -263,15 +278,39 @@ otherwise indistinguishable from a healthy, quiet cluster — every policy
 just sits at `Monitoring`. It is "ever", not a liveness rate, on purpose:
 quiet is the normal state of a network under no attack.
 
+The two eBPF actions differ in blast radius, and on a GTP-U N3 interface
+the difference is the whole point. Every subscriber behind a peer gNB
+arrives from *its* address, so `ebpfBlock` on a flooding subscriber takes
+out all of them; `ebpfBlockTunnel` keys the drop by `(source, TEID)` — the
+same key `tunnel_rate` is measured by — and cuts off exactly the subscriber
+the detector identified. Both are opt-in and independent, and enabling only
+the tunnel one is the right default on N3.
+
+A score with no TEID (every Hubble- and Falco-sourced one, by construction
+— see Layer 1) makes `ebpfBlockTunnel` a **no-op** rather than silently
+widening to the source: the operator asked for one subscriber and would
+have got the gNB. It is counted as
+`sentinel5g_mitigations_total{action="ebpf_block_tunnel",result="no_teid"}`
+so a policy configured against a capture path that cannot produce TEIDs is
+visible rather than mysteriously inert.
+
+Both lists — `status.blockedSourceIPs` and `status.blockedTunnels` — are
+what the finalizer and the de-escalation timer replay to undo the drops,
+and a dropped tunnel is deliberately *not* rate-tracked in the kernel:
+counting traffic that is being discarded would pin its rate at the flood
+level and the quiet period would never elapse.
+
 Scores come from two producers on the same subject and go through the same
 gating: the autoencoder (`model: "autoencoder-v1"`) and the deterministic
 GTP-U tunnel-flood rule in `pkg/detect` (`model: "rule:gtpu-tunnel-flood"`,
 run per node inside `pkg/ingestion.Publisher`). `ThreatScoreWatcher` has no
 branch for the difference, which is the design: a rule cannot bypass
-policy. What a mitigation acts on is still the *source IP* — on a real N3
-interface that is the gNB's, so an eBPF block for one flooding tunnel drops
-every subscriber behind that gNB; detection is per tunnel, the drop is not
-(`ROADMAP.md` Phase 3).
+policy.
+
+What remains blunter than the detection is the *mesh* action: `isolatePod`
+quarantines the whole workload, because `pkg/mesh.Adapter` sees label
+selectors and not GTP-U tunnels. That is inherent to the layer rather than
+an oversight, and it is recorded in `ROADMAP.md` Phase 3.
 
 `ThreatScoreWatcher` calls `Block`/`Quarantine` but never `Unblock`/`Release`
 itself, and a later low score does not touch a `Mitigating` policy's phase

@@ -31,11 +31,12 @@ serviceAccount:
   create: true
   name: sentinel5g-operator
 
-# eBPF blocklist enforcement (EbpfBlock actions) needs the manager container
+# eBPF enforcement -- both actions.ebpfBlock (per source IP) and
+# actions.ebpfBlockTunnel (per GTP-U tunnel) -- needs the manager container
 # to attach an XDP program on the target interface, which requires elevated
 # capabilities the chart does NOT grant by default (see securityContext
 # below and docs/integrations.md). Leave false to run in mesh-isolation-only
-# / detection-only mode.
+# / detection-only mode; both actions are silent no-ops while it is.
 ebpf:
   enabled: false
   interface: eth0
@@ -95,6 +96,10 @@ config:
     packetsPerSecond: 1000
     # Minimum interval between events for one (source IP, TEID).
     cooldown: 30s
+    # What to DO about a flagged tunnel is a per-policy CRD decision, not a
+    # chart value: set actions.ebpfBlockTunnel: true on the
+    # TelecomSecurityPolicy to drop that one tunnel instead of the whole
+    # source IP. Needs ebpf.enabled above, like any other drop.
 
 nats:
   # Set to the URL of an existing NATS JetStream deployment. This chart does
