@@ -476,6 +476,13 @@ else
   # Without the AI engine there is nothing to score, so the ThreatScoreEvent
   # is forged directly -- this exercises the operator's closed loop but NOT
   # the scoring half. See WITH_AI_ENGINE at the top of this file.
+  #
+  # It deliberately carries no "teid": this demo traffic is not real GTP-U,
+  # and inventing a tunnel id would make the per-tunnel mitigation look
+  # exercised when it isn't. The sample policy therefore leaves
+  # actions.ebpfBlockTunnel off; with it on, this score would be a counted
+  # no-op (mitigations_total{action="ebpf_block_tunnel",result="no_teid"}),
+  # never a silent fallback to blocking the source.
   step "Simulating an attack (publishing a forged ThreatScoreEvent over NATS)"
   kubectl run nats-box --rm -i --restart=Never --image=natsio/nats-box:latest --namespace="$DEMO_NAMESPACE" -- \
     nats pub sentinel5g.threats.scored '{"sourceEventId":"quickstart-1","namespace":"telecom-core","podName":"amf-0","sourceIp":"203.0.113.7","score":0.93,"model":"autoencoder-v1","detectedAt":"2026-01-05T12:00:00Z"}' \

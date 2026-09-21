@@ -57,7 +57,9 @@ only anomaly type that is simultaneously real GTP-U and observable by
 `bpf/packet_filter.c` now parses the GTP-U header itself (3GPP TS 29.281
 §5.1 — version/PT validation, the optional sequence/N-PDU block, and a
 bounded extension-header walk) rather than inferring "this is GTP-U" from
-the destination port alone. Two consequences beyond the new fields:
+the destination port alone. The same `(source, TEID)` key addresses both
+the rate map and the drop map (`tunnel_blocklist`), so the thing the
+detector measured is exactly the thing an `ebpfBlockTunnel` action drops. Two consequences beyond the new fields:
 
 - A packet on port 2152 whose GTP-U framing doesn't validate now sets
   `malformed`, which previously only ever fired for a UDP header too short
@@ -85,7 +87,8 @@ Produced by the AI engine after scoring one or more `NormalizedEvent`s, or by a 
 | `sourceEventId`   | string      | The `NormalizedEvent.eventId` that produced this score. |
 | `namespace`       | string      | Copied from the scored event. |
 | `podName`         | string      | Copied from the scored event. |
-| `sourceIp`        | string      | Copied from the scored event. |
+| `sourceIp`        | string      | Copied from the scored event. On a GTP-U N3 interface this is the peer gNB's address, shared by every subscriber behind it — which is why `teid` below exists. |
+| `teid`            | uint32      | Copied from the scored event's `teid`, or `0` when it had none. What lets the mitigation be as precise as the detection: a policy with `actions.ebpfBlockTunnel` drops this one tunnel. A score arriving with `0` leaves that action a **no-op** — it deliberately does not widen into blocking the whole source. |
 | `score`           | float64     | Reconstruction-error-derived anomaly score, normalized to `[0.0, 1.0]`. |
 | `model`           | string      | Scoring model/version, e.g. `autoencoder-v1`. A **`rule:` prefix** means the score came from a deterministic, non-ML detector rather than the autoencoder (e.g. `rule:gtpu-tunnel-flood`). Everything else about the event — and the entire `ThreatScoreWatcher` path it drives — is identical for both, so a rule-sourced score goes through exactly the same policy/sensitivity/`autoMitigate` gating. |
 | `detectedAt`      | RFC3339 time | When the AI engine, or the detector, produced this score. |

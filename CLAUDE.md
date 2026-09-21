@@ -11,9 +11,22 @@ Sentinel5G is an open-source, cloud-native security operator designed to secure 
   - `cmd/operator/` & `pkg/`: Go implementation for K8s Controller/Operator logic (using `kubebuilder`).
   - `cmd/ai-engine/`: Inference engine executing lightweight ONNX ML models.
   - `api/v1alpha1/`: K8s CRD API definitions (`TelecomSecurityPolicy`).
+  - `scripts/loadtest/`: performance harness for the latency constraints
+    above (see its README for what each method can and cannot see).
 - **Performance Constraints:**
-  - Latency penalty per packet must remain strictly under 0.2ms.
-  - Memory footprints for in-kernel probes must be bounded using fixed-size eBPF maps.
+  - Latency penalty per packet must remain strictly under 0.2ms. Measured
+    at ~195-211ns for a full GTP-U parse; re-measure with
+    `scripts/loadtest/xdp_bench.sh` after any change to the XDP hot path
+    (`docs/paper-data/01-performance-benchmarks.md` §1.4).
+  - Memory footprints for in-kernel probes must be bounded using
+    fixed-size eBPF maps — and the map *type* encodes a security rule, not
+    a preference: **enforcement** maps (`blocklist`, `tunnel_blocklist`)
+    are plain `HASH` and must fail loudly when full, because an LRU
+    evicting an operator-owned drop would un-block traffic nobody asked to
+    un-block; **observation** maps (`*_rate`, `port_scan`) are LRU,
+    because an evicted counter costs one missed sample and never a wrong
+    enforcement decision. Getting that backwards makes the control fail
+    open.
 - **Security & Compliance:**
   - Zero-Trust Architecture design aligned with CISA and NIST guidelines for critical infrastructure.
   - Automated CI/CD must generate Software Bill of Materials (SBOM) and run static container vulnerability scans (`trivy`).
@@ -25,12 +38,14 @@ Sentinel5G is an open-source, cloud-native security operator designed to secure 
 ### Go (Operator & Controller)
 - **Build Operator:** `go build -o bin/manager cmd/operator/main.go`
 - **Run Unit Tests:** `go test ./pkg/... ./api/... -v -cover`
+- **Run the privileged eBPF tests** (real attach + map writes; not in CI):
+  `sudo SENTINEL5G_BPF_OBJECT=bpf/packet_filter.o go test -tags privileged ./pkg/ebpf/`
 - **Generate CRD Manifests:** `make manifests`
 - **Linting:** `golangci-lint run`
 
 ### eBPF Probes (C / BPF)
-- **Compile eBPF Bytecode:** `clang -O2 -target bpf -c bpf/headers/packet_filter.c -o bin/bpf/packet_filter.o`
-- **Load / Test Probe locally:** `sudo bpftool prog load bin/bpf/packet_filter.o /sys/fs/bpf/sentinel_filter`
+- **Compile eBPF Bytecode:** `make -C bpf` (wraps `clang -O2 -g -Wall -target bpf -c bpf/packet_filter.c -o bpf/packet_filter.o`)
+- **Load / Test Probe locally:** `sudo bpftool prog load bpf/packet_filter.o /sys/fs/bpf/sentinel_filter`
 
 ### AI Engine (Python / ONNX)
 - **Setup Environment:** `poetry install` or `pip install -r requirements.txt`

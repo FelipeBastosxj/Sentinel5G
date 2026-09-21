@@ -189,7 +189,9 @@ of these it is:
   `reason`) — most often an incompatible or very old kernel that doesn't
   support the BPF program/map types used. `bpf/packet_filter.c` doesn't rely
   on CO-RE relocations (see `docs/architecture.md`), but it does need a
-  kernel with working XDP + ring buffer + LRU hash map support.
+  kernel with working XDP, ring buffers, and both LRU hash maps (the rate
+  trackers) and plain hash maps (the two blocklists — see
+  `docs/architecture.md` for why those deliberately aren't LRU).
 
 Building `bpf/packet_filter.c` yourself (outside the operator's Dockerfile,
 e.g. for local iteration) needs `clang`+`llvm`+`libbpf-dev` — nothing else.
@@ -199,13 +201,16 @@ dependency on `bpftool`, kernel headers, or `/sys/kernel/btf/vmlinux` being
 accessible (which it isn't inside a plain `docker build`, one reason this
 project moved away from that approach — see `docs/architecture.md`).
 
-**"bpf object does not export map \"tunnel_rate\""** at attach time means
-the operator binary is newer than the `packet_filter.o` it was pointed at:
-per-TEID tracking added two maps and grew the ring-buffer record from 24 to
-32 bytes, and `pkg/ebpf.Attach` refuses an object without them rather than
-silently decoding every subsequent record at the wrong length. The
-published operator image bakes a matching object in; this only happens
-when `--bpf-object` points at a stale copy of your own.
+**"bpf object does not export map \"tunnel_rate\""** — or
+`\"tunnel_blocklist\"`, or their `_v6` counterparts — at attach time means
+the operator binary is newer than the `packet_filter.o` it was pointed at.
+Per-TEID *tracking* added the rate maps and grew the ring-buffer record
+from 24 to 32 bytes; per-TEID *mitigation* then added the
+`tunnel_blocklist` maps. `pkg/ebpf.Attach` refuses an object missing any of
+them rather than silently decoding every subsequent record at the wrong
+length, or accepting an `ebpfBlockTunnel` action that could never take
+effect. The published operator image bakes a matching object in; this only
+happens when `--bpf-object` points at a stale copy of your own.
 
 ## Nothing ever scores: `SCORING False`, every policy stuck at `Monitoring`
 
@@ -297,6 +302,43 @@ from the cache before subscribing. If you see this on a current build,
 `kubectl -n sentinel5g-system logs deploy/sentinel5g-operator | grep
 "policy index warmed"` (debug level, `LOG_LEVEL=debug`) is the line that
 should precede the subscription.
+
+## A policy with `ebpfBlockTunnel` never drops anything
+
+**Symptom:** the policy reaches `Phase: Mitigating`, `status.blockedTunnels`
+stays empty, and traffic keeps flowing.
+
+**Cause:** the scores reaching it carry no TEID, so the per-tunnel action
+has nothing to key on. It does not fall back to blocking the whole source —
+that would drop every subscriber behind the gNB, which is exactly what the
+action exists to avoid — so it does nothing and says so:
+
+```sh
+kubectl -n sentinel5g-system exec deploy/sentinel5g-operator -- \
+  wget -qO- localhost:8080/metrics | grep ebpf_block_tunnel
+# ..._mitigations_total{action="ebpf_block_tunnel",result="no_teid"} 12
+```
+
+A non-zero `no_teid` means the capture path can't produce tunnel
+identities. Hubble and Falco structurally cannot (`docs/integrations.md`);
+only the XDP path parses GTP-U. If that path *is* the source, check the
+traffic really is GTP-U T-PDUs — path-management messages and anything that
+fails validation legitimately carry TEID 0.
+
+## `BlockTunnel` fails with "key too big for map"
+
+**Symptom:** a mitigation errors with `insert tunnel .../0x... into tunnel
+blocklist map: update: key too big for map`, and
+`sentinel5g_mitigations_total{result="error"}` climbs.
+
+**Cause:** the map is full (16,384 tunnels, `MAX_TUNNEL_BLOCKLIST_ENTRIES`).
+It is a plain HASH rather than an LRU on purpose — evicting an
+operator-owned drop to make room would un-block traffic nobody asked to
+un-block — so a full map refuses loudly instead. Either de-escalation isn't
+running (check `DE_ESCALATION_DWELL` and that policies are reaching
+`Monitoring` again), or you genuinely have more concurrent blocked
+subscribers than the map holds, in which case rebuild the object with a
+larger `MAX_TUNNEL_BLOCKLIST_ENTRIES`.
 
 ## GitHub Codespaces specifics
 

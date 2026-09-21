@@ -119,6 +119,11 @@ func (in *TelecomSecurityPolicyStatus) DeepCopyInto(out *TelecomSecurityPolicySt
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.BlockedTunnels != nil {
+		in, out := &in.BlockedTunnels, &out.BlockedTunnels
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

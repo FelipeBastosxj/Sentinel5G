@@ -10,5 +10,15 @@ spec:
     sensitivity: "high"
     autoMitigate: true
   actions:
+    # Drops the offending source address. Kept on in this sample because
+    # the quickstart's demo traffic is not GTP-U and carries no tunnel
+    # identity -- on a real N3 interface this address is the peer gNB's and
+    # every subscriber behind it shares it, so prefer ebpfBlockTunnel there
+    # and enable this only as a deliberate fallback.
+    # See docs/integrations.md and docs/production-install.md.
     ebpfBlock: true
+    # Drops only the offending GTP-U tunnel, leaving every other subscriber
+    # behind the same gNB alone. A no-op for a score that carries no TEID,
+    # which is why it is not the only action here.
+    ebpfBlockTunnel: false
     isolatePod: true

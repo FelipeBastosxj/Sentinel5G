@@ -159,7 +159,13 @@ overflow), 10 known `onnx` CVEs, and 3 `bandit` findings (one real unsafe
 **Not yet in the pipeline:** no coverage-percentage gate or published
 `go tool cover -html` report artifact — coverage is visible in the `go
 test` log (per-package, as in 4.1) but not surfaced as a standalone CI
-report/badge yet.
+report/badge yet. Two more things are deliberately *not* CI-gated, and
+should be read as such rather than assumed covered: the privileged eBPF
+suite (`pkg/ebpf/loader_privileged_test.go`, build tag `linux &&
+privileged`) needs root, a live kernel and a compiled object, and the
+performance harness in `scripts/loadtest/` additionally needs a cluster.
+Both are run by hand and their results recorded with a date and a host —
+§4.5 below, and §1.4 of the performance document.
 
 ## 4.4 Update, 2026-09-13 (Phase 2.5 branch, native Linux)
 
@@ -185,3 +191,41 @@ the Linux-only paths 4.1 could not exercise on Windows now run:
   real `NormalizedEvent` scored by the model, `Phase: Mitigating`,
   `ScoringPipelineReady=True`. That run is what found the buffered-score
   loss on operator restart (CHANGELOG, Fixed).
+
+## 4.5 Update, 2026-09-21 (Phase 3 branch, native Linux)
+
+Full local run of everything CI runs, plus the two suites CI cannot, on
+the host described in `test-environment.md` (Linux 6.14).
+
+| Check | Result |
+|---|---|
+| `go vet ./...` | clean |
+| `go vet -tags privileged ./pkg/ebpf/` | clean (the privileged suite compiles even where it cannot run) |
+| `golangci-lint run` (v2.13.2) | **0 issues** |
+| `go test ./pkg/... ./api/... -cover` | 10 packages ok, **164 test functions**, 3 fuzz targets, 8 benchmarks |
+| `go test ./pkg/... ./api/... -race` | clean |
+| `make -C bpf` | compiles |
+| `bpftool prog load` on Linux 6.14 | verifier accepts: **xlated 10120B, jited 6137B**, 14 maps |
+| `pytest` (`cmd/ai-engine`) | **61 passed** (was 50) |
+| `black --check` / `flake8` / `bandit` | clean |
+| `helm lint` (both charts) | 0 failed |
+| CRD drift check (chart copy vs `config/crd/bases`) | copies match |
+
+Per-package coverage: `pkg/detect` 100%, `pkg/falco` 91.2%, `pkg/controller`
+85.0% (was 82.6%), `pkg/mesh` 84.5%, `pkg/config` 79.7%, `pkg/hubble` 74.6%,
+`pkg/events` 64.6%, `pkg/ingestion` 29.7%, `pkg/ebpf` 18.6%.
+
+`pkg/ebpf` stays low for the same structural reason as in 4.4 — most of
+that package is the real attach path, which needs a kernel — but it is no
+longer *unexercised*: `loader_privileged_test.go` covers it against a real
+verifier and real maps, outside CI. That suite also carries
+`TestBlocklistIsBoundedAndFailsLoudlyWhenFull`, which fills
+`tunnel_blocklist` to its 16,384-entry bound and asserts the next insert is
+*refused* rather than silently evicting an existing block — the property
+that makes the map a `HASH` and not an `LRU_HASH`
+(`03-architecture-engineering-decisions.md`, Phase 3 decisions).
+
+What this run does **not** cover: the e2e quickstart against kind was run
+separately during development (per-tunnel block applied, `status.blockedTunnels`
+populated, TEID-less score counted as `no_teid`, tunnel unblocked on policy
+deletion) and is not re-listed here as a CI result, because it is not one.

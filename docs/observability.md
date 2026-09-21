@@ -45,8 +45,10 @@ sum(rate(sentinel5g_threshold_crossings_total{outcome="alerting"}[5m]))
 
 Read it for what it is: every crossing during a pilot on traffic you believe
 to be benign is a false positive you would have acted on. It is not a
-validated detection rate — nothing here labels true positives, and
-`ROADMAP.md` is explicit that a load-testing harness is still open work.
+validated detection rate — nothing here labels true positives. The
+`scripts/loadtest/` harness measures latency and throughput, not detection
+quality; for what the detector's recall actually is on real captures see
+`docs/paper-data/02-ai-training-inference.md` §2.6.
 
 ### Is the scoring pipeline alive?
 
@@ -135,9 +137,12 @@ default) instead.
 
 ## Target SLOs
 
-These are the design targets referenced in `README.md`; they are **not**
-automatically enforced by CI in this scaffold (no load-testing harness is
-included yet — see `ROADMAP.md`):
+These are the design targets referenced in `README.md`. Two of the three
+are now measured by the harness in `scripts/loadtest/`
+(`docs/paper-data/01-performance-benchmarks.md` §1.4); the CPU-per-node
+target is not. **None of them is enforced by CI** — the measurements need
+root, a real kernel and a cluster, so they are run by hand and recorded
+with a date and a host:
 
 | Metric | Target |
 |---|---|
@@ -157,6 +162,11 @@ Every automated mitigation is reflected onto the triggering
   failure (a mesh or eBPF action erroring)
 - `status.observedThreatScore` — the last score matched against this policy
 - `status.lastMitigationTime` — set only when an actual mitigation fired
+- `status.blockedTunnels` — every GTP-U tunnel this policy has *currently*
+  dropped, as `<source ip>/<teid hex>` (e.g. `10.0.0.1/0x4d84`). The
+  precise mitigation: one subscriber, not the peer address every subscriber
+  behind a gNB shares. Reversed by the same finalizer and quiet-period
+  timer as the list below
 - `status.blockedSourceIPs` — every source IP this policy has *currently*
   pushed into the eBPF blocklist; also what the deletion finalizer unblocks
   before the policy object is actually removed. Entries are removed

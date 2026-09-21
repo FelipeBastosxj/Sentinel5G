@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -35,6 +36,9 @@ func TestThreatScoreWatcher_IsLeaderGated(t *testing.T) {
 type recordingBlocklist struct {
 	mu                 sync.Mutex
 	blocked, unblocked []string
+	// blockedTunnels/unblockedTunnels record BlockTunnel/UnblockTunnel as
+	// "ip/0xteid", the same shape Status.BlockedTunnels uses.
+	blockedTunnels, unblockedTunnels []string
 }
 
 func (r *recordingBlocklist) Block(ip net.IP) error {
@@ -47,6 +51,18 @@ func (r *recordingBlocklist) Unblock(ip net.IP) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.unblocked = append(r.unblocked, ip.String())
+	return nil
+}
+func (r *recordingBlocklist) BlockTunnel(ip net.IP, teid uint32) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.blockedTunnels = append(r.blockedTunnels, fmt.Sprintf("%s/%#x", ip, teid))
+	return nil
+}
+func (r *recordingBlocklist) UnblockTunnel(ip net.IP, teid uint32) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.unblockedTunnels = append(r.unblockedTunnels, fmt.Sprintf("%s/%#x", ip, teid))
 	return nil
 }
 func (r *recordingBlocklist) Close() error { return nil }
@@ -411,5 +427,107 @@ func TestApplyPolicy_BenignScoreDoesEndAlerting(t *testing.T) {
 	}
 	if got.Status.Phase != securityv1alpha1.PolicyPhaseMonitoring {
 		t.Fatalf("expected Alerting -> Monitoring on a benign score, got %s", got.Status.Phase)
+	}
+}
+
+// The point of the per-tunnel action: one subscriber is dropped, the peer
+// address every other subscriber shares is not.
+func TestApplyPolicy_TunnelBlockTargetsTheTunnelNotTheSource(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, false, false)
+	policy.Spec.Actions.EbpfBlockTunnel = true
+	pod := newTestPod(policy.Namespace, "upf-0")
+	w, blocklist, _ := newWatcherFixture(t, policy, pod)
+
+	err := w.applyPolicy(context.Background(), policy, events.ThreatScoreEvent{
+		Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "10.0.0.1",
+		TEID: 0x4D84, Score: 1.0, Model: "rule:gtpu-tunnel-flood",
+	})
+	if err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+
+	if len(blocklist.blocked) != 0 {
+		t.Fatalf("the shared source address was blocked: %v", blocklist.blocked)
+	}
+	if want := []string{"10.0.0.1/0x4d84"}; len(blocklist.blockedTunnels) != 1 || blocklist.blockedTunnels[0] != want[0] {
+		t.Fatalf("blockedTunnels = %v, want %v", blocklist.blockedTunnels, want)
+	}
+
+	var got securityv1alpha1.TelecomSecurityPolicy
+	if err := w.Get(context.Background(), nnFor(policy), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.BlockedTunnels) != 1 || got.Status.BlockedTunnels[0] != "10.0.0.1/0x4d84" {
+		t.Fatalf("status.blockedTunnels = %v; the finalizer has nothing to undo without it", got.Status.BlockedTunnels)
+	}
+	if len(got.Status.BlockedSourceIPs) != 0 {
+		t.Fatalf("status.blockedSourceIPs = %v, want empty", got.Status.BlockedSourceIPs)
+	}
+}
+
+// A score with no tunnel identity (every Hubble- and Falco-sourced event,
+// by construction) must NOT silently widen into blocking the whole source.
+func TestApplyPolicy_TunnelBlockWithoutATEIDDoesNothing(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, false, false)
+	policy.Spec.Actions.EbpfBlockTunnel = true
+	pod := newTestPod(policy.Namespace, "upf-0")
+	w, blocklist, _ := newWatcherFixture(t, policy, pod)
+
+	err := w.applyPolicy(context.Background(), policy, events.ThreatScoreEvent{
+		Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "10.0.0.1", TEID: 0, Score: 0.99,
+	})
+	if err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+	if len(blocklist.blockedTunnels) != 0 || len(blocklist.blocked) != 0 {
+		t.Fatalf("expected no drop at all, got tunnels=%v ips=%v", blocklist.blockedTunnels, blocklist.blocked)
+	}
+}
+
+// Both actions enabled: the tunnel is the precise drop, the source-wide one
+// is the operator's explicit opt-in fallback. Both must fire.
+func TestApplyPolicy_BothBlockActionsFireIndependently(t *testing.T) {
+	policy := newTestPolicy(securityv1alpha1.SensitivityMedium, true, true, false)
+	policy.Spec.Actions.EbpfBlockTunnel = true
+	pod := newTestPod(policy.Namespace, "upf-0")
+	w, blocklist, _ := newWatcherFixture(t, policy, pod)
+
+	err := w.applyPolicy(context.Background(), policy, events.ThreatScoreEvent{
+		Namespace: policy.Namespace, PodName: pod.Name, SourceIP: "10.0.0.1", TEID: 0x4D84, Score: 0.99,
+	})
+	if err != nil {
+		t.Fatalf("applyPolicy: %v", err)
+	}
+	if len(blocklist.blockedTunnels) != 1 || len(blocklist.blocked) != 1 {
+		t.Fatalf("expected both drops, got tunnels=%v ips=%v", blocklist.blockedTunnels, blocklist.blocked)
+	}
+}
+
+// Status.BlockedTunnels is the only record the finalizer and de-escalation
+// have of what to undo, so the two directions must agree exactly.
+func TestTunnelStatusEntryRoundTrips(t *testing.T) {
+	for _, tc := range []struct {
+		ip   string
+		teid uint32
+	}{
+		{"10.0.0.1", 0x4D84},
+		{"127.0.0.1", 1},
+		{"203.0.113.255", 0xFFFFFFFF},
+		{"2001:db8::1", 0xABCDEF},
+	} {
+		entry := formatTunnel(tc.ip, tc.teid)
+		gotIP, gotTEID, err := parseTunnel(entry)
+		if err != nil {
+			t.Fatalf("parseTunnel(%q): %v", entry, err)
+		}
+		if gotIP.String() != tc.ip || gotTEID != tc.teid {
+			t.Fatalf("%q round-tripped to %s/%#x, want %s/%#x", entry, gotIP, gotTEID, tc.ip, tc.teid)
+		}
+	}
+
+	for _, bad := range []string{"", "10.0.0.1", "notanip/0x1", "10.0.0.1/zz", "10.0.0.1/0x1FFFFFFFF"} {
+		if _, _, err := parseTunnel(bad); err == nil {
+			t.Fatalf("parseTunnel(%q) should have failed", bad)
+		}
 	}
 }

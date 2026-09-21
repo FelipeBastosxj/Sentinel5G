@@ -94,6 +94,18 @@ type ThreatScoreEvent struct {
 	PodName   string `json:"podName"`
 	SourceIP  string `json:"sourceIp"`
 
+	// TEID identifies the GTP-U tunnel the scored traffic belongs to,
+	// copied from the NormalizedEvent that produced this score, or 0 when
+	// that event carried no tunnel identity (see NormalizedEvent.TEID).
+	//
+	// It is what lets a mitigation be as precise as the detection: on a
+	// real N3 interface SourceIP is the peer gNB's and is shared by every
+	// subscriber, so acting on it alone drops all of them. A policy with
+	// Actions.EbpfBlockTunnel uses this to drop one tunnel instead; a score
+	// arriving without it leaves that action a no-op rather than silently
+	// widening to the whole source.
+	TEID uint32 `json:"teid"`
+
 	// Score is the reconstruction-error-derived anomaly score, normalized
 	// to [0.0, 1.0], where 1.0 is maximally anomalous.
 	Score float64 `json:"score"`
