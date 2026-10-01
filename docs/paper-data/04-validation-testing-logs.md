@@ -229,3 +229,270 @@ What this run does **not** cover: the e2e quickstart against kind was run
 separately during development (per-tunnel block applied, `status.blockedTunnels`
 populated, TEID-less score counted as `no_teid`, tunnel unblocked on policy
 deletion) and is not re-listed here as a CI result, because it is not one.
+
+## 4.6 Update, 2026-10-01 (Phase 4 branch, native Linux)
+
+Full local run of everything CI runs, plus the two suites CI cannot, on the
+host described in `test-environment.md` (Linux 6.14). Unlike §4.5 this run
+had a local NATS JetStream and `KUBEBUILDER_ASSETS` available, so the
+integration tests that skip without them actually ran — which is why the
+`pkg/events`/`pkg/hubble`/`pkg/falco` numbers below are comparable to §4.5
+rather than to a run where those suites skipped.
+
+| Check | Result |
+|---|---|
+| `go vet ./...` | clean |
+| `go vet -tags privileged ./pkg/ebpf/` | clean |
+| `golangci-lint run` (v2.13.2) | **0 issues** |
+| `go test ./pkg/... ./api/... -cover` | 9 packages ok (`api/v1alpha1` has no test files), **173 `func Test…`**, 3 fuzz targets, 8 benchmarks |
+| `go test ./pkg/... ./api/... -race` | clean |
+| `make -C bpf` | compiles |
+| `bpftool prog load` on Linux 6.14 | verifier accepts: **xlated 10120B, jited 6137B**, 14 maps |
+| `go test -tags privileged ./pkg/ebpf/` (root, real object) | **5 further test functions**, all pass — including the two restart cases below |
+| `pytest` (`cmd/ai-engine`) | **61 passed** |
+| `black --check` / `flake8` / `bandit` | clean |
+| `helm lint` (both charts) | 0 failed |
+| CRD drift check (chart copy vs `config/crd/bases`) | copies match |
+| `controller-gen` + `git diff --exit-code` | manifests clean |
+
+Per-package coverage: `pkg/detect` 100%, `pkg/falco` 91.2%, `pkg/controller`
+**87.1%** (was 85.0), `pkg/mesh` 84.5%, `pkg/config` **84.3%** (was 79.7),
+`pkg/hubble` 74.6%, `pkg/events` **68.3%** (was 64.6), `pkg/ingestion` 29.7%,
+`pkg/ebpf` **17.6%** (was 18.6).
+
+The test count is `func Test…` declarations outside the `privileged` build
+tag, counted by grep; §4.5's figure was arrived at differently, so the two
+are not a delta. On the same method this branch's base commit (`22f984f`)
+has 152, so the 21 added here are the 13 reconciler cases, the 5 pinning
+ones and 3 for the new config variables — plus the 5 privileged ones below,
+which no unprivileged run compiles.
+
+`pkg/ebpf` went *down* by a point, and that is the honest reading rather
+than a bad one: this branch added pinning, map enumeration and the key-size
+check, all of which are in the real attach path and so unreachable from an
+unprivileged unit test. The privileged suite covers them against a real
+kernel instead, and that suite is not counted in this number.
+
+### What the restart test actually measures
+
+The claim being closed is "an operator restart no longer silently drops
+every active mitigation" (`ROADMAP.md` Phase 4, item 1), and it is a claim
+about kernel object lifetime, so it is measured rather than argued:
+
+| Test (`-tags privileged`, root, real `packet_filter.o`) | What it does | Result |
+|---|---|---|
+| `TestPinnedEnforcementSurvivesALoaderRestart` | block an IP **and** a `(source, TEID)` tunnel → `Close()` → re-`Attach` → read both back out of the maps | PASS |
+| `TestUnpinnedEnforcementDoesNotSurviveALoaderRestart` | the control case: the same sequence with no pin path → the entry is gone | PASS |
+| `TestUnblockOnAMissingEntryIsNotAnError` | `Unblock`/`UnblockTunnel` on a key that was never there | PASS |
+| `TestInspectorRoundTripsBothAddressFamilies` | v4 and v6, IP and tunnel, written then read back through the inspector | PASS |
+
+The control case is the part that makes the first row mean anything: without
+it, "the entry was still there" is also consistent with a test that never
+restarted anything.
+
+What this does **not** show, stated so it isn't read in: continuity of
+*filtering*. Between `Close()` and the next `Attach` the XDP program is
+detached and no packet is being inspected at all. Pinning preserves the
+decisions, not the enforcement of them, and the window is exactly as long as
+a Pod restart. Measuring that window on a real cluster under traffic is not
+something this test does, and is not something Phase 4 claims.
+
+The userspace half — status as the desired state, the maps as the actual one
+— is covered unprivileged in `pkg/controller/blocklist_reconciler_test.go`
+(13 cases), including the two that matter most for safety: a failed `List`
+must abort the pass rather than be read as "nothing should be blocked"
+(which would make the safety net flush every active mitigation whenever the
+API server blinked), and a kernel entry seen unclaimed for the *first* time
+must be left alone — a drop placed seconds ago is claimed by nothing the
+reconciler can see yet, because the mitigation path writes the map before
+it writes the status and the status is read through a lagging cache.
+
+## 4.7 Update, 2026-10-01 (Phase 4 branch, source-flood detector)
+
+The second Phase 4 item (the distributed-TEID evasion) added
+`pkg/detect.GTPUSourceFloodDetector` and its suite. Re-run on the same host:
+
+| Check | Result |
+|---|---|
+| `go vet ./...` | clean |
+| `golangci-lint run` (v2.13.2) | **0 issues** |
+| `go test ./pkg/... ./api/... -race` | clean |
+| `go test ./pkg/detect/ -cover` | **100.0%** of statements |
+| unprivileged `func Test…` count | **190** (was 173 after item 1): +13 in `pkg/detect`, +4 in `pkg/config` |
+| `pytest` (`cmd/ai-engine`) | **61 passed** (features.py unchanged — this item is Go-only) |
+| `helm lint` (both charts) | 0 failed |
+
+The two load-bearing cases, and why each is the evidence rather than a
+reproduction on live traffic:
+
+- `TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` drives one
+  200-tunnel × 999 pkt/s stream — interleaved across tunnels, the shape a
+  real distributed flood takes on the wire — through **both** detectors and
+  asserts the per-tunnel rule fires 0 times while the per-source rule fires
+  exactly 1. The comparison only means something because both see the
+  identical events; running them separately would prove nothing.
+- `TestSourceFlood_SilentOnOrdinaryMultiSubscriberTraffic` is the
+  false-positive side: four UEs at 25 pkt/s for 60 simulated seconds — the
+  shape of `real-dataset-v2/multi_ue_normal.pcap` — produces zero events.
+  This is what makes "on by default" defensible.
+
+The evasion itself is arithmetic (999 × 200 vs a 1000 per-tunnel
+threshold), and the detector's logic is independent of how the packets were
+produced, so the Go tests over the Publisher's own one-event-per-packet
+stream are the proof; generating 200k pkt/s on the live lab would add a
+packet-capture artifact, not a stronger argument, and is recorded as
+optional follow-up in §2.7 rather than a precondition.
+
+## 4.8 Update, 2026-10-01 (Phase 4 branch, holdout + baseline)
+
+The third Phase 4 item (capture-independent holdout and a baseline the model
+has to beat) is Python-only: `scripts/baseline_comparison.py`, a refactor of
+`build_real_dataset.py` to expose `capture_groups`, and their tests.
+
+| Check | Result |
+|---|---|
+| `pytest` (`cmd/ai-engine`) | **69 passed** (was 61: +8 in `test_baseline_comparison.py`) |
+| `black --check` / `flake8` (scripts, tests, sentinel_ai) | clean |
+| `bandit -r scripts/ sentinel_ai/` | clean |
+| `python scripts/baseline_comparison.py` | runs, numbers below |
+
+The numbers the §2.8 write-up rests on, reproduced from that run:
+
+| Measurement | Value |
+|---|---|
+| Leave-one-capture-out AUC (held `real_normal`) | 0.936 |
+| Leave-one-capture-out AUC (held `multi_ue_normal`) | 0.935 |
+| Within-pool AUC (the old §2.6 method, for contrast) | ~0.98 |
+| 5-fold × 3-seed AUC | mean 0.9353, std 0.00033 |
+| Head-to-head AUC: autoencoder / rule / trivial rate | 0.935 / 0.696 / 0.696 |
+| Recall @ FPR ≤ 1%: autoencoder / rule / trivial rate | 0.908 / 0.413 / 0.413 |
+
+The new tests do not assert the AUC values — those are a training run's
+output and belong in the script, not a unit test — but they pin the
+invariants that make them mean what §2.8 says: that `capture_groups` pools
+to exactly what `build` returns (so the baseline is evaluated on the same
+dataset training uses), that each leave-one-capture-out fold trains only on
+captures other than its holdout, and that the rule baseline scores a
+TEID-less row at 0 (the `has_teid` gate that makes it blind to the untunneled
+anomalies — the finding's whole basis).
+
+## 4.9 Update, 2026-10-01 (Phase 4 branch, FPR confidence interval)
+
+The fourth Phase 4 item (false-positive rate as a confidence interval) is
+Python-only: `scripts/fpr_confidence.py` and its tests. This completes the
+four-item correctness gate.
+
+| Check | Result |
+|---|---|
+| `pytest` (`cmd/ai-engine`) | **76 passed** (was 69: +7 in `test_fpr_confidence.py`) |
+| `black --check` / `flake8` / `bandit` | clean |
+| Clopper-Pearson bound vs closed form (k=0) | agrees to < 1e-9 relative |
+| Clopper-Pearson bound vs textbook (k=2, n=20 → 0.3170) | agrees to < 1e-3 |
+| `python scripts/fpr_confidence.py` | runs, numbers below |
+
+| Measurement | Value |
+|---|---|
+| Within-pool FPR point estimate (old method) | 0 / 1,378 |
+| 95% upper bound from that, at 100k pkt/s | ≤ 267 wrong mitigations/sec |
+| **Out-of-fold real FPR** (honest) | **~0.23** (≈1,570 / 6,889) |
+| Synthetic benign "FPR" (distribution shift, not FPR) | ~0.75 |
+| Real benign packets needed to bound ≤ 1 wrong mitig/sec @ 100k | ~368,887 (at zero FP) |
+
+The statistics carry unit tests (the bound is what the conclusion rests on,
+so it is checked against two independent references); the measurement
+pipeline is tested for shape and for the property that out-of-fold scoring
+never scores a capture with a model that trained on it.
+
+## 4.10 Update, 2026-10-01 (Phase 4 branch, IPv6 data path end to end)
+
+The IPv6 maps, ring buffer and tunnel key had full structural and unit-test
+parity since Phase 2, but no v6 packet had ever traversed the program
+(`ROADMAP.md` Phase 4). `TestIPv6DataPathEndToEnd` (`-tags privileged`, root)
+closes that by running a real v6 GTP-U frame through the real, loaded XDP
+program via `BPF_PROG_TEST_RUN`:
+
+| Step | Assertion | Result |
+|---|---|---|
+| A clean v6 GTP-U T-PDU (Ethernet + IPv6 + UDP/2152 + GTP-U, flags 0x34 with the extension-header block, as the real captures carry) | program returns **XDP_PASS** | PASS |
+| After that packet | `tunnel_rate_v6` holds an entry for the outer v6 `(source, TEID)` with a non-zero count | PASS — the v6 parse and v6 rate tracking actually ran |
+| Block that exact v6 tunnel, replay the identical frame | program returns **XDP_DROP** | PASS |
+
+This is real v6 traffic through the real program producing real map side
+effects and real verdicts — not a mock. The one caveat, stated rather than
+hidden: the frame is injected via `BPF_PROG_TEST_RUN` rather than arriving on
+a NIC, so the driver/attach-point delivery is not exercised; the XDP
+program's v6 logic (parse, rate, enforcement, drop) all is. The v6 block/
+unblock map operations were already covered by
+`TestInspectorRoundTripsBothAddressFamilies`; this adds the packet path
+between them.
+
+## 4.11 Update, 2026-10-01 (Phase 4 branch, capture paths vs real daemons)
+
+`cmd/falco-bridge` and `pkg/hubble.Observer` had only ever been exercised
+against hand-built fixtures and an in-process gRPC server — never the real
+daemons they translate (`ROADMAP.md` Phase 4). Both now have, on the
+native-Linux lab (`test-environment.md`, kernel 6.14), reproducible via
+`scripts/integration/`.
+
+### Falco → `cmd/falco-bridge`
+
+A real `falcosecurity/falco:0.45.0` ran its modern-eBPF probe against the
+host kernel, pointed at a running `Bridge` via its own `http_output`:
+
+```
+# the real Falco alert (stdout, trimmed):
+Warning Sensitive file opened for reading by non-trusted program
+  | file=/etc/shadow process=cat ... rule="Read sensitive file untrusted"
+  time=2026-10-01T14:29:41.769074561Z
+# the NormalizedEvent the bridge published on NATS, captured by subscribing:
+{"observedAt":"2026-10-01T14:29:41.769074561Z","nodeName":"felipe-MS-7D77",...}
+```
+
+The `observedAt` matches the Falco alert's `time` exactly — the event is
+that alert, translated. Environment note: Falco's modern-eBPF probe fails
+`scap_init` on kernel 6.14 in 0.39.2 but works in 0.45.0, so `latest` is
+used; the earlier WSL2 environment could not run Falco's probe at all,
+which is why this had stood unverified.
+
+### Hubble → `pkg/hubble.Observer`
+
+A throwaway `kind` cluster running Cilium 1.20 + Hubble Relay carried real
+pod-to-pod UDP/2152 traffic; `pkg/hubble.Observer` dialed the real Relay's
+`GetFlows` API and converted the flows:
+
+```
+HUBBLE->NORMALIZED: src=10.244.0.33 dst=10.244.0.112 dport=2152 proto=GTP-U \
+  pod=default/gtpuprobe4 node=s5g-hubble-control-plane
+```
+
+Three datagrams → three `NormalizedEvent`s, each correctly tagged `GTP-U`
+(port 2152) with the real pod/namespace/node/five-tuple read out of Cilium's
+flow data — and the cluster's TCP/HTTP flows produced nothing, confirming
+the UDP-on-signaling-ports-only filter on real traffic, not just a fixture.
+Both throwaway environments (Falco containers, the Cilium `kind` cluster)
+were torn down after.
+
+## 4.12 Update, 2026-10-01 (production-readiness validation data)
+
+The remaining production blockers were not code gaps — they were
+measurements the committed data was too small for. Collected on the lab:
+
+| Measurement | Result | Where |
+|---|---|---|
+| FPR on **340,000** real benign packets (`real-dataset-v3/`) | **0 false positives**, 95% upper bound **1.23e-5** → ≈1 wrong mitigation/s at 100k pkt/s (was 5.3e-4 / 53/s on 6,889) | §2.10 |
+| NATS synchronous publish, one publisher | **~15,000 events/s**; batched ~694,000/s (batch 256) | §1.3 |
+| Per-tunnel rate map at >65,536 tunnels | LRU evicts the coldest, rate window lost (measured, `TestTunnelRateMapEvicts…`) | §1.8 |
+
+Reproduce: `docs/paper-data/real-dataset-v3/gen_benign.sh` (capture),
+`cmd/ai-engine/scripts/fpr_large_benign.py` (FPR),
+`go test ./pkg/events/ -bench Throughput` (NATS),
+`go test -tags privileged ./pkg/ebpf/ -run TestTunnelRateMapEvicts` (eviction).
+
+Honest residuals, each now a narrow named thing rather than a whole item:
+sustained **physical-NIC line rate** and its node CPU need a real NIC (the
+program's own per-packet cost and the ring's non-saturation are measured on
+veth, §1.7); the **exact per-UPF bearer count** to size `MAX_TUNNEL_ENTRIES`
+needs a real UPF (the eviction behaviour and the occupancy guardrail are
+measured, §1.8); and a **production traffic mix** (video/web/signaling, not
+lab ICMP) is the final FPR confirmation (the bound and the local-calibration
+rule are measured, §2.10).

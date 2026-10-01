@@ -8,6 +8,16 @@ scripts/export_onnx.py, sentinel_ai/server.py) and intentionally holds out a
 slice of "normal" samples the model never trains on, so the reported numbers
 are not measuring memorization of the training set.
 
+NOTE on what this holdout does and does not show: the slice it holds out is
+drawn from the SAME pooled set of captures it trains on, so it measures
+reconstruction of unseen *rows*, not generalization to an unseen *capture*,
+and it runs no baseline the model has to beat. For the capture-independent
+(leave-one-capture-out) holdout, the cross-seed variance, and the
+autoencoder-vs-rule-vs-trivial-threshold comparison, see
+scripts/baseline_comparison.py and docs/paper-data/02-ai-training-inference.md
+§2.8. This script remains the source of the within-pool confusion matrices
+§2.1 references.
+
 Run: python scripts/evaluate_model.py [--source synthetic|real]
 
 --source real evaluates against scripts/build_real_dataset.py's real,

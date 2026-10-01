@@ -131,6 +131,34 @@ func (b *Bus) PublishNormalizedEvent(subject string, event NormalizedEvent) erro
 	return nil
 }
 
+// PublishNormalizedEventBatch publishes several NormalizedEvents as a single
+// JetStream message carrying a JSON array, instead of one message per event.
+// It exists because the bus, not eBPF, is the first throughput ceiling in the
+// design: at 100k signaling packets/second per node a one-message-per-packet
+// Publisher saturates JetStream long before the XDP path is near its limit
+// (ROADMAP.md Phase 4). A batch of N cuts the message rate by N for the same
+// data.
+//
+// The wire format is deliberately a plain JSON array of the same objects
+// PublishNormalizedEvent emits, so a consumer distinguishes a batch from a
+// single event by the leading byte ('[' vs '{') -- the AI engine's worker
+// does exactly that, and an older consumer that only understands single
+// objects still works against an unbatched Publisher. An empty batch
+// publishes nothing.
+func (b *Bus) PublishNormalizedEventBatch(subject string, batch []NormalizedEvent) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(batch)
+	if err != nil {
+		return fmt.Errorf("marshal normalized event batch: %w", err)
+	}
+	if _, err := b.js.Publish(subject, payload); err != nil {
+		return fmt.Errorf("publish normalized event batch (%d events) to %q: %w", len(batch), subject, err)
+	}
+	return nil
+}
+
 // PublishThreatScore publishes an AI-engine scoring result onto subject.
 func (b *Bus) PublishThreatScore(subject string, event ThreatScoreEvent) error {
 	payload, err := json.Marshal(event)

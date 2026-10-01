@@ -155,6 +155,15 @@ Two sources feed that counter, and the pilot is the place to tune both:
   N3; `sentinel5g_threat_scores_received_total{source="rule"}` tells you
   how often it is the one firing, and the alerting counter tells you
   whether that would have been right.
+- The deterministic GTP-U **source**-flood rule
+  (`config.gtpuSourceFlood`, on by default), the per-peer counterpart that
+  catches a flood spread across many tunnels. Tune its two thresholds here
+  with particular care: unlike the per-tunnel rule, its verdict is
+  source-wide and the action that fits it (`actions.ebpfBlock`) drops every
+  subscriber behind the peer. Its `packetsPerSecond` default of 20,000
+  aggregate is well above a busy legitimate gNB but is still not *your*
+  number, and `distinctTunnels` (256) should be set from your real bearer
+  cardinality. Both share the `source="rule"` counter above.
 
 ## 5. Opt into eBPF enforcement only after its preflight passes
 
@@ -193,7 +202,28 @@ permanently inert on their own.
 
 What is still blunter than the detection: `isolatePod` quarantines the
 whole workload, because the mesh layer cannot see a GTP-U tunnel
-(`ROADMAP.md` Phase 3).
+(`ROADMAP.md` Phase 5).
+
+**Check that a drop survives a restart before you rely on it.** The
+enforcement maps are pinned to bpffs by default (`ebpf.pinPath`, which the
+chart turns into a `hostPath` mount of `/sys/fs/bpf`), and the operator
+re-applies every block from policy status at startup and then every
+`config.blocklistReconcileInterval`. Both are needed and they do different
+jobs: the pin keeps the drops in force across the gap, the reconciliation
+makes them correct afterwards and reports any disagreement as
+`sentinel5g_blocklist_drift_total`. Verify on a cluster, not on trust:
+
+```sh
+kubectl -n sentinel5g-system exec deploy/sentinel5g-operator -- \
+  wget -qO- localhost:8080/metrics | grep enforcement_pinned
+# sentinel5g_ebpf_enforcement_pinned 1
+```
+
+A `0` means that node's drops are lost on every restart until the next
+sync, almost always because `/sys/fs/bpf` is not a bpffs on the node or the
+mount did not reach the Pod. The operator attaches anyway — losing XDP
+entirely over a mount problem would be worse — and records an
+`EBPFPinUnavailable` warning Event. See `docs/troubleshooting.md`.
 
 ## 6. Wire up observability
 
@@ -203,10 +233,11 @@ charts — the AI engine's metrics port is `config.metricsAddr`, `:9090` in
 NATS mode) only if Prometheus Operator is actually installed on this
 cluster — if it isn't, the charts render no `ServiceMonitor` (with a warning
 in the post-install NOTES) instead of failing the install outright, but you
-still need a working scrape path either way. The one alert to wire before
+still need a working scrape path either way. The two alerts to wire before
 anything else: `sum(rate(sentinel5g_threat_scores_received_total[15m])) == 0`
 for longer than you'd tolerate, which is "the scoring half is dead" as a
-number. See `docs/observability.md` for the metrics exposed
+number; and `min(sentinel5g_ebpf_enforcement_pinned) == 0`, which is "this
+node's mitigations do not survive a restart" as a number. See `docs/observability.md` for the metrics exposed
 and the latency targets they're meant to validate against — two of the
 three are measured (`docs/paper-data/01-performance-benchmarks.md` §1.4,
 reproducible via `scripts/loadtest/`); the CPU-per-node target is not, and
@@ -218,3 +249,32 @@ Once a policy's `Alerting` phase history from step 4 looks right, set
 `threatDetection.autoMitigate: true` on it. There's no global switch — this
 is deliberately per-`TelecomSecurityPolicy`, so you can roll it out one
 protected workload at a time rather than flipping it cluster-wide.
+
+## 8. Keep the kill switch within reach
+
+`autoMitigate` is per policy. The moment you have more than a handful of
+policies acting, you need one lever that stops *all* of them without editing
+each — and without an operator rollout, because a rollout is minutes you may
+not have while a mis-scored mitigation spreads. That lever is the global kill
+switch (`config.killSwitch`, on by default):
+
+```sh
+# Stop all mitigation now. Detection keeps running; nothing new is blocked
+# or quarantined, and existing blocks de-escalate normally.
+kubectl -n <release-namespace> create configmap sentinel5g-killswitch   --from-literal=engaged=true
+
+# Resume.
+kubectl -n <release-namespace> delete configmap sentinel5g-killswitch
+```
+
+It takes effect within `config.killSwitch.pollInterval` (2s). While engaged,
+`sentinel5g_kill_switch_engaged` reads 1 and every withheld action is counted
+in `sentinel5g_mitigations_suppressed_total` — so a dashboard answers "why did
+everything stop" at a glance, and an alert on that gauge tells you the switch
+is still armed if someone forgot to resume. The operator reads the ConfigMap
+through a tight get-by-name Role in its own namespace; it is not cluster-wide
+ConfigMap access. Engaging it is a deliberately ordinary `kubectl` command an
+on-call already knows, with an audit trail in the API server.
+
+This is the control that makes turning `autoMitigate` on reversible in one
+step, which is the precondition for turning it on at all.

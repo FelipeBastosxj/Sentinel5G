@@ -5,10 +5,253 @@ planned next.
 
 ## [Unreleased]
 
-Phase 2.5 (production readiness) is complete; Phase 3 in progress -- see
-`ROADMAP.md`.
+### Production-readiness validation (Phase 4 follow-up, 2026-10-01)
+- **False-positive rate re-measured on 340,000 real benign packets**
+  (docs/paper-data/real-dataset-v3/, from the lab): zero false positives,
+  95% upper bound 1.23e-5 -- about one wrong mitigation/second at 100k pkt/s,
+  down ~60x from the 6,889-packet bound. This is the number that turns a
+  per-policy autoMitigate from an unquantified risk into a bounded decision,
+  conditioned on local calibration (2.8/2.10). See scripts/fpr_large_benign.py
+  and real-dataset-v3/gen_benign.sh.
+- **NATS publish throughput measured** (pkg/events/throughput_bench_test.go):
+  a synchronous publisher sustains ~15,000 events/s, batching lifts it ~46x
+  to ~694,000/s -- confirming the event-batching feature is necessary at
+  100k pkt/s/node, not optional (1.3).
+- **Per-tunnel rate-map cardinality behaviour measured**
+  (TestTunnelRateMapEvictsWhenFullAndLosesTrackedRate): past 65,536 distinct
+  tunnels the LRU silently evicts and loses a rate window; the occupancy
+  gauge is the guardrail, and MAX_TUNNEL_ENTRIES must be raised to the
+  deployment's real bearer ceiling (1.8).
 
-### Added
+
+Phases 2.5 and 3 are complete. `ROADMAP.md` was restructured on the
+strength of a gap review rather than a plan: the production-readiness work
+that review turned up is now **Phase 4** (validation, scale, robustness --
+17 items, each naming the file or measurement it came from), and the
+scale/multi-cluster items that used to sit in Phase 3 moved to **Phase 5**,
+deliberately gated behind it. The headline from that review, and the reason
+for the gating, was that an operator restart un-blocked everything it had
+blocked, silently. **That one is now closed** -- the first Phase 4 item --
+and the remaining three in its gate are validation work that no amount of
+code closes.
+
+### Added (Phase 4)
+- **The Falco and Hubble capture paths now run against real daemons**,
+  closing the last Phase 4 item and completing the phase. A real
+  falcosecurity/falco:0.45.0 modern-eBPF probe caught cat /etc/shadow, fired
+  its stock rule, and POSTed through its own http_output to cmd/falco-bridge,
+  which published a NormalizedEvent on NATS (observedAt matching the alert
+  exactly). A throwaway kind cluster running Cilium 1.20 + Hubble Relay
+  carried real pod-to-pod UDP/2152 flows that pkg/hubble.Observer streamed
+  from the real GetFlows API and converted to GTP-U NormalizedEvents, with
+  TCP/HTTP correctly ignored. Reproducible via scripts/integration/; recorded
+  in docs/paper-data/04-validation-testing-logs.md 4.11. Both environments
+  torn down after.
+- **CPU and ring-buffer saturation measured under a sustained real load**
+  (`scripts/loadtest/cpu_saturation.sh` + `scripts/loadtest/xdp_saturation`),
+  closing ROADMAP.md Phase 4's "<2% CPU/node never measured" item -- real
+  GTP-U frames through the real XDP program on a veth (a real driver RX path)
+  with the SignalingEvents consumer draining the ring, BPF run-time stats on.
+  Findings (docs/paper-data/01-performance-benchmarks.md 1.7): the ring does
+  NOT saturate (~14 dropped observations in ~2.3M at 386k pkt/s, retiring the
+  "1.6ms headroom is arithmetic" concern with an observation), and the honest
+  per-packet program cost under load with a consumer is ~900 ns -- 4x the
+  211 ns hot-cache microbenchmark, still 200x under the 0.2ms budget, ~9% of
+  one core / ~1.1% of an 8-core node at 100k pkt/s. The narrow residual (a
+  physical NIC at true line rate) is stated, not hidden: this is generic XDP
+  on a veth. A new Loader.ProgramRunStats exposes the kernel's run-time stats.
+- **The IPv6 data path now runs end to end** (`TestIPv6DataPathEndToEnd`,
+  privileged): a real v6 GTP-U frame fed to the real loaded XDP program via
+  BPF_PROG_TEST_RUN parses (XDP_PASS), populates the v6 per-tunnel rate map,
+  and once the tunnel is blocked the identical frame is dropped (XDP_DROP).
+  Closes ROADMAP.md Phase 4's "IPv6 path never run end to end" item -- the v6
+  maps had structural/unit parity but no v6 packet had ever traversed the
+  program. See docs/paper-data/04-validation-testing-logs.md §4.10.
+- **NATS event batching** (`pkg/ingestion.Publisher` + a new
+  `Bus.PublishNormalizedEventBatch`), closing ROADMAP.md Phase 4's bus-ceiling
+  item -- the design's first throughput limit, reached before eBPF's. The
+  Publisher coalesces up to NATS_EVENT_BATCH_SIZE events into one JetStream
+  message (a JSON array), flushed by size or NATS_EVENT_FLUSH_INTERVAL,
+  cutting the message rate by the batch factor (proven: 100 events -> 10
+  messages at batch 10, against live JetStream). The inline flood detectors
+  are not batched -- they act per packet, so only ML telemetry is delayed.
+  The AI-engine consumer (parse_event_batch) accepts both the array and the
+  single-object form, so batching/non-batching/older Publishers all
+  interoperate. Off by default (a wire-behaviour change); see
+  docs/event-model.md. Batching was chosen over sampling because it drops
+  nothing -- a sampled-away packet could be the attack.
+- **A reactor rate limit** bounding apiserver pressure under a score storm,
+  closing ROADMAP.md Phase 4's "nothing bounds the reactor" item. Status
+  writes are now change-aware: a phase transition or a blocklist delta is
+  meaningful and always persisted (the finalizer and de-escalation read it),
+  but an ObservedThreatScore-only refresh -- the dominant churn when the AI
+  engine scores one event per packet under at-least-once delivery -- is gated
+  by a per-policy token bucket (REACTOR_STATUS_WRITES_PER_SECOND, default 10,
+  burst 20). Throttled refreshes are skipped and counted
+  (sentinel5g_reactor_status_writes_throttled_total); no mitigation decision
+  is ever dropped, and one noisy policy can't starve another's refreshes.
+- **A global mitigation kill switch** (`pkg/controller.KillSwitch`), closing
+  ROADMAP.md Phase 4's "no stop-everything-now" item. While a ConfigMap
+  (`sentinel5g-killswitch`, default) exists in the operator's namespace with
+  `engaged=true`, every mitigation on every policy is withheld -- detection
+  continues, nothing is blocked or quarantined. Engaging it is one `kubectl
+  create configmap`, effective within a 2s poll TTL with no operator restart;
+  `sentinel5g_kill_switch_engaged` and `sentinel5g_mitigations_suppressed_total`
+  make it visible. Read via a tight get-by-name namespaced Role (not
+  cluster-wide ConfigMap access), cached for the TTL so a score storm can't
+  become an API storm, and fail-safe (a transient read error keeps the last
+  known value). See docs/production-install.md §8.
+- **eBPF map-occupancy metrics and a mitigation-refused signal**, closing
+  ROADMAP.md Phase 4's fifth and sixth scale items. The per-tunnel rate map
+  is an LRU that evicts silently when full -- a rate window resetting
+  mid-flight, detection degrading under exactly the bearer cardinality it
+  exists for -- so its live occupancy is now sampled every reconcile and
+  exported as `sentinel5g_ebpf_observation_map_occupancy` against
+  `..._capacity`, the only warning an LRU can give. And a mitigation refused
+  because an enforcement map is at capacity (plain HASH, returns E2BIG rather
+  than evicting -- recognised by the new `ebpf.IsMapFull`) now increments
+  `sentinel5g_mitigation_map_full_total{kind}`, with a defined operational
+  response in docs/troubleshooting.md whose first branch is that the per-peer
+  cardinality detector IS the defence against a TEID-exhaustion DoS -- the
+  two Phase 4 items compose.
+- **The false-positive rate is now a confidence interval, not a point
+  estimate** (`cmd/ai-engine/scripts/fpr_confidence.py`), closing ROADMAP.md
+  Phase 4's fourth item and completing the four-item correctness gate. A
+  Clopper-Pearson exact binomial upper bound (implemented without scipy,
+  checked against closed forms) translated into wrong mitigations per second
+  at a given packet rate. Two findings, both worse than assumed: even taking
+  "zero false positives" at face value, 0 in 1,378 packets bounds the FPR at
+  only 2.7e-3 -- up to 267 wrong mitigations/sec at 100k pkt/s -- and scored
+  out of fold (capture-independent, per §2.8) the real FPR at the production
+  thresholds is ~23%, because the normalization calibration does not transfer
+  to an unseen capture. Synthetic benign traffic can't substitute (a
+  real-GTP-U model flags ~75% of it as unfamiliar). Verdict: autoMitigate is
+  not authorized by anything measured; the detection-only pilot stays the
+  only defensible path, and is now the instrument for making the measurement
+  that would change that. See docs/paper-data/02-ai-training-inference.md §2.9.
+- **A capture-independent holdout and a model-vs-rule baseline**
+  (`cmd/ai-engine/scripts/baseline_comparison.py`), closing ROADMAP.md
+  Phase 4's third item. The accuracy numbers to date came from a within-pool
+  train/holdout split -- unseen rows from captures the model also trained
+  on, which measures reconstruction, not generalization. Leave-one-capture-
+  out (train on every normal capture but one, score the held-out one) gives
+  AUC 0.935-0.936 against the ~0.98 within-pool figure: the gap is the
+  memorization the within-pool split hid. 5-fold x 3-seed variance is
+  std 0.00033, so the number is not seed-luck. The baseline comparison
+  reverses this item's own suspicion -- the autoencoder (0.935 AUC,
+  0.908 recall at <=1% FPR) clearly beats the rule and a trivial tunnel-rate
+  threshold (0.696 / 0.413), but because those are blind by construction to
+  every TEID-less anomaly, not because the model is cleverer; on the
+  in-tunnel-flood class the rule is still what works, so the two are
+  complementary. `build_real_dataset` was refactored so `capture_groups`
+  is the one definition of the dataset and `build` pools it. See
+  docs/paper-data/02-ai-training-inference.md §2.8.
+- **A per-peer GTP-U source-flood detector** (`pkg/detect.GTPUSourceFloodDetector`),
+  closing ROADMAP.md Phase 4's second item: a flood spread thinly across
+  many TEIDs evaded the per-tunnel rule entirely. 200 tunnels at 999 pkt/s
+  is ~200,000 pkt/s from one peer and crossed the 1000 pkt/s per-tunnel
+  threshold zero times, by construction -- the per-tunnel detector's whole
+  purpose was to stop aggregating subscribers together, so it cannot also
+  be the thing that catches an aggregate. The new detector is scoped to the
+  source and fires on either an aggregate rate (`GTPU_SOURCE_FLOOD_PPS`,
+  default 20,000) or distinct-TEID cardinality per window
+  (`GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS`, default 256, which catches TEID
+  rotation at rates no aggregate threshold would see). On by default, same
+  policy/sensitivity/autoMitigate gating as any other score. Its verdict
+  names no tunnel -- there is no single tunnel whose removal fixes an
+  aggregate flood -- so it carries TEID 0 and drives the source-wide
+  `actions.ebpfBlock`. The evasion is closed by test
+  (`TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` runs both
+  detectors over the identical stream; per-tunnel fires 0, per-source fires
+  1) and the false-positive side is held by another (ordinary four-UE
+  traffic → nothing). See docs/paper-data/02-ai-training-inference.md §2.7.
+- **The eBPF enforcement maps now survive the operator process**, closing
+  `ROADMAP.md` Phase 4's first item. Up to now `Loader.Close()` detached
+  the XDP program and the whole collection went with it, so a `helm
+  upgrade`, an OOM kill or a crash un-blocked every active mitigation while
+  each policy's status went on asserting `Phase: Mitigating` and a
+  populated `status.blockedTunnels`. That is the same fail-open the
+  HASH-not-LRU map choice exists to prevent, reached through the back door:
+  a control reporting itself as on while being off.
+
+  Two mechanisms, doing different jobs. **Pinning** (`BPF_PIN_PATH`,
+  default `/sys/fs/bpf/sentinel5g`; `ebpf.pinPath` in the chart, which also
+  adds the `hostPath` mount for it) keeps the drops in force across the
+  gap: the next attach reuses the same kernel maps with their contents
+  intact. **`pkg/controller.BlocklistReconciler`** makes them correct
+  afterwards -- once at startup, then every `BLOCKLIST_RECONCILE_INTERVAL`
+  (default `1m`) -- treating policy status as the desired state and the map
+  as the actual one, re-applying what is missing and removing what no
+  policy claims. A removal needs the entry to be unclaimed on two
+  consecutive passes; an addition is immediate. That asymmetry is load
+  bearing — the mitigation path writes the kernel *before* the status that
+  claims the write, and the reconciler reads that status through a lagging
+  cache, so removing on sight would revert mitigations placed seconds
+  earlier. A failed `List` aborts the pass outright rather than being read
+  as "nothing should be blocked".
+
+  Only the *enforcement* maps are pinned. The `*_rate`/`port_scan`
+  observation maps deliberately are not: carrying a 1-second rate window
+  across a restart hands the new process a reading from a period nobody was
+  watching. The split is asserted in both directions by a test, so adding a
+  map to the pinned list by reflex fails rather than quietly changing what
+  the system means.
+
+  Proven on kernel 6.14 rather than argued: block, `Close()`, re-`Attach`,
+  read the entry back (`TestPinnedEnforcementSurvivesALoaderRestart`),
+  against its own control case showing an unpinned load does *not* survive.
+
+  One consequence worth knowing before upgrading: in DaemonSet mode every
+  node reconciles against the same cluster-wide policy status, so a source
+  blocked because one node observed it ends up blocked on every node. That
+  is the reading `status.blockedSourceIPs` is built on -- a record of what
+  should not be allowed, not a note about where it was seen.
+- **Enforcement-integrity metrics** (`docs/observability.md`'s new "Is
+  enforcement actually on?" section):
+  `sentinel5g_blocklist_drift_total{kind,direction}` -- `missing` means
+  status claimed a drop the kernel did not have, i.e. traffic an operator
+  believed was blocked was flowing; `extra` means enforcement outliving the
+  policy that asked for it. Plus `sentinel5g_blocklist_entries{kind,state}`
+  for both sides of the comparison, `sentinel5g_blocklist_capacity` so that
+  gauge has a denominator, and `sentinel5g_ebpf_enforcement_pinned`, which
+  answers "does a drop on this node survive a restart at all?" as a number.
+- Two new warning Events against the operator's own Pod, alongside the
+  existing `EBPFAttachFailed`: `EBPFPinUnavailable` (the pin path is not on
+  a bpffs -- almost always a missing `/sys/fs/bpf` mount) and
+  `EBPFPinsReset` (a rebuilt object changed a map's shape, so the existing
+  pins could not be reused and the drops were lost). Both are recoverable
+  states that used to be invisible.
+
+### Fixed (Phase 4)
+- **A transient apiserver error during a status write silently undid a
+  mitigation.** The watcher blocked in the kernel before writing status, so
+  a failed status write left the kernel blocking and status not recording it
+  -- and the BlocklistReconciler (status is desired state) then reconciled
+  that orphan away a pass or two later. Fixed with write-ahead ordering: the
+  intent is recorded in status and persisted before the kernel/mesh is
+  touched, so a failed write means nothing was blocked (clean retry) and an
+  action failing after the write leaves status claiming the block for the
+  reconciler to re-apply. Found by the new chaos/fault-injection tests
+  (pkg/controller/chaos_test.go), which close ROADMAP.md Phase 4's "no chaos
+  testing" item.
+- **`Unblock`/`UnblockTunnel` treated an already-absent entry as an
+  error.** De-escalation and finalization both walk a policy's status
+  unblocking every entry, and a single phantom -- a restart that lost the
+  maps, a reconcile that already pruned it -- aborted the loop and left
+  every real entry behind it in the kernel. Already-gone is the outcome
+  being asked for, so it is now success. Found by writing the restart
+  test, not in production.
+- **A changed BPF map key would have gone undetected.** The ring buffer's
+  record size has been pinned by test since Phase 2.5, but nothing checked
+  the enforcement maps' *key* sizes against the loaded object. A change to
+  `struct tunnel_key` that was not mirrored in `pkg/ebpf` would have
+  marshalled silently and dropped the wrong tunnels; `Attach` now refuses
+  the object instead.
+- `BPF_PIN_PATH=""` -- the documented way to turn pinning off -- would have
+  been read as "unset" by the config loader's `getEnv` and silently turned
+  pinning *on*. Empty is now a meaningful value for that one variable.
+
+### Added (Phase 3)
 - **A per-tunnel (TEID-keyed) eBPF drop path**, closing `ROADMAP.md`
   Phase 3's largest gap: detection has been per subscriber since Phase 2.5
   while mitigation was still per peer address. `bpf/packet_filter.c` gained

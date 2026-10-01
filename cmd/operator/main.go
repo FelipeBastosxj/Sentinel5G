@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	clientgoevents "k8s.io/client-go/tools/events"
@@ -134,7 +136,8 @@ func main() {
 		}
 	}()
 
-	blocklist := attachBlocklist(log, mgr.GetEventRecorder("sentinel5g-operator"), operatorPodRef(), bpfObjectPath, bpfInterface)
+	podRef := operatorPodRef()
+	blocklist := attachBlocklist(log, mgr.GetEventRecorder("sentinel5g-operator"), podRef, bpfObjectPath, bpfInterface, cfg.BPFPinPath)
 	defer blocklist.Close()
 
 	podIndex := sentinelcontroller.NewPodIPIndex()
@@ -154,18 +157,31 @@ func main() {
 			os.Exit(1)
 		}
 		publisher := &ingestion.Publisher{
-			Source:   source,
-			PodIndex: podIndex,
-			Bus:      busConnector,
-			Subject:  cfg.NATSEventsSubject,
-			NodeName: nodeName,
-			Log:      log.WithName("ingestion-publisher"),
+			Source:        source,
+			PodIndex:      podIndex,
+			Bus:           busConnector,
+			Subject:       cfg.NATSEventsSubject,
+			NodeName:      nodeName,
+			BatchSize:     cfg.NATSEventBatchSize,
+			FlushInterval: cfg.NATSEventFlushInterval,
+			Log:           log.WithName("ingestion-publisher"),
 			// Runs here, per node, rather than as a second NATS consumer --
 			// see Publisher.TunnelFlood's doc comment for both reasons.
 			TunnelFlood: detect.NewGTPUFloodDetector(detect.GTPUFloodConfig{
 				Enabled:          cfg.GTPUTunnelFloodEnabled,
 				PacketsPerSecond: cfg.GTPUTunnelFloodPPS,
 				Cooldown:         cfg.GTPUTunnelFloodCooldown,
+			}),
+			// The per-peer counterpart. Two scopes, not one tunable: a
+			// per-tunnel threshold cannot see 200 tunnels at 999 pkt/s, and
+			// a per-source one cannot see one subscriber flooding behind a
+			// busy gNB.
+			SourceFlood: detect.NewGTPUSourceFloodDetector(detect.GTPUSourceFloodConfig{
+				Enabled:          cfg.GTPUSourceFloodEnabled,
+				PacketsPerSecond: cfg.GTPUSourceFloodPPS,
+				DistinctTunnels:  cfg.GTPUSourceFloodDistinctTunnels,
+				Window:           cfg.GTPUSourceFloodWindow,
+				Cooldown:         cfg.GTPUSourceFloodCooldown,
 			}),
 			ThreatsSubject: cfg.NATSThreatsSubject,
 		}
@@ -222,6 +238,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The global mitigation kill switch reads its ConfigMap through the
+	// APIReader (direct, uncached) so it doesn't force the manager to watch
+	// every ConfigMap in scope just for this one. Disabled when the name is
+	// empty or no namespace is resolvable (e.g. `go run` outside a Pod, with
+	// no POD_NAMESPACE).
+	var killSwitch *sentinelcontroller.KillSwitch
+	if cfg.KillSwitchConfigMapName != "" && cfg.KillSwitchNamespace != "" {
+		killSwitch = &sentinelcontroller.KillSwitch{
+			Reader: mgr.GetAPIReader(),
+			Key: types.NamespacedName{
+				Namespace: cfg.KillSwitchNamespace,
+				Name:      cfg.KillSwitchConfigMapName,
+			},
+			TTL: cfg.KillSwitchPollInterval,
+		}
+		log.Info("global mitigation kill switch enabled",
+			"configMap", cfg.KillSwitchNamespace+"/"+cfg.KillSwitchConfigMapName, "pollInterval", cfg.KillSwitchPollInterval)
+	} else {
+		log.Info("global mitigation kill switch disabled (no ConfigMap name or namespace resolved)")
+	}
+
 	watcher := &sentinelcontroller.ThreatScoreWatcher{
 		Client:        mgr.GetClient(),
 		Log:           log.WithName("threat-score-watcher"),
@@ -232,10 +269,33 @@ func main() {
 		Mesh:          meshAdapter,
 		BaseThreshold: cfg.ThreatScoreThreshold,
 		Scoring:       scoring,
+		KillSwitch:    killSwitch,
+		ActionLimiter: sentinelcontroller.NewReactorLimiter(cfg.ReactorStatusWritesPerSecond, cfg.ReactorStatusWriteBurst),
 	}
 	if err := mgr.Add(watcher); err != nil {
 		log.Error(err, "unable to register threat score watcher")
 		os.Exit(1)
+	}
+
+	// Closes the loop between what the policies' status claims is blocked
+	// and what the kernel is actually dropping. Only registered when eBPF
+	// is genuinely attached: the no-op fallback above enforces nothing, so
+	// it implements no BlocklistInspector and there is no actual state to
+	// compare against (same type-assertion convention as EventSource).
+	if inspector, ok := blocklist.(sentinelebpf.BlocklistInspector); ok {
+		drift := &sentinelcontroller.BlocklistReconciler{
+			Client:    mgr.GetClient(),
+			Log:       log.WithName("blocklist-reconciler"),
+			Blocklist: blocklist,
+			Inspector: inspector,
+			Interval:  cfg.BlocklistReconcileInterval,
+			Recorder:  mgr.GetEventRecorder("sentinel5g-operator"),
+			PodRef:    podRef,
+		}
+		if addErr := mgr.Add(drift); addErr != nil {
+			log.Error(addErr, "unable to register blocklist reconciler")
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -256,7 +316,10 @@ func main() {
 	}
 
 	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell, "logLevel", logLevel,
-		"gtpuTunnelFloodEnabled", cfg.GTPUTunnelFloodEnabled, "gtpuTunnelFloodPPS", cfg.GTPUTunnelFloodPPS)
+		"gtpuTunnelFloodEnabled", cfg.GTPUTunnelFloodEnabled, "gtpuTunnelFloodPPS", cfg.GTPUTunnelFloodPPS,
+		"gtpuSourceFloodEnabled", cfg.GTPUSourceFloodEnabled, "gtpuSourceFloodPPS", cfg.GTPUSourceFloodPPS,
+		"gtpuSourceFloodDistinctTunnels", cfg.GTPUSourceFloodDistinctTunnels,
+		"bpfPinPath", cfg.BPFPinPath, "blocklistReconcileInterval", cfg.BlocklistReconcileInterval)
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager exited with an error")
 		os.Exit(1)
@@ -282,18 +345,48 @@ func natsReadyzCheck(busConnector *events.Connector) healthz.Checker {
 // drive mesh-layer isolation. The Event is what makes this a "Pod condition
 // or event," not just a log line, per docs/integrations.md's eBPF preflight
 // section: `kubectl describe pod`/`kubectl get events` surface it directly.
-func attachBlocklist(log logr.Logger, recorder clientgoevents.EventRecorder, ref runtime.Object, objectPath, iface string) sentinelebpf.BlocklistUpdater {
-	loader, err := sentinelebpf.Attach(objectPath, iface)
-	if err != nil {
-		cause := sentinelebpf.ClassifyAttachError(err)
-		log.Info("eBPF blocklist not attached; EbpfBlock actions will be no-ops",
-			"cause", cause, "reason", err.Error())
-		if ref != nil {
-			recorder.Eventf(ref, nil, corev1.EventTypeWarning, "EBPFAttachFailed", "AttachXDP", "%s: %s", cause, err.Error())
-		}
-		return noopBlocklist{}
+//
+// pinPath is passed through to Options.PinPath. A pin path that is not on a
+// bpffs is the one failure retried rather than accepted -- see the comment
+// on that branch for why unpinned enforcement beats no enforcement.
+func attachBlocklist(log logr.Logger, recorder clientgoevents.EventRecorder, ref runtime.Object, objectPath, iface, pinPath string) sentinelebpf.BlocklistUpdater {
+	loader, err := sentinelebpf.AttachWithOptions(objectPath, iface, sentinelebpf.Options{PinPath: pinPath})
+	if err == nil {
+		return loader
 	}
-	return loader
+
+	// A pin path that is not on a bpffs -- the container missing the
+	// /sys/fs/bpf hostPath mount is the common cause -- is retried WITHOUT
+	// pinning rather than left as a failed attach. The trade is deliberate:
+	// unpinned enforcement still drops packets and is only lost across a
+	// restart (which pkg/controller.BlocklistReconciler then repairs from
+	// policy status), whereas refusing to attach at all would mean no
+	// enforcement whatsoever, at any moment, over a mount problem. It is
+	// reported, not swallowed: a warning Event, a log line, and
+	// sentinel5g_ebpf_enforcement_pinned going to 0.
+	if pinPath != "" && errors.Is(err, sentinelebpf.ErrPinPathNotBPFFS) {
+		log.Info("eBPF map pinning unavailable; attaching unpinned -- active drops will NOT survive an operator restart",
+			"pinPath", pinPath, "reason", err.Error())
+		if ref != nil {
+			recorder.Eventf(ref, nil, corev1.EventTypeWarning, "EBPFPinUnavailable", "AttachXDP",
+				"%s is not on a bpf filesystem, so enforcement maps were not pinned; "+
+					"mount the node's /sys/fs/bpf into this Pod (chart value ebpf.pinPath) "+
+					"or set BPF_PIN_PATH='' to make this expected. Detail: %s", pinPath, err.Error())
+		}
+		unpinned, retryErr := sentinelebpf.AttachWithOptions(objectPath, iface, sentinelebpf.Options{})
+		if retryErr == nil {
+			return unpinned
+		}
+		err = retryErr
+	}
+
+	cause := sentinelebpf.ClassifyAttachError(err)
+	log.Info("eBPF blocklist not attached; EbpfBlock actions will be no-ops",
+		"cause", cause, "reason", err.Error())
+	if ref != nil {
+		recorder.Eventf(ref, nil, corev1.EventTypeWarning, "EBPFAttachFailed", "AttachXDP", "%s: %s", cause, err.Error())
+	}
+	return noopBlocklist{}
 }
 
 // operatorPodRef builds an object reference to the operator's own Pod from

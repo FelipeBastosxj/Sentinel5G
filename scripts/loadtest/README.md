@@ -12,10 +12,12 @@ is that harness, and
 | `gen_packets.py` | Builds the frames the benchmark replays. Generated, not committed, so the GTP-U one cannot silently drift out of what `parse_gtpu()` accepts. |
 | `xdp_bench.sh` | Per-packet XDP cost (`< 0.2 ms` target), across four packet classes and a repeat sweep that walks the ring buffer from empty to saturated. Also prints every map's real type and capacity. |
 | `mitigation_latency.sh` | Closed-loop mitigation latency (single-digit-ms target), in two halves: the eBPF map write, and NATS publish → `Phase: Mitigating`. |
+| `cpu_saturation.sh` | Program CPU per packet and ring-buffer saturation under a sustained REAL load with a REAL consumer — a veth pair, real RX path, real GTP-U frames at a few hundred thousand pps. The number `xdp_bench.sh`'s hot-cache prog-run cannot give. See its own header for the veth/generic-XDP caveat vs a physical NIC. |
 
 ```sh
 make -C bpf                                   # the object both scripts load
 sudo scripts/loadtest/xdp_bench.sh
+sudo scripts/loadtest/cpu_saturation.sh
 sudo KUBECONFIG=... scripts/loadtest/mitigation_latency.sh
 ```
 

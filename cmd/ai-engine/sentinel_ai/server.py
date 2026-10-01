@@ -192,6 +192,48 @@ def _nats_connect_kwargs(settings: Settings) -> dict:
     return kwargs
 
 
+def parse_event_batch(data: bytes) -> list[dict]:
+    """Decodes a NATS events-subject message into a list of event dicts.
+
+    A single event is published as a JSON object and a batch as a JSON array
+    (pkg/events.Bus.PublishNormalizedEventBatch). Both are accepted, so a
+    batching Publisher and a non-batching one interoperate with the same
+    consumer, and so does an older Publisher that only ever sent objects.
+    Raises ValueError for anything that is neither.
+    """
+    payload = json.loads(data)
+    if isinstance(payload, list):
+        for item in payload:
+            if not isinstance(item, dict):
+                raise ValueError("event batch contains a non-object element")
+        return payload
+    if isinstance(payload, dict):
+        return [payload]
+    raise ValueError("event payload is neither an object nor an array")
+
+
+def build_threat_result(payload: dict, engine: ScoringEngine) -> dict:
+    """Scores one event dict and builds the ThreatScoreEvent to publish.
+    Factored out of the NATS handler so the scoring/threat-shape contract is
+    testable without a live bus.
+    """
+    event = NormalizedEvent.from_dict(payload)
+    threat_score = engine.score_event(event)
+    return {
+        "sourceEventId": payload.get("eventId", str(uuid.uuid4())),
+        "namespace": payload.get("namespace", ""),
+        "podName": payload.get("podName", ""),
+        "sourceIp": payload.get("sourceIp", ""),
+        # Carried through so a mitigation can target the tunnel the score was
+        # actually about, not just the peer address every subscriber shares
+        # -- see pkg/events.ThreatScoreEvent.TEID.
+        "teid": payload.get("teid", 0),
+        "score": threat_score,
+        "model": "autoencoder-v1",
+        "detectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
     """Consumes NATS_EVENTS_SUBJECT and republishes NATS_THREATS_SUBJECT."""
     import nats  # imported lazily so HTTP-only deployments stay light
@@ -202,38 +244,34 @@ async def run_nats_worker(settings: Settings, engine: ScoringEngine) -> None:
     await _ensure_stream(js, settings)
 
     async def handler(msg) -> None:
+        # One NATS message may carry a single event (an object) or a batch
+        # (an array) -- pkg/ingestion.Publisher coalesces events into one
+        # message to stay under the JetStream message-rate ceiling
+        # (ROADMAP.md Phase 4). parse_event_batch normalises both to a list.
         try:
-            payload = json.loads(msg.data)
-            event = NormalizedEvent.from_dict(payload)
+            payloads = parse_event_batch(msg.data)
         except (json.JSONDecodeError, ValueError, TypeError):
             # Malformed payload will never parse on redelivery either; term
             # (not nak) drops it instead of retrying forever.
-            logger.warning("dropping malformed event on %s", settings.nats_events_subject)
+            logger.warning("dropping malformed message on %s", settings.nats_events_subject)
             NATS_EVENTS_TOTAL.labels(outcome="malformed").inc()
             await msg.term()
             return
 
         try:
-            threat_score = engine.score_event(event)
-
-            result = {
-                "sourceEventId": payload.get("eventId", str(uuid.uuid4())),
-                "namespace": payload.get("namespace", ""),
-                "podName": payload.get("podName", ""),
-                "sourceIp": payload.get("sourceIp", ""),
-                # Carried through so a mitigation can target the tunnel the
-                # score was actually about, not just the peer address every
-                # subscriber shares -- see pkg/events.ThreatScoreEvent.TEID.
-                "teid": payload.get("teid", 0),
-                "score": threat_score,
-                "model": "autoencoder-v1",
-                "detectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-            await js.publish(settings.nats_threats_subject, json.dumps(result).encode())
+            for payload in payloads:
+                result = build_threat_result(payload, engine)
+                await js.publish(settings.nats_threats_subject, json.dumps(result).encode())
+                NATS_EVENTS_TOTAL.labels(outcome="scored").inc()
+            # One ack for the whole message. If any event above failed, the
+            # exception below naks the WHOLE message; JetStream redelivers it
+            # and the batch is re-scored. That is safe under at-least-once
+            # because the downstream mitigation is idempotent (duplicate
+            # scores for the same tunnel re-apply the same block) -- the same
+            # guarantee the single-event path already relied on.
             await msg.ack()
-            NATS_EVENTS_TOTAL.labels(outcome="scored").inc()
         except Exception:
-            logger.exception("failed to score/publish event, will retry")
+            logger.exception("failed to score/publish a batch of %d, will retry", len(payloads))
             NATS_EVENTS_TOTAL.labels(outcome="publish_failed").inc()
             await msg.nak()
 

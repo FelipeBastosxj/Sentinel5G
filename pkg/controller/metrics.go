@@ -94,6 +94,161 @@ var (
 		[]string{"action", "result"},
 	)
 
+	// BlocklistDrift counts entries the periodic kernel-versus-status
+	// comparison had to correct (pkg/controller.BlocklistReconciler).
+	//
+	// This is the metric ROADMAP.md Phase 4's first item asks for, and the
+	// two directions are not interchangeable. direction="missing" means a
+	// policy's status claimed a drop the kernel did not have: traffic an
+	// operator believed was being dropped was flowing. Any non-zero rate
+	// there outside of a restart is a defect, and a spike at startup is the
+	// restart replay itself. direction="extra" means the kernel held a drop
+	// no policy claimed: enforcement outliving its reason, which is a
+	// quieter problem but still a wrong answer to "what is blocked".
+	BlocklistDrift = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_blocklist_drift_total",
+			Help: "eBPF enforcement entries corrected by the kernel-vs-status reconciliation, by kind and direction.",
+		},
+		[]string{"kind", "direction"},
+	)
+
+	// BlocklistEntries is the size of each side of that comparison, taken
+	// before any correction. state="desired" is the union of every policy's
+	// status; state="kernel" is what the enforcement maps actually held.
+	// The two being equal is the healthy state; BlocklistDrift above is
+	// their difference over time.
+	BlocklistEntries = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_blocklist_entries",
+			Help: "Enforcement entries, by kind and by which side of the desired/actual comparison.",
+		},
+		[]string{"kind", "state"},
+	)
+
+	// BlocklistCapacity is max_entries for each enforcement map, so
+	// BlocklistEntries{state="kernel"} has a denominator. Both maps are
+	// plain HASH and refuse an insert when full rather than evicting one
+	// (the fail-loudly choice bpf/packet_filter.c documents), so approaching
+	// this ceiling means approaching the point where new mitigations start
+	// failing outright -- ROADMAP.md Phase 4 tracks the alerting and the
+	// operational response to that as its own open item.
+	BlocklistCapacity = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_blocklist_capacity",
+			Help: "max_entries of each eBPF enforcement map.",
+		},
+		[]string{"kind"},
+	)
+
+	// BlocklistReconciles counts reconciliation passes. An error here does
+	// not mean drift went uncorrected in general -- the pass applies every
+	// correction it can and reports the ones that failed -- but a sustained
+	// error rate means the comparison itself is not trustworthy.
+	BlocklistReconciles = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_blocklist_reconciles_total",
+			Help: "Kernel-vs-status enforcement reconciliation passes, by result.",
+		},
+		[]string{"result"},
+	)
+
+	// ObservationMapOccupancy is the live entry count of the per-tunnel
+	// rate map (an LRU), per kind. It is the metric ROADMAP.md Phase 4 asks
+	// for against MAX_TUNNEL_ENTRIES: unlike the enforcement maps, this one
+	// evicts the coldest counter silently when full, so a rate window resets
+	// mid-flight and detection degrades under exactly the bearer cardinality
+	// it exists for -- invisibly, until this gauge approaches
+	// ObservationMapCapacity below. There is no kernel-exposed eviction
+	// count for an LRU; occupancy is the warning.
+	ObservationMapOccupancy = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_ebpf_observation_map_occupancy",
+			Help: "Live entries in the per-tunnel rate (LRU) map, per node.",
+		},
+		[]string{"kind"},
+	)
+
+	// ObservationMapCapacity is max_entries for that map, so the occupancy
+	// gauge has a denominator.
+	ObservationMapCapacity = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_ebpf_observation_map_capacity",
+			Help: "max_entries of the per-tunnel rate (LRU) map.",
+		},
+		[]string{"kind"},
+	)
+
+	// MitigationMapFull counts mitigations rejected because the enforcement
+	// map was full. This is the event ROADMAP.md Phase 4 names as a denial
+	// of service against the mitigation path: the maps are plain HASH and
+	// refuse rather than evict (the fail-loudly choice), so an attacker who
+	// can generate distinct TEIDs can exhaust tunnel_blocklist and every
+	// subsequent legitimate drop is refused. A non-zero rate here is that
+	// attack, or genuine over-capacity, and either way is a page.
+	MitigationMapFull = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_mitigation_map_full_total",
+			Help: "Mitigations rejected because the enforcement map was at capacity, by kind.",
+		},
+		[]string{"kind"},
+	)
+
+	// ReactorThrottled counts status refreshes skipped because the per-policy
+	// reactor rate limit was hit -- writes that carried no decision change
+	// (an ObservedThreatScore-only refresh under a score storm). It is the
+	// bound ROADMAP.md Phase 4 asks for on the reactor: a non-zero rate here
+	// is the operator being protected from apiserver pressure, not a dropped
+	// mitigation (those are never throttled). A sustained high rate means a
+	// policy is being scored far faster than its decisions change -- usually
+	// one very busy source -- and is the signal to look at sampling upstream.
+	ReactorThrottled = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_reactor_status_writes_throttled_total",
+			Help: "Non-meaningful status refreshes skipped by the per-policy reactor rate limit.",
+		},
+		[]string{"namespace", "policy"},
+	)
+
+	// KillSwitchEngaged is 1 while the global mitigation kill switch is
+	// engaged (the sentinel5g-killswitch ConfigMap present with
+	// engaged=true). Detection continues while it is 1; no drop or
+	// quarantine is taken. It is the one lever an operator flips to stop a
+	// mitigation going wrong across many policies at once (ROADMAP.md
+	// Phase 4), and it belongs on a dashboard so "why did everything stop
+	// mitigating" has a one-glance answer.
+	KillSwitchEngaged = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_kill_switch_engaged",
+			Help: "1 while the global mitigation kill switch is engaged, 0 otherwise.",
+		},
+	)
+
+	// MitigationsSuppressed counts actions withheld because the kill switch
+	// was engaged, by what would have been done. Separate from a withheld
+	// detection-only pilot (ThresholdCrossings{outcome="alerting"}): this is
+	// an operator pulling the lever on mitigation that was otherwise armed.
+	MitigationsSuppressed = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_mitigations_suppressed_total",
+			Help: "Mitigation actions withheld because the global kill switch was engaged, by action.",
+		},
+		[]string{"action"},
+	)
+
+	// EnforcementPinned reports whether this node's enforcement maps are
+	// pinned to bpffs, i.e. whether a drop survives the operator process at
+	// all. 0 is not a failure -- it is the documented behaviour with
+	// BPF_PIN_PATH unset -- but it changes what a restart means, so it
+	// should be visible rather than assumed. Set once at startup; absent
+	// entirely when eBPF is not attached.
+	EnforcementPinned = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_ebpf_enforcement_pinned",
+			Help: "1 when the eBPF enforcement maps are pinned to bpffs and survive an operator restart, 0 when not.",
+		},
+	)
+
 	// PolicyPhase exposes each policy's current phase as a 0/1 gauge per
 	// possible phase (the kube-state-metrics convention), so a dashboard can
 	// sum by phase without re-deriving it from logs. SetPolicyPhase keeps
@@ -128,6 +283,17 @@ func init() {
 		ThresholdCrossings,
 		Mitigations,
 		PolicyPhase,
+		BlocklistDrift,
+		BlocklistEntries,
+		BlocklistCapacity,
+		BlocklistReconciles,
+		EnforcementPinned,
+		ObservationMapOccupancy,
+		ObservationMapCapacity,
+		MitigationMapFull,
+		KillSwitchEngaged,
+		MitigationsSuppressed,
+		ReactorThrottled,
 	)
 }
 
@@ -168,4 +334,5 @@ func ForgetPolicyMetrics(namespace, name string) {
 	labels := prometheus.Labels{"namespace": namespace, "policy": name}
 	PolicyPhase.DeletePartialMatch(labels)
 	ThresholdCrossings.DeletePartialMatch(labels)
+	ReactorThrottled.DeletePartialMatch(labels)
 }

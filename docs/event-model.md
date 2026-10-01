@@ -19,6 +19,21 @@ Both subjects live on a single JetStream stream (`SENTINEL5G` by default,
 `NATS_STREAM_NAME`), file-backed with a 24h retention limit — see
 `pkg/events/nats.go`'s `ensureStream`.
 
+**Batching on `sentinel5g.events.normalized`.** A message on the events
+subject is either a single `NormalizedEvent` (a JSON **object**) or a batch
+(a JSON **array** of them). `pkg/ingestion.Publisher` coalesces events into
+one message when `NATS_EVENT_BATCH_SIZE > 1`, to stay under JetStream's
+message-rate ceiling — the first throughput limit in the design, reached
+before eBPF's (`ROADMAP.md` Phase 4). The consumer distinguishes the two by
+the leading byte (`[` vs `{`): the AI-engine worker's `parse_event_batch`
+accepts both, so a batching Publisher, a non-batching one, and an older
+Publisher that only ever sent objects all interoperate with the same
+consumer. The threats subject is **never** batched — one `ThreatScoreEvent`
+per message — so a batch of N events in produces N score messages out, each
+with its own `teid`. Batching is off by default; enable it only once the AI
+engine is on a build that understands the array form (any current build
+does).
+
 ## `NormalizedEvent`
 
 Produced by the Layer 2 normalization step from a raw capture-layer
