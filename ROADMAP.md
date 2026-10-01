@@ -605,17 +605,31 @@ correctness holes in what is built.
       says 270k msg/s; 100k pkt/s per node across N nodes exceeds that
       before eBPF is anywhere near its limit. This is probably the hardest
       ceiling in the whole design, and it is the one least examined.
-- [ ] **`MAX_TUNNEL_ENTRIES` is 65,536; a real UPF serves far more
-      bearers.** Past that the LRU thrashes, rate counters reset mid-window
-      and **detection degrades silently under exactly the load it exists
-      for**. There is no occupancy or eviction metric anywhere, so the
-      degradation would be invisible. Needs both the metric and a measured
-      answer for what cardinality the map should actually be sized to.
-- [ ] **A full `tunnel_blocklist` is a denial of service against the
-      mitigation path.** Failing loudly at 16,384 entries is the right
-      behaviour (Phase 3), but nothing exports "the map is full" as a
-      metric or an alert, and there is no defined operational response.
-      An attacker who can generate distinct TEIDs can exhaust it.
+- [x] **`MAX_TUNNEL_ENTRIES` is 65,536; a real UPF serves far more
+      bearers.** The metric half is closed; the sizing half is honestly
+      still open and now *visible* rather than invisible. The per-tunnel
+      rate map's live occupancy is sampled every reconcile and exported as
+      `sentinel5g_ebpf_observation_map_occupancy` against
+      `..._capacity`, per node — so the silent degradation (an LRU evicting
+      the coldest rate counter, a window resetting mid-flight) now shows as
+      a gauge approaching 1 before it bites, which is the only warning an
+      LRU can give since the kernel exposes no eviction count. The alert and
+      the fix (raise `MAX_TUNNEL_ENTRIES`, rebuild, expect an
+      `EBPFPinsReset`) are in `docs/observability.md`. What remains is a
+      *measured* right-size against a real UPF's bearer cardinality, which
+      needs a real UPF — folded into the line-rate measurement item below,
+      not a separate unknown.
+- [x] **A full `tunnel_blocklist` is a denial of service against the
+      mitigation path.** Closed. A refused insert (the map is plain HASH and
+      returns `E2BIG` rather than evicting, recognised by `ebpf.IsMapFull`)
+      now increments `sentinel5g_mitigation_map_full_total{kind}`, so "drops
+      are being denied" is a distinct, alertable signal instead of a generic
+      error. `docs/troubleshooting.md` carries the defined response, and its
+      first branch is the one this exposed as the real answer: an attacker
+      generating distinct TEIDs to exhaust the map is caught by the per-peer
+      cardinality detector (Phase 4 item 2), and a single source-wide block
+      on that peer reclaims every slot its forged tunnels took. The two
+      Phase 4 items compose: the evasion detector *is* the DoS defence.
 - [ ] **The `<2%` CPU-per-node target has never been measured, and neither
       has sustained line rate.** Carried over from Phase 3's harness item:
       the 195-211 ns figure is `bpftool prog run` with hot caches and no

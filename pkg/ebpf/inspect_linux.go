@@ -94,6 +94,49 @@ func (l *Loader) BlockedTunnels() ([]BlockedTunnel, error) {
 	return out, nil
 }
 
+// ObservationOccupancy counts the live entries in the per-tunnel RATE map
+// (tunnel_rate and its v6 twin) against its capacity, so pkg/controller can
+// export how close the observation path is to MAX_TUNNEL_ENTRIES. That
+// ceiling matters because tunnel_rate is an LRU: past it the kernel evicts
+// the coldest counter to make room, a rate window resets mid-flight, and
+// detection degrades silently under exactly the bearer cardinality it is
+// meant to handle (ROADMAP.md Phase 4). Occupancy near capacity is the only
+// warning available -- the kernel does not expose an eviction count for an
+// LRU map -- so it is the warning this exports.
+//
+// Counted by iteration, best-effort, the same non-snapshot caveat as
+// BlockedIPs: the map is live, so a concurrent insert or eviction may be
+// missed. For a gauge sampled on a timer that is fine.
+func (l *Loader) ObservationOccupancy() (entries, capacity uint32, err error) {
+	for _, m := range []*ebpf.Map{l.tunnelRate, l.tunnelRateV6} {
+		n, countErr := countMapEntries(m)
+		if countErr != nil {
+			return 0, 0, countErr
+		}
+		entries += n
+	}
+	// Both families share MAX_RATE_ENTRIES; report the v4 map's as the
+	// capacity, since the two are declared equal in bpf/packet_filter.c.
+	return entries, l.tunnelRate.MaxEntries(), nil
+}
+
+// countMapEntries iterates m counting keys. The value is discarded; only the
+// count matters. Uses a byte slice sized to the map's own key length so it
+// works for every key type without the caller naming it.
+func countMapEntries(m *ebpf.Map) (uint32, error) {
+	key := make([]byte, m.KeySize())
+	value := make([]byte, m.ValueSize())
+	var n uint32
+	it := m.Iterate()
+	for it.Next(&key, &value) {
+		n++
+	}
+	if err := it.Err(); err != nil {
+		return 0, fmt.Errorf("iterate map while counting: %w", err)
+	}
+	return n, nil
+}
+
 // MapCapacity reports max_entries for the two enforcement maps, so
 // pkg/controller can export how close the blocklists are to the point where
 // bpf/packet_filter.c's plain-HASH choice turns a new mitigation into an

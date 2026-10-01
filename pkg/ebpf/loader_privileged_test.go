@@ -96,10 +96,16 @@ func TestBlocklistIsBoundedAndFailsLoudlyWhenFull(t *testing.T) {
 			t.Fatalf("filling the tunnel blocklist failed early at %d: %v", i, err)
 		}
 	}
-	if err := l.BlockTunnel(ip, capacity+1); err == nil {
+	err := l.BlockTunnel(ip, capacity+1)
+	if err == nil {
 		t.Fatal("a full tunnel blocklist accepted another entry: it is evicting, not refusing")
-	} else {
-		t.Logf("full at %d entries, next insert refused: %v", capacity, err)
+	}
+	t.Logf("full at %d entries, next insert refused: %v", capacity, err)
+	// The refusal must be recognisable as a capacity rejection, so the
+	// operator path can count it as MitigationMapFull rather than a generic
+	// error (ROADMAP.md Phase 4's tunnel_blocklist-DoS item).
+	if !IsMapFull(err) {
+		t.Fatalf("a full-map refusal was not recognised by IsMapFull: %v", err)
 	}
 }
 
@@ -276,4 +282,25 @@ func containsIP(ips []net.IP, want net.IP) bool {
 		}
 	}
 	return false
+}
+
+// ObservationOccupancy must read the real tunnel_rate map's count and
+// capacity without error. A freshly attached program on `lo` with no GTP-U
+// traffic has an empty rate map, so the count is 0 and the capacity is the
+// compiled MAX_RATE_ENTRIES -- the point of the test is that the iteration
+// and MaxEntries() path works against a real map, which the fake kernel in
+// pkg/controller cannot prove.
+func TestObservationOccupancyReadsTheRealRateMap(t *testing.T) {
+	l := loadForBench(t)
+	entries, capacity, err := l.ObservationOccupancy()
+	if err != nil {
+		t.Fatalf("ObservationOccupancy: %v", err)
+	}
+	if capacity == 0 {
+		t.Fatal("capacity read as 0; MaxEntries() is not being read from the real map")
+	}
+	if entries > capacity {
+		t.Fatalf("occupancy %d exceeds capacity %d", entries, capacity)
+	}
+	t.Logf("tunnel_rate occupancy %d / %d", entries, capacity)
 }

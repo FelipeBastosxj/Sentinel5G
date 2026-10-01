@@ -334,11 +334,30 @@ blocklist map: update: key too big for map`, and
 **Cause:** the map is full (16,384 tunnels, `MAX_TUNNEL_BLOCKLIST_ENTRIES`).
 It is a plain HASH rather than an LRU on purpose — evicting an
 operator-owned drop to make room would un-block traffic nobody asked to
-un-block — so a full map refuses loudly instead. Either de-escalation isn't
-running (check `DE_ESCALATION_DWELL` and that policies are reaching
-`Monitoring` again), or you genuinely have more concurrent blocked
-subscribers than the map holds, in which case rebuild the object with a
-larger `MAX_TUNNEL_BLOCKLIST_ENTRIES`.
+un-block — so a full map refuses loudly instead. Each refusal increments
+`sentinel5g_mitigation_map_full_total{kind="tunnel_blocklist"}`, so this is
+alertable rather than buried in a generic error count.
+
+**Defined operational response**, in order:
+
+1. Confirm it is real over-capacity and not a leak: compare
+   `sentinel5g_blocklist_entries{kind="tunnel",state="kernel"}` against
+   `sentinel5g_blocklist_capacity{kind="tunnel"}`. If occupancy is near
+   capacity *and* de-escalation is running (policies returning to
+   `Monitoring`, `DE_ESCALATION_DWELL` sane), it is genuine load.
+2. If it is an **attack** — a source generating distinct TEIDs to exhaust
+   the map — the per-peer source-flood detector (`gtpuSourceFlood`,
+   `distinctTunnels`) is what catches the cardinality that causes this, and
+   a single source-wide `actions.ebpfBlock` on that peer reclaims every
+   slot its forged tunnels took. That is the intended answer, and it is why
+   the cardinality detector exists.
+3. If it is genuine subscriber count, rebuild the object with a larger
+   `MAX_TUNNEL_BLOCKLIST_ENTRIES` (note: changing a map's `max_entries`
+   resets the pins — expect an `EBPFPinsReset` Event and a drift re-apply,
+   see above).
+
+The same counter with `kind="blocklist"` is the source-IP map's equivalent;
+its `MAX_BLOCKLIST_ENTRIES` is 65,536.
 
 To see it coming rather than meeting it, watch occupancy against capacity:
 `sentinel5g_blocklist_entries{kind="tunnel",state="kernel"}` over

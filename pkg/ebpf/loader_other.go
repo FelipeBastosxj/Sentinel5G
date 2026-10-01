@@ -30,6 +30,9 @@ func AttachWithOptions(objPath, iface string, _ Options) (*Loader, error) {
 	return nil, fmt.Errorf("ebpf: XDP attach is only supported on linux (requested object %q on interface %q)", objPath, iface)
 }
 
+// IsMapFull is always false on non-Linux platforms: there is no map to fill.
+func IsMapFull(err error) bool { return false }
+
 // RemovePins is a no-op on non-Linux platforms: bpffs is a Linux facility,
 // so there is never anything pinned to remove.
 func RemovePins(pinPath string) error { return nil }

@@ -46,6 +46,9 @@ type fakeKernel struct {
 
 	capIPs, capTunnels uint32
 
+	obsEntries, obsCapacity uint32
+	obsErr                  error
+
 	// blockErr, when set, fails every Block call -- the "map is full" shape.
 	blockErr error
 
@@ -58,11 +61,12 @@ type fakeKernel struct {
 
 func newFakeKernel() *fakeKernel {
 	return &fakeKernel{
-		ips:        map[string]net.IP{},
-		tunnels:    map[string]ebpf.BlockedTunnel{},
-		pinPath:    ebpf.DefaultPinPath,
-		capIPs:     65536,
-		capTunnels: 16384,
+		ips:         map[string]net.IP{},
+		tunnels:     map[string]ebpf.BlockedTunnel{},
+		pinPath:     ebpf.DefaultPinPath,
+		capIPs:      65536,
+		capTunnels:  16384,
+		obsCapacity: 65536,
 	}
 }
 
@@ -126,6 +130,12 @@ func (k *fakeKernel) BlockedTunnels() ([]ebpf.BlockedTunnel, error) {
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+func (k *fakeKernel) ObservationOccupancy() (uint32, uint32, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.obsEntries, k.obsCapacity, k.obsErr
 }
 
 func (k *fakeKernel) PinPath() string {
@@ -527,6 +537,9 @@ func TestBlocklistReconciler_ExportsDriftAndPinMetrics(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(BlocklistCapacity.WithLabelValues("tunnel")); got != 16384 {
 		t.Fatalf("capacity{tunnel} = %v, want 16384", got)
+	}
+	if got := testutil.ToFloat64(ObservationMapCapacity.WithLabelValues("tunnel_rate")); got != 65536 {
+		t.Fatalf("observation capacity = %v, want 65536", got)
 	}
 
 	b.reportPinState()

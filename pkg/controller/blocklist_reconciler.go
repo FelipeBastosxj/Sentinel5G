@@ -352,6 +352,16 @@ func (b *BlocklistReconciler) Sync(ctx context.Context) (DriftReport, error) {
 	BlocklistCapacity.WithLabelValues("ip").Set(float64(capIPs))
 	BlocklistCapacity.WithLabelValues("tunnel").Set(float64(capTunnels))
 
+	// Observation-map occupancy, sampled on the same timer. Failing to read
+	// it is logged, not fatal: it is a gauge, and a stale gauge beats a
+	// crashed reconcile loop.
+	if occ, cap, occErr := b.Inspector.ObservationOccupancy(); occErr != nil {
+		b.Log.Error(occErr, "failed to sample per-tunnel rate map occupancy")
+	} else {
+		ObservationMapOccupancy.WithLabelValues("tunnel_rate").Set(float64(occ))
+		ObservationMapCapacity.WithLabelValues("tunnel_rate").Set(float64(cap))
+	}
+
 	if len(errs) > 0 {
 		BlocklistReconciles.WithLabelValues("error").Inc()
 		// Joined rather than returned on the first failure: a single map
