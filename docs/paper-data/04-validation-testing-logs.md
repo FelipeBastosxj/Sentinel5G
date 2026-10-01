@@ -425,3 +425,49 @@ program's v6 logic (parse, rate, enforcement, drop) all is. The v6 block/
 unblock map operations were already covered by
 `TestInspectorRoundTripsBothAddressFamilies`; this adds the packet path
 between them.
+
+## 4.11 Update, 2026-10-01 (Phase 4 branch, capture paths vs real daemons)
+
+`cmd/falco-bridge` and `pkg/hubble.Observer` had only ever been exercised
+against hand-built fixtures and an in-process gRPC server — never the real
+daemons they translate (`ROADMAP.md` Phase 4). Both now have, on the
+native-Linux lab (`test-environment.md`, kernel 6.14), reproducible via
+`scripts/integration/`.
+
+### Falco → `cmd/falco-bridge`
+
+A real `falcosecurity/falco:0.45.0` ran its modern-eBPF probe against the
+host kernel, pointed at a running `Bridge` via its own `http_output`:
+
+```
+# the real Falco alert (stdout, trimmed):
+Warning Sensitive file opened for reading by non-trusted program
+  | file=/etc/shadow process=cat ... rule="Read sensitive file untrusted"
+  time=2026-10-01T14:29:41.769074561Z
+# the NormalizedEvent the bridge published on NATS, captured by subscribing:
+{"observedAt":"2026-10-01T14:29:41.769074561Z","nodeName":"felipe-MS-7D77",...}
+```
+
+The `observedAt` matches the Falco alert's `time` exactly — the event is
+that alert, translated. Environment note: Falco's modern-eBPF probe fails
+`scap_init` on kernel 6.14 in 0.39.2 but works in 0.45.0, so `latest` is
+used; the earlier WSL2 environment could not run Falco's probe at all,
+which is why this had stood unverified.
+
+### Hubble → `pkg/hubble.Observer`
+
+A throwaway `kind` cluster running Cilium 1.20 + Hubble Relay carried real
+pod-to-pod UDP/2152 traffic; `pkg/hubble.Observer` dialed the real Relay's
+`GetFlows` API and converted the flows:
+
+```
+HUBBLE->NORMALIZED: src=10.244.0.33 dst=10.244.0.112 dport=2152 proto=GTP-U \
+  pod=default/gtpuprobe4 node=s5g-hubble-control-plane
+```
+
+Three datagrams → three `NormalizedEvent`s, each correctly tagged `GTP-U`
+(port 2152) with the real pod/namespace/node/five-tuple read out of Cilium's
+flow data — and the cluster's TCP/HTTP flows produced nothing, confirming
+the UDP-on-signaling-ports-only filter on real traffic, not just a fixture.
+Both throwaway environments (Falco containers, the Cilium `kind` cluster)
+were torn down after.

@@ -398,11 +398,24 @@ Phase 5's scale work.
 
 ## Phase 4 — Production hardening: validation, scale, robustness
 
-Phase 2.5 asked "can I install this?" and answered it. This phase asks the
+**Complete (2026-10-01).** All seventeen items are closed — the correctness
+gate, the scale ceilings, and the robustness gaps — each by code, a test, or
+a measurement on real infrastructure, never by assertion. The one thing this
+phase deliberately did *not* manufacture is a different answer to its own
+question.
+
+Phase 2.5 asked "can I install this?" and answered it. This phase asked the
 harder question — **"can I turn `autoMitigate: true` on, on a network that
-matters, and be right?"** — and the honest answer today is not yet. Every
-item below was found by reading the code and the measurements that exist,
-not by imagining failures; each names the file or the number it came from.
+matters, and be right?"** The honest answer is still *not yet* — but it is
+now a *measured* not-yet, not an unknown one: the false-positive rate is a
+confidence interval (§2.9) whose bound the committed data cannot push low
+enough to authorize automated mitigation, the detection-only pilot is the
+documented path to turning the system on, and that pilot is now also the
+instrument that would move the number. The system is hardened; the decision
+to automate is now gated on data an operator can gather, not on gaps in the
+code. Every item below was found by reading the code and the measurements
+that exist, not by imagining failures; each names the file or the number it
+came from, and each now names how it was closed.
 
 Ordered by what breaks first, not by effort. Items 1-4 are the gate: until
 they move, automated mitigation on a real network is imprudent regardless
@@ -771,9 +784,23 @@ correctness holes in what is built.
       unions into the desired enforcement set cleanly. The CRD staying
       `v1alpha1` is noted, not blocking: the mitigation state is two string
       slices, the most rollback-stable shape available.
-- [ ] **`cmd/falco-bridge` and `pkg/hubble` have still never run against
-      real daemons** — the caveat that was carried from Phase 2 and that
-      native Linux finally makes cheap to remove.
+- [x] **`cmd/falco-bridge` and `pkg/hubble` have still never run against
+      real daemons.** Both now have (2026-10-01), on the native-Linux lab,
+      reproducible via `scripts/integration/`. **Falco:** a real
+      `falcosecurity/falco:0.45.0` modern-eBPF probe caught `cat /etc/shadow`,
+      fired its stock "Read sensitive file untrusted" rule, and POSTed the
+      alert through its own `http_output` to a running `Bridge`, which
+      published a `NormalizedEvent` on NATS whose `observedAt` matched the
+      alert's timestamp exactly. **Hubble:** a throwaway `kind` cluster
+      running Cilium 1.20 + Hubble Relay carried real pod-to-pod UDP/2152
+      traffic; `pkg/hubble.Observer` dialed the real Relay's `GetFlows` API
+      and converted the flows into `NormalizedEvent`s tagged `GTP-U` with the
+      real pod/namespace/node, while TCP/HTTP flows were correctly ignored.
+      Native Linux did make Falco cheap (modern eBPF, once on ≥0.40 for
+      kernel 6.14); Hubble still needed a Cilium cluster stood up for it, so
+      "cheap" was half-right — recorded in
+      `docs/paper-data/04-validation-testing-logs.md` §4.11 and the
+      `docs/integrations.md` verification notes.
 
 ## Phase 5 — Scale & multi-cluster
 
