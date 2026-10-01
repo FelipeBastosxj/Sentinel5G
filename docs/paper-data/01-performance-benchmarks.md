@@ -325,6 +325,32 @@ NATS-side batching item (Phase 4) is where the real throughput ceiling lives,
 not in the model. One replica is nowhere near its own inference limit; the
 message bus gets there first.
 
+## 1.6 Single-active consumer, and the indexes it leans on at scale
+
+`ThreatScoreWatcher` is leader-gated: one process consumes every score for
+the whole cluster. That is correct for idempotency (one writer of each
+policy's status, see its doc comment) and a potential throughput ceiling, and
+`ROADMAP.md` Phase 4 noted the tradeoff was never measured.
+`throughput_bench_test.go` measures it (`go test ./pkg/controller/ -bench
+'Watcher|Index' -run x -benchmem`), on the host in `test-environment.md`:
+
+| Benchmark | Result | Reading |
+|---|---|---|
+| `WatcherHandle` sub-threshold steady state | ~17 µs/op → **~58,000 scores/sec** | the single-consumer drain rate for scores that need no API write (the dominant case, since meaningful writes are bounded by distinct threats and the reactor rate limit throttles the rest). Fake-client-bound — the real informer cache is faster — so this is a floor. |
+| `PodIPIndex.Lookup`, 1,000 pods | ~9 ns/op, 0 allocs | O(1) map lookup |
+| `PodIPIndex.Lookup`, 50,000 pods | ~12 ns/op, 0 allocs | **flat** — the "never exercised at cluster scale" concern answered: pod resolution does not degrade with cluster size |
+| `PolicyIndex.MatchingPolicies`, 10 policies | ~0.3 µs/op | — |
+| `PolicyIndex.MatchingPolicies`, 1,000 policies | ~23 µs/op | linear in policy count, but sub-25 µs even at 1,000 policies per namespace, far above any realistic count |
+
+The picture: one consumer sustains tens of thousands of scores per second,
+the AI engine produces ~72,000 per replica (§1.5), and neither in-memory index
+is the limit — `PodIPIndex` is flat O(1), `PolicyIndex` is linear but tiny at
+realistic policy counts. So the single-active consumer is a real ceiling only
+when the *aggregate* score rate across all nodes approaches ~50k/s, and the
+lever there is sampling upstream (the NATS item), **not** sharding the
+consumer — which would reintroduce the multi-writer races the leader gate
+exists to prevent. The tradeoff is deliberate and now quantified.
+
 ### Still not measured
 
 Sustained line-rate traffic through a real NIC, and the `< 2%` CPU per

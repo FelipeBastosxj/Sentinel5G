@@ -647,11 +647,21 @@ correctness holes in what is built.
       is **~300×** faster per event, headroom the engine's one-call-per-message
       design leaves on the table — which is why the throughput ceiling lives
       at the bus (item above), not the model.
-- [ ] **`ThreatScoreWatcher` is single-active by design, at
-      `replicaCount: 1`.** One process consumes the scores for the entire
-      cluster. That is correct for idempotency and wrong for throughput,
-      and the tradeoff has never been measured. `PodIPIndex` watches every
-      Pod and has likewise never been exercised at cluster scale.
+- [x] **`ThreatScoreWatcher` is single-active by design, at
+      `replicaCount: 1`.** Measured (`throughput_bench_test.go`,
+      `docs/paper-data/01-performance-benchmarks.md` §1.6). One consumer
+      drains ~58,000 no-write scores/sec (a fake-client floor; the real
+      informer cache is faster), against an AI engine producing ~72,000/sec
+      per replica — so the single-active design is a real ceiling only when
+      the *aggregate* rate across nodes nears ~50k/s. The two in-memory
+      indexes it leans on were the specific worry, and both are fine at
+      scale: `PodIPIndex.Lookup` is **flat O(1)** (~9–12 ns, 0 allocs, from
+      1k to 50k pods), and `PolicyIndex.MatchingPolicies` is linear but
+      sub-25 µs even at 1,000 policies per namespace. The lever when the
+      ceiling is reached is sampling upstream (the NATS item), not sharding
+      the consumer — which would reintroduce the multi-writer races the
+      leader gate exists to prevent. The tradeoff is deliberate and now
+      quantified.
 
 ### Robustness — the failure modes nothing currently tests
 
