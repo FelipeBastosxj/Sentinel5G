@@ -636,10 +636,17 @@ correctness holes in what is built.
       consumer, and the ~1.6 ms of ring-buffer drain headroom is
       *arithmetic*, not an observation. Needs a real NIC, a real generator,
       `perf`, and the actual `lost` record count under saturation.
-- [ ] **AI engine throughput per replica is unknown.** Score *latency* is
-      instrumented; scoring is one ONNX call per event with no batching,
-      and nothing measures how many events per second one replica sustains
-      — which is what decides the replica count in any sizing guide.
+- [x] **AI engine throughput per replica is unknown.** Measured.
+      `scripts/throughput_bench.py` puts one replica at **~72,000 events/sec**
+      on the production `score_event` path (single process, single thread,
+      CPU), full write-up in `docs/paper-data/01-performance-benchmarks.md`
+      §1.5. That comfortably exceeds one node's plausible signaling rate, so
+      the model is not the sizing bottleneck — the replica count is set by the
+      aggregate across nodes and the NATS ceiling (§1.3), not by scoring. The
+      benchmark also measured that batching the same vectors in one ONNX call
+      is **~300×** faster per event, headroom the engine's one-call-per-message
+      design leaves on the table — which is why the throughput ceiling lives
+      at the bus (item above), not the model.
 - [ ] **`ThreatScoreWatcher` is single-active by design, at
       `replicaCount: 1`.** One process consumes the scores for the entire
       cluster. That is correct for idempotency and wrong for throughput,
