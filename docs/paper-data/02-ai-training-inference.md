@@ -715,3 +715,95 @@ subscriber behind a gNB, so a per-packet model fed one would cross-attribute
 the flood to all of them — the exact failure §2.6.5 measured at 150 of 192
 bystander packets. A rule can hold the signal safely because its verdict is
 itself per-source and the operator acts on it with a per-source action.
+
+## 2.8 A capture-independent holdout, and the baseline the model has to beat
+
+Every accuracy number above §2.6 was produced by `scripts/evaluate_model.py`,
+which splits train and holdout inside the *same pooled set* of normal
+samples. That measures how well the autoencoder reconstructs held-out rows
+drawn from captures it also trained on — not whether it generalizes to a
+capture it never saw, and not whether it earns its complexity over a one-line
+threshold. `ROADMAP.md` Phase 4's third item asks for both. This section is
+the answer, produced by `scripts/baseline_comparison.py` (reproducible:
+`python scripts/baseline_comparison.py`), and it is reported as found,
+including where it is uncomfortable.
+
+### 2.8.1 Does it generalize to a capture it never trained on?
+
+Leave-one-capture-out: train the autoencoder on every normal capture *except
+one*, then score the held-out capture (label 0) against every anomalous
+capture (label 1). The held-out packets were in no training row, so this is
+generalization, not reconstruction.
+
+| Held-out normal capture | Trained on | Autoencoder AUC |
+|---|---|---|
+| `real_normal` (1 UE, 1,889 pkt) | `multi_ue_normal` | **0.936** |
+| `multi_ue_normal` (4 UE, 5,000 pkt) | `real_normal` | **0.935** |
+
+0.935–0.936, against the ~0.98 the within-pool split reports in §2.6. That
+gap is exactly the memorization the roadmap item suspected — the within-pool
+number *was* flattered by testing on captures the model trained on — and
+0.935 on a genuinely unseen capture is the honest figure. Only two real
+normal captures exist, so this is two folds; **more normal captures from
+different sessions are the single biggest thing that would strengthen every
+number in this document**, and that is now the concrete ask, not a vague one.
+
+### 2.8.2 How stable is that number?
+
+"AUC 0.98" from one seed and one split is one sample of a distribution. Five-
+fold cross-validation over the pooled normal set, repeated across seeds
+`{42, 1, 7}` — 15 measurements:
+
+| | value |
+|---|---|
+| mean AUC | 0.9353 |
+| std | **0.00033** |
+| range | [0.9350, 0.9357] |
+
+The spread is negligible. Whatever else is uncertain here, the AUC is not
+seed-dependent — a reassuring finding, and one the paper could not previously
+claim because it had never been measured.
+
+### 2.8.3 Does the model beat a threshold with no model in it?
+
+The comparison the paper never ran: the autoencoder's reconstruction error
+against two detectors that use no model at all — the shipped rule's own
+signal (per-tunnel rate gated by `has_teid`, i.e. `pkg/detect`'s
+`rule:gtpu-tunnel-flood` expressed as a score) and the raw per-tunnel-rate
+feature thresholded directly — scored on the identical pooled holdout, by
+AUC and by recall at a **≤1% false-positive budget** (the operating point a
+detection-only pilot actually tunes; best-F1 is useless on a set that is 97%
+anomalous, where "flag everything" wins F1 for every scorer identically).
+
+| Detector | AUC | Recall @ FPR ≤ 1% |
+|---|---|---|
+| **autoencoder** | **0.935** | **0.908** |
+| `rule:gtpu-tunnel-flood` (tunnel rate × has_teid) | 0.696 | 0.413 |
+| trivial per-tunnel-rate threshold | 0.696 | 0.413 |
+| trivial per-source-rate threshold | 0.741 | 0.504 |
+
+This **reverses** the roadmap item's own suspicion that "nothing currently
+shows the ML adds anything over the rule." Across the full anomaly taxonomy
+the autoencoder adds a great deal — roughly +0.24 AUC and more than double
+the recall at a fixed false-positive budget. But the *reason* is the part
+that matters, and it is not "the model is cleverer": the trivial tunnel-rate
+threshold is **blind by construction** to every anomaly that carries no TEID
+— the 25,944-packet UDP storm, the scans, the malformed frames — which are
+the majority of the anomalous set, so its score is 0 for all of them and its
+AUC is capped by how much of the set it can even see. The autoencoder's one
+feature vector spans the whole taxonomy at once.
+
+The honest reading is therefore **both** of these at once, and they do not
+contradict:
+
+- Across the broad anomaly set, the model clearly earns its keep over any
+  single rate threshold, and now there is a measured baseline that says so.
+- On the **specific in-tunnel-flood class**, the model still cannot separate
+  it (§2.6: that flood reconstructs *better* than normal), and the rule is
+  the thing that catches it. The two are complementary, which is exactly why
+  both ship. The baseline comparison does not retire the rule; it shows the
+  model is not merely a dressed-up version of it.
+
+`evaluate_model.py` is left in place for the within-pool confusion matrices
+§2.1 references, with its docstring now pointing here for the
+capture-independent and baseline numbers.

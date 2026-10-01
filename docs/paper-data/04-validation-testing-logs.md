@@ -342,3 +342,36 @@ produced, so the Go tests over the Publisher's own one-event-per-packet
 stream are the proof; generating 200k pkt/s on the live lab would add a
 packet-capture artifact, not a stronger argument, and is recorded as
 optional follow-up in §2.7 rather than a precondition.
+
+## 4.8 Update, 2026-10-01 (Phase 4 branch, holdout + baseline)
+
+The third Phase 4 item (capture-independent holdout and a baseline the model
+has to beat) is Python-only: `scripts/baseline_comparison.py`, a refactor of
+`build_real_dataset.py` to expose `capture_groups`, and their tests.
+
+| Check | Result |
+|---|---|
+| `pytest` (`cmd/ai-engine`) | **69 passed** (was 61: +8 in `test_baseline_comparison.py`) |
+| `black --check` / `flake8` (scripts, tests, sentinel_ai) | clean |
+| `bandit -r scripts/ sentinel_ai/` | clean |
+| `python scripts/baseline_comparison.py` | runs, numbers below |
+
+The numbers the §2.8 write-up rests on, reproduced from that run:
+
+| Measurement | Value |
+|---|---|
+| Leave-one-capture-out AUC (held `real_normal`) | 0.936 |
+| Leave-one-capture-out AUC (held `multi_ue_normal`) | 0.935 |
+| Within-pool AUC (the old §2.6 method, for contrast) | ~0.98 |
+| 5-fold × 3-seed AUC | mean 0.9353, std 0.00033 |
+| Head-to-head AUC: autoencoder / rule / trivial rate | 0.935 / 0.696 / 0.696 |
+| Recall @ FPR ≤ 1%: autoencoder / rule / trivial rate | 0.908 / 0.413 / 0.413 |
+
+The new tests do not assert the AUC values — those are a training run's
+output and belong in the script, not a unit test — but they pin the
+invariants that make them mean what §2.8 says: that `capture_groups` pools
+to exactly what `build` returns (so the baseline is evaluated on the same
+dataset training uses), that each leave-one-capture-out fold trains only on
+captures other than its holdout, and that the rule baseline scores a
+TEID-less row at 0 (the `has_teid` gate that makes it blind to the untunneled
+anomalies — the finding's whole basis).

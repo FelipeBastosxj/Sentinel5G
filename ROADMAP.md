@@ -529,18 +529,38 @@ closed by measurements this project does not yet have.
       gNB, so a per-packet model fed one cross-attributes the flood to all of
       them. A rule can hold a per-source signal safely because its verdict is
       itself per-source and the operator acts on it with a per-source action.
-- [ ] **No capture-independent holdout, and no baseline to beat.**
-      `cmd/ai-engine/scripts/evaluate_model.py` splits train/holdout inside
-      the *same* pcap, which measures reconstruction, not generalization —
-      and this project already proved the difference the expensive way: the
-      v1-trained model scored 1.0 on 5,000/5,000 packets of v2 normal
-      traffic because of time-of-day features. That was a lucky accident,
-      not a protocol. Needs leave-one-capture-out, k-fold with reported
-      variance, and — the part that actually matters for the write-up — the
-      **`autoencoder` vs `rule:gtpu-tunnel-flood` vs a trivial `tunnel_rate`
-      threshold** comparison on one metric. AUC 0.9829 is one number, one
-      seed, one dataset; nothing currently shows the ML adds anything over
-      the rule.
+- [x] **No capture-independent holdout, and no baseline to beat.** Closed
+      by `cmd/ai-engine/scripts/baseline_comparison.py`, written so the
+      capture list has one definition (`build_real_dataset.capture_groups`,
+      which `build` now pools) and reported in full in §2.8 — including the
+      part that came out against expectation.
+
+      **Capture-independent holdout (leave-one-capture-out).** Train on every
+      normal capture but one, score the held-out capture against all
+      anomalous: AUC **0.935–0.936**, versus the ~0.98 the within-pool split
+      reports. That gap is exactly the memorization this item suspected —
+      the old number *was* flattered by testing on captures the model
+      trained on. With only two real normal captures this is two folds, and
+      the write-up now says plainly that more normal captures from different
+      sessions are the single biggest thing that would strengthen the
+      numbers.
+
+      **Variance.** 5-fold × 3 seeds = 15 measurements: mean AUC 0.9353,
+      **std 0.00033**. The single number was not seed-luck; that is now
+      measured rather than asserted.
+
+      **The baseline comparison, and it reverses the suspicion.** Autoencoder
+      vs `rule:gtpu-tunnel-flood` vs a trivial `tunnel_rate` threshold, same
+      holdout, by AUC and by recall at a ≤1% false-positive budget:
+      autoencoder **0.935 AUC / 0.908 recall**, the rule and the trivial
+      threshold **0.696 / 0.413**. So the ML *does* add something over the
+      rule — but the honest reason is that the rule is blind by construction
+      to every TEID-less anomaly (the UDP storm, the scans, the malformed
+      frames, most of the set), not that it is cleverer. On the specific
+      in-tunnel-flood class the model still cannot separate it (§2.6) and the
+      rule is still what catches it. The two are complementary, which is why
+      both ship; the comparison shows the model is not a dressed-up version
+      of the rule, and it shows where it is not the answer.
 - [ ] **False-positive rate measured on a universe too small to authorize
       `autoMitigate`.** "Zero false positives" comes from 5,000 normal
       packets and 192 bystander packets. At 100k pkt/s an FPR of 1e-4 —

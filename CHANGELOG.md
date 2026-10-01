@@ -17,6 +17,23 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **A capture-independent holdout and a model-vs-rule baseline**
+  (`cmd/ai-engine/scripts/baseline_comparison.py`), closing ROADMAP.md
+  Phase 4's third item. The accuracy numbers to date came from a within-pool
+  train/holdout split -- unseen rows from captures the model also trained
+  on, which measures reconstruction, not generalization. Leave-one-capture-
+  out (train on every normal capture but one, score the held-out one) gives
+  AUC 0.935-0.936 against the ~0.98 within-pool figure: the gap is the
+  memorization the within-pool split hid. 5-fold x 3-seed variance is
+  std 0.00033, so the number is not seed-luck. The baseline comparison
+  reverses this item's own suspicion -- the autoencoder (0.935 AUC,
+  0.908 recall at <=1% FPR) clearly beats the rule and a trivial tunnel-rate
+  threshold (0.696 / 0.413), but because those are blind by construction to
+  every TEID-less anomaly, not because the model is cleverer; on the
+  in-tunnel-flood class the rule is still what works, so the two are
+  complementary. `build_real_dataset` was refactored so `capture_groups`
+  is the one definition of the dataset and `build` pools it. See
+  docs/paper-data/02-ai-training-inference.md §2.8.
 - **A per-peer GTP-U source-flood detector** (`pkg/detect.GTPUSourceFloodDetector`),
   closing ROADMAP.md Phase 4's second item: a flood spread thinly across
   many TEIDs evaded the per-tunnel rule entirely. 200 tunnels at 999 pkt/s
