@@ -17,6 +17,19 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **CPU and ring-buffer saturation measured under a sustained real load**
+  (`scripts/loadtest/cpu_saturation.sh` + `scripts/loadtest/xdp_saturation`),
+  closing ROADMAP.md Phase 4's "<2% CPU/node never measured" item -- real
+  GTP-U frames through the real XDP program on a veth (a real driver RX path)
+  with the SignalingEvents consumer draining the ring, BPF run-time stats on.
+  Findings (docs/paper-data/01-performance-benchmarks.md 1.7): the ring does
+  NOT saturate (~14 dropped observations in ~2.3M at 386k pkt/s, retiring the
+  "1.6ms headroom is arithmetic" concern with an observation), and the honest
+  per-packet program cost under load with a consumer is ~900 ns -- 4x the
+  211 ns hot-cache microbenchmark, still 200x under the 0.2ms budget, ~9% of
+  one core / ~1.1% of an 8-core node at 100k pkt/s. The narrow residual (a
+  physical NIC at true line rate) is stated, not hidden: this is generic XDP
+  on a veth. A new Loader.ProgramRunStats exposes the kernel's run-time stats.
 - **The IPv6 data path now runs end to end** (`TestIPv6DataPathEndToEnd`,
   privileged): a real v6 GTP-U frame fed to the real loaded XDP program via
   BPF_PROG_TEST_RUN parses (XDP_PASS), populates the v6 per-tunnel rate map,

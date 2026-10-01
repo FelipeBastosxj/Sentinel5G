@@ -351,11 +351,54 @@ lever there is sampling upstream (the NATS item), **not** sharding the
 consumer — which would reintroduce the multi-writer races the leader gate
 exists to prevent. The tradeoff is deliberate and now quantified.
 
-### Still not measured
+## 1.7 CPU and ring saturation under a sustained real load
 
-Sustained line-rate traffic through a real NIC, and the `< 2%` CPU per
-worker node at 100k req/s. Both need a load generator on real hardware
-rather than a synthetic replay; §1.4's methods deliberately do not claim
-to cover them. The per-replica throughput above is a *scoring* rate on
+§1.4's per-packet figure (195-211 ns) is `BPF_PROG_TEST_RUN` — hot caches,
+no consumer, no attach point — and `ROADMAP.md` Phase 4 was right that the
+ring-buffer headroom behind it was *arithmetic*, not an observation.
+`scripts/loadtest/cpu_saturation.sh` replaces the arithmetic with a
+measurement: a veth pair (a real driver RX path, unlike loopback), the XDP
+program attached to the RX end, the `SignalingEvents` consumer draining the
+ring, and valid GTP-U frames blasted at it from the TX end. Stable across
+runs on the host in `test-environment.md`:
+
+| Quantity | Measured |
+|---|---|
+| Offered load (one generator thread) | ~386,000 pkt/s |
+| Program executions | = frames sent (every frame hit the XDP program) |
+| **Ring observations dropped** | **~14 out of ~2.3 million (<0.001%)** |
+| Program CPU per packet (BPF `run_time/run_count`) | ~900 ns |
+| Program CPU share | ~34.8% of one core at 386k pkt/s |
+
+Two findings, both replacing an assumption with a number:
+
+- **The ring buffer does not saturate.** At 386k pkt/s with a real consumer
+  attached, fourteen observations in 2.3 million were dropped. The "~1.6 ms
+  of drain headroom" §1.4 computed is now observed to hold under a load
+  nearly four times the roadmap's 100k pkt/s/node concern — the consumer
+  keeps up, and the packet is never dropped regardless (a full ring costs an
+  observation, not a packet).
+- **The honest per-packet CPU is ~900 ns, not 211 ns.** Under a real load
+  with a live consumer and cold-ish caches the program costs about 4× the
+  hot-cache microbenchmark — still 200× under `CLAUDE.md`'s 0.2 ms budget.
+  At the roadmap's 100k pkt/s that is ~9% of **one** core, or ~1.1% of an
+  eight-core node — under the `<2%`-per-node target, over it as a per-core
+  figure.
+
+### Still measured only in part
+
+The caveats are stated rather than buried. This is **generic (SKB) XDP on a
+veth**, not native XDP on a physical NIC: the program's `run_time` is
+faithful either way (it is the BPF code's own on-CPU time), but native XDP on
+real hardware would *lower* the program's per-packet cost (no SKB) while
+*adding* the driver/IRQ cost the veth path lacks, and the single-thread
+generator caps the offered load at ~386k pkt/s — the program kept up with
+zero backpressure, so that ceiling is the generator's, not the program's. A
+true **physical line-rate** figure (10/40/100 GbE) and the node CPU that
+comes with a real NIC's driver still need that NIC; what is now measured
+rather than assumed is the program's own cost under real load and the ring's
+behaviour under it.
+
+The per-replica scoring throughput in §1.5 is likewise a scoring rate on
 pre-built events, not an end-to-end node measurement — it does not include
 the kernel capture or the NATS round trip, and does not claim to.
