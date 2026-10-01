@@ -95,6 +95,17 @@ config:
   # operator starts saying it hasn't seen a score.
   scoringPipelineGrace: 10m
 
+  # Reactor rate limit. Bounds how fast the operator issues NON-meaningful
+  # status refreshes per policy -- the ObservedThreatScore-only writes a
+  # score storm produces (one ML score per packet, at-least-once delivery).
+  # Meaningful writes (phase transitions, blocklist changes) are NEVER
+  # throttled, so no decision is ever lost; this only protects the API server
+  # from refresh pressure. statusWritesPerSecond: 0 disables it. Visible as
+  # sentinel5g_reactor_status_writes_throttled_total.
+  reactor:
+    statusWritesPerSecond: 10
+    statusWriteBurst: 20
+
   # Global mitigation kill switch. When enabled, the operator polls a
   # ConfigMap (killSwitch.configMapName, in the release namespace) and, while
   # that ConfigMap has data engaged=true, withholds EVERY mitigation across

@@ -31,6 +31,7 @@ deployment side changes to scrape them):
 | `sentinel5g_mitigation_map_full_total` | counter | `kind` | A mitigation was **refused** because the enforcement map was at capacity. The maps are plain `HASH` and refuse rather than evict, so any non-zero rate here is drops being denied — an attacker generating distinct TEIDs is one way to get there. |
 | `sentinel5g_kill_switch_engaged` | gauge | — | `1` while the global mitigation kill switch is engaged (the `sentinel5g-killswitch` ConfigMap present with `engaged=true`). Detection continues; no drop or quarantine is taken. A one-glance answer to "why did everything stop mitigating". |
 | `sentinel5g_mitigations_suppressed_total` | counter | `action` | Actions withheld because the kill switch was engaged, by what would have been done. Distinct from a detection-only pilot's `ThresholdCrossings{outcome="alerting"}`: this is an operator pulling the lever on otherwise-armed mitigation. |
+| `sentinel5g_reactor_status_writes_throttled_total` | counter | `namespace`, `policy` | Non-meaningful status refreshes skipped by the per-policy reactor rate limit. A non-zero rate is the API server being protected from a refresh storm, **not** a dropped mitigation — decisions (phase/blocklist changes) are never throttled. A sustained high rate means a policy is scored far faster than its decisions change, usually one very busy source. |
 
 `source` on the first metric is a **closed set** (`model`, `rule`,
 `unknown`), not the raw `ThreatScoreEvent.model` string. That's deliberate:

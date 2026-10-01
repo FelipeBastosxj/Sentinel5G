@@ -65,6 +65,13 @@ type ThreatScoreWatcher struct {
 	// Alerting, but no action is taken. Nil disables the check (mitigation
 	// always armed), the same nil-is-fine convention as the fields above.
 	KillSwitch *KillSwitch
+
+	// ActionLimiter bounds non-meaningful status refreshes per policy (an
+	// ObservedThreatScore-only change under a score storm), so a busy source
+	// can't turn one policy's scores into apiserver pressure. Meaningful
+	// writes -- phase transitions, blocklist changes -- always go through.
+	// Nil disables the limit.
+	ActionLimiter *ReactorLimiter
 }
 
 // Start implements manager.Runnable so the watcher's lifecycle is tied to
@@ -183,7 +190,7 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 		if latest.Status.Phase != securityv1alpha1.PolicyPhaseMitigating {
 			latest.Status.Phase = securityv1alpha1.PolicyPhaseMonitoring
 		}
-		return w.updateStatus(ctx, latest)
+		return w.writeStatus(ctx, policy, latest)
 	}
 
 	if !policy.Spec.ThreatDetection.AutoMitigate {
@@ -196,7 +203,7 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 		// mitigated had autoMitigate been on. See metrics.go.
 		ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "alerting").Inc()
 		latest.Status.Phase = securityv1alpha1.PolicyPhaseAlerting
-		return w.updateStatus(ctx, latest)
+		return w.writeStatus(ctx, policy, latest)
 	}
 
 	// The global kill switch sits here, after the crossing is counted and
@@ -213,7 +220,7 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 			"policy", policy.Name, "sourceIp", event.SourceIP)
 		ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "alerting").Inc()
 		latest.Status.Phase = securityv1alpha1.PolicyPhaseAlerting
-		return w.updateStatus(ctx, latest)
+		return w.writeStatus(ctx, policy, latest)
 	}
 
 	ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "mitigating").Inc()
@@ -284,7 +291,67 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 	latest.Status.Phase = securityv1alpha1.PolicyPhaseMitigating
 	latest.Status.LastMitigationTime = &now
 
-	return w.updateStatus(ctx, latest)
+	return w.writeStatus(ctx, policy, latest)
+}
+
+// writeStatus persists next, but rate-limits the writes that carry no
+// decision change. A write is "meaningful" -- and so never throttled -- when
+// it changes the phase or the set of blocked sources/tunnels; those are the
+// records the finalizer and de-escalation read, and are bounded by the
+// number of distinct threats rather than the score rate. A write that only
+// refreshes ObservedThreatScore (the common case under a storm of repeated
+// or duplicate scores) is gated by ActionLimiter; when a token isn't
+// available it is skipped and counted, bounding apiserver pressure without
+// ever dropping a decision. prev is the pre-image (the cached policy
+// applyPolicy started from).
+func (w *ThreatScoreWatcher) writeStatus(ctx context.Context, prev, next *securityv1alpha1.TelecomSecurityPolicy) error {
+	if statusDecisionChanged(prev, next) {
+		return w.updateStatus(ctx, next)
+	}
+	key := types.NamespacedName{Namespace: next.Namespace, Name: next.Name}
+	if w.ActionLimiter.Allow(key) {
+		return w.updateStatus(ctx, next)
+	}
+	// Skipped on purpose: nothing about the decision changed, and the API
+	// server is being protected from a refresh storm. The index is left as
+	// it was -- writing the unpersisted ObservedThreatScore into it would
+	// diverge it from etcd for no benefit.
+	ReactorThrottled.WithLabelValues(next.Namespace, next.Name).Inc()
+	return nil
+}
+
+// statusDecisionChanged reports whether next differs from prev in any field
+// a downstream reader acts on: the phase, or the blocked source/tunnel sets.
+// ObservedThreatScore and LastMitigationTime are deliberately excluded --
+// they churn on every score and carry no decision, and LastMitigationTime
+// lagging by a throttle window (sub-second) is negligible against the
+// de-escalation dwell (minutes).
+func statusDecisionChanged(prev, next *securityv1alpha1.TelecomSecurityPolicy) bool {
+	if prev.Status.Phase != next.Status.Phase {
+		return true
+	}
+	if !equalStringSet(prev.Status.BlockedSourceIPs, next.Status.BlockedSourceIPs) {
+		return true
+	}
+	return !equalStringSet(prev.Status.BlockedTunnels, next.Status.BlockedTunnels)
+}
+
+// equalStringSet compares two slices as sets (order-independent). Both are
+// kept as sets by appendUnique, so length plus membership is enough.
+func equalStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, x := range a {
+		seen[x] = struct{}{}
+	}
+	for _, x := range b {
+		if _, ok := seen[x]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *ThreatScoreWatcher) updateStatus(ctx context.Context, policy *securityv1alpha1.TelecomSecurityPolicy) error {

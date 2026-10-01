@@ -194,6 +194,22 @@ var (
 		[]string{"kind"},
 	)
 
+	// ReactorThrottled counts status refreshes skipped because the per-policy
+	// reactor rate limit was hit -- writes that carried no decision change
+	// (an ObservedThreatScore-only refresh under a score storm). It is the
+	// bound ROADMAP.md Phase 4 asks for on the reactor: a non-zero rate here
+	// is the operator being protected from apiserver pressure, not a dropped
+	// mitigation (those are never throttled). A sustained high rate means a
+	// policy is being scored far faster than its decisions change -- usually
+	// one very busy source -- and is the signal to look at sampling upstream.
+	ReactorThrottled = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_reactor_status_writes_throttled_total",
+			Help: "Non-meaningful status refreshes skipped by the per-policy reactor rate limit.",
+		},
+		[]string{"namespace", "policy"},
+	)
+
 	// KillSwitchEngaged is 1 while the global mitigation kill switch is
 	// engaged (the sentinel5g-killswitch ConfigMap present with
 	// engaged=true). Detection continues while it is 1; no drop or
@@ -277,6 +293,7 @@ func init() {
 		MitigationMapFull,
 		KillSwitchEngaged,
 		MitigationsSuppressed,
+		ReactorThrottled,
 	)
 }
 
@@ -317,4 +334,5 @@ func ForgetPolicyMetrics(namespace, name string) {
 	labels := prometheus.Labels{"namespace": namespace, "policy": name}
 	PolicyPhase.DeletePartialMatch(labels)
 	ThresholdCrossings.DeletePartialMatch(labels)
+	ReactorThrottled.DeletePartialMatch(labels)
 }
