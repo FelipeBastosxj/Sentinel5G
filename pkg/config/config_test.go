@@ -209,3 +209,72 @@ func TestLoad_NegativeReconcileIntervalIsPreserved(t *testing.T) {
 		t.Errorf("BlocklistReconcileInterval = %v, want -1s", cfg.BlocklistReconcileInterval)
 	}
 }
+
+// The per-peer detector is the counterpart to the per-tunnel one, on by
+// default for the same reason: the evasion it closes (a flood spread across
+// many TEIDs) is free to attempt, and a detector shipped off closes
+// nothing (ROADMAP.md Phase 4).
+func TestLoad_SourceFloodDefaults(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.GTPUSourceFloodEnabled {
+		t.Error("expected the source flood detector on by default")
+	}
+	if cfg.GTPUSourceFloodPPS != 20000 {
+		t.Errorf("GTPUSourceFloodPPS = %d, want 20000", cfg.GTPUSourceFloodPPS)
+	}
+	if cfg.GTPUSourceFloodDistinctTunnels != 256 {
+		t.Errorf("GTPUSourceFloodDistinctTunnels = %d, want 256", cfg.GTPUSourceFloodDistinctTunnels)
+	}
+	if cfg.GTPUSourceFloodWindow != time.Second {
+		t.Errorf("GTPUSourceFloodWindow = %v, want 1s", cfg.GTPUSourceFloodWindow)
+	}
+}
+
+// Both thresholds at zero is a detector that is "enabled" and can never
+// fire -- a configuration that looks protective and is not. Refused loudly,
+// matching the GTPU_TUNNEL_FLOOD_PPS==0 rule.
+func TestLoad_RejectsAnInertSourceFloodDetector(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_SOURCE_FLOOD_PPS", "0")
+	t.Setenv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", "0")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to reject a source flood detector with both thresholds at 0")
+	}
+}
+
+// One half alone is a valid configuration -- cardinality-only catches TEID
+// rotation at rates an aggregate threshold would never see.
+func TestLoad_SourceFloodCardinalityOnlyIsValid(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_SOURCE_FLOOD_PPS", "0")
+	t.Setenv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", "128")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.GTPUSourceFloodPPS != 0 || cfg.GTPUSourceFloodDistinctTunnels != 128 {
+		t.Fatalf("unexpected thresholds: pps=%d distinct=%d", cfg.GTPUSourceFloodPPS, cfg.GTPUSourceFloodDistinctTunnels)
+	}
+}
+
+// A negative count is nonsense for a >= comparison (it would mean "fires on
+// every packet") and must fail loudly rather than being coerced.
+func TestLoad_RejectsNegativeDistinctTunnels(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", "-1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to reject a negative GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS")
+	}
+}

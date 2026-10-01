@@ -306,3 +306,39 @@ API server blinked), and a kernel entry seen unclaimed for the *first* time
 must be left alone — a drop placed seconds ago is claimed by nothing the
 reconciler can see yet, because the mitigation path writes the map before
 it writes the status and the status is read through a lagging cache.
+
+## 4.7 Update, 2026-10-01 (Phase 4 branch, source-flood detector)
+
+The second Phase 4 item (the distributed-TEID evasion) added
+`pkg/detect.GTPUSourceFloodDetector` and its suite. Re-run on the same host:
+
+| Check | Result |
+|---|---|
+| `go vet ./...` | clean |
+| `golangci-lint run` (v2.13.2) | **0 issues** |
+| `go test ./pkg/... ./api/... -race` | clean |
+| `go test ./pkg/detect/ -cover` | **100.0%** of statements |
+| unprivileged `func Test…` count | **190** (was 173 after item 1): +13 in `pkg/detect`, +4 in `pkg/config` |
+| `pytest` (`cmd/ai-engine`) | **61 passed** (features.py unchanged — this item is Go-only) |
+| `helm lint` (both charts) | 0 failed |
+
+The two load-bearing cases, and why each is the evidence rather than a
+reproduction on live traffic:
+
+- `TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` drives one
+  200-tunnel × 999 pkt/s stream — interleaved across tunnels, the shape a
+  real distributed flood takes on the wire — through **both** detectors and
+  asserts the per-tunnel rule fires 0 times while the per-source rule fires
+  exactly 1. The comparison only means something because both see the
+  identical events; running them separately would prove nothing.
+- `TestSourceFlood_SilentOnOrdinaryMultiSubscriberTraffic` is the
+  false-positive side: four UEs at 25 pkt/s for 60 simulated seconds — the
+  shape of `real-dataset-v2/multi_ue_normal.pcap` — produces zero events.
+  This is what makes "on by default" defensible.
+
+The evasion itself is arithmetic (999 × 200 vs a 1000 per-tunnel
+threshold), and the detector's logic is independent of how the packets were
+produced, so the Go tests over the Publisher's own one-event-per-packet
+stream are the proof; generating 200k pkt/s on the live lab would add a
+packet-capture artifact, not a stronger argument, and is recorded as
+optional follow-up in §2.7 rather than a precondition.

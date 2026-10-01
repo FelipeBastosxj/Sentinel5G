@@ -21,6 +21,11 @@ data:
   GTPU_TUNNEL_FLOOD_ENABLED: {{ .Values.config.gtpuTunnelFlood.enabled | quote }}
   GTPU_TUNNEL_FLOOD_PPS: {{ .Values.config.gtpuTunnelFlood.packetsPerSecond | quote }}
   GTPU_TUNNEL_FLOOD_COOLDOWN: {{ .Values.config.gtpuTunnelFlood.cooldown | quote }}
+  GTPU_SOURCE_FLOOD_ENABLED: {{ .Values.config.gtpuSourceFlood.enabled | quote }}
+  GTPU_SOURCE_FLOOD_PPS: {{ .Values.config.gtpuSourceFlood.packetsPerSecond | quote }}
+  GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS: {{ .Values.config.gtpuSourceFlood.distinctTunnels | quote }}
+  GTPU_SOURCE_FLOOD_WINDOW: {{ .Values.config.gtpuSourceFlood.window | quote }}
+  GTPU_SOURCE_FLOOD_COOLDOWN: {{ .Values.config.gtpuSourceFlood.cooldown | quote }}
   NATS_URL: {{ .Values.nats.url | quote }}
   NATS_EVENTS_SUBJECT: {{ .Values.nats.eventsSubject | quote }}
   NATS_THREATS_SUBJECT: {{ .Values.nats.threatsSubject | quote }}

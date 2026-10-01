@@ -15,7 +15,7 @@ while the architecture scales to real telecom deployments.
 +-----------------------------------------------------------------------------------+
 |                          LAYER 2: INGESTION & PIPELINE                            |
 |     pkg/ingestion (ring buffer -> NormalizedEvent) ---> NATS JetStream            |
-|     pkg/detect: deterministic GTP-U tunnel-flood rule, inline, per node           |
+|     pkg/detect: GTP-U tunnel-flood + source-flood rules, inline, per node        |
 +-----------------------------------------------------------------------------------+
                                           |
                                           v (NormalizedEvent)
@@ -170,6 +170,21 @@ enforcement path: `pkg/controller.ThreatScoreWatcher` has no branch for it at
 all, so a rule-sourced score goes through the same policy matching,
 sensitivity tier, and `autoMitigate` gating as an ML score. A detection-only
 pilot stays detection-only.
+
+A per-tunnel threshold cannot, by construction, catch a flood spread thinly
+across many tunnels: its job is to *stop* aggregating subscribers, so 200
+tunnels at 999 pkt/s each — ~200,000 pkt/s from one peer — crosses nothing.
+A second rule, `GTPUSourceFloodDetector` (`model: "rule:gtpu-source-flood"`),
+closes that: it is scoped to the source and fires on either the aggregate
+GTP-U rate from that peer or the count of distinct TEIDs it uses per window
+(the latter catching TEID rotation at rates no aggregate would notice). Its
+verdict is about the *peer*, not a subscriber, so its score carries no TEID
+and drives the source-wide `actions.ebpfBlock`; a policy set only for the
+per-tunnel action counts a `no_teid` no-op, because no single tunnel's
+removal fixes an aggregate flood. The two run side by side over the same
+event and neither short-circuits the other — they answer different questions
+about the same packet. See `docs/paper-data/02-ai-training-inference.md`
+§2.7.
 
 A second, separate detector (`port_scan`/`track_port_scan()`) closes exactly
 the low-and-slow multi-port gap `scan_rate` leaves (described above the

@@ -169,6 +169,17 @@ func main() {
 				PacketsPerSecond: cfg.GTPUTunnelFloodPPS,
 				Cooldown:         cfg.GTPUTunnelFloodCooldown,
 			}),
+			// The per-peer counterpart. Two scopes, not one tunable: a
+			// per-tunnel threshold cannot see 200 tunnels at 999 pkt/s, and
+			// a per-source one cannot see one subscriber flooding behind a
+			// busy gNB.
+			SourceFlood: detect.NewGTPUSourceFloodDetector(detect.GTPUSourceFloodConfig{
+				Enabled:          cfg.GTPUSourceFloodEnabled,
+				PacketsPerSecond: cfg.GTPUSourceFloodPPS,
+				DistinctTunnels:  cfg.GTPUSourceFloodDistinctTunnels,
+				Window:           cfg.GTPUSourceFloodWindow,
+				Cooldown:         cfg.GTPUSourceFloodCooldown,
+			}),
 			ThreatsSubject: cfg.NATSThreatsSubject,
 		}
 		if addErr := mgr.Add(publisher); addErr != nil {
@@ -279,7 +290,10 @@ func main() {
 	}
 
 	log.Info("starting Sentinel5G operator", "threatScoreThreshold", cfg.ThreatScoreThreshold, "meshAdapter", cfg.MeshAdapter, "deEscalationDwell", cfg.DeEscalationDwell, "logLevel", logLevel,
-		"gtpuTunnelFloodEnabled", cfg.GTPUTunnelFloodEnabled, "gtpuTunnelFloodPPS", cfg.GTPUTunnelFloodPPS)
+		"gtpuTunnelFloodEnabled", cfg.GTPUTunnelFloodEnabled, "gtpuTunnelFloodPPS", cfg.GTPUTunnelFloodPPS,
+		"gtpuSourceFloodEnabled", cfg.GTPUSourceFloodEnabled, "gtpuSourceFloodPPS", cfg.GTPUSourceFloodPPS,
+		"gtpuSourceFloodDistinctTunnels", cfg.GTPUSourceFloodDistinctTunnels,
+		"bpfPinPath", cfg.BPFPinPath, "blocklistReconcileInterval", cfg.BlocklistReconcileInterval)
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager exited with an error")
 		os.Exit(1)

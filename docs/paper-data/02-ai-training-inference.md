@@ -636,3 +636,82 @@ decays, and de-escalation's quiet period can actually elapse.
 See `docs/paper-data/03-architecture-engineering-decisions.md` for the four
 design decisions behind that path, and §1.4 of the performance document for
 what the drop costs per packet.
+
+## 2.7 The inverse evasion: one flood spread across many tunnels
+
+§2.6.5 fixed a cross-attribution — one subscriber's flood no longer
+implicates its neighbours — by silencing the per-source rate for any
+tunneled packet. That fix bought a blind spot in the opposite direction,
+and this section is its closure (`ROADMAP.md` Phase 4, item 2).
+
+The arithmetic is the whole argument. The shipped per-tunnel threshold is
+`GTPU_TUNNEL_FLOOD_PPS = 1000`, and it has to sit there or below: a single
+legitimate subscriber streaming video can exceed a few hundred pkt/s, so a
+per-tunnel threshold set much higher stops catching real single-tunnel
+floods. Now take that same ceiling and divide a flood under it:
+
+| Strategy | Per-tunnel rate | Tunnels | Aggregate from the peer | Per-tunnel rule | Model (tunneled) |
+|---|---|---|---|---|---|
+| One loud tunnel | 3,000 pkt/s | 1 | 3,000 pkt/s | **fires** | sees tunnel rate only |
+| Spread the flood | 999 pkt/s | 200 | **~199,800 pkt/s** | silent | sees no aggregate at all |
+
+The second row crosses nothing. The per-tunnel rule is below threshold on
+every tunnel, and the model was deliberately given no aggregate rate signal
+for tunneled traffic in §2.6.5. ~200,000 pkt/s from one peer passes clean.
+
+This is not closeable by moving a number. A per-tunnel threshold low enough
+to catch 999 pkt/s would fire on ordinary subscribers; a per-source
+threshold is the right instrument but cannot live in the per-tunnel
+detector, whose entire purpose was to *stop* aggregating subscribers
+together. So the closure is a second detector,
+`pkg/detect.GTPUSourceFloodDetector`, scoped to the peer, carrying two
+signals:
+
+- **Aggregate rate** across every tunnel from one source
+  (`GTPU_SOURCE_FLOOD_PPS`, default 20,000 — an order of magnitude above a
+  busy-but-legitimate multi-subscriber gNB, and still an order of magnitude
+  below the 200k the spread attack produces). Counted directly from the
+  one-event-per-packet stream `pkg/ingestion.Publisher` already emits, so no
+  summing of kernel counters and no second window to misalign.
+- **Distinct-TEID cardinality** per window
+  (`GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS`, default 256). A real gNB's active
+  TEID set is bounded by its bearers and turns over slowly. An attacker
+  rotating TEIDs produces cardinality a real peer does not — and this half
+  fires even when the aggregate rate is modest: 300 distinct TEIDs at one
+  packet each is 300 pkt/s, invisible to any rate threshold, and not a shape
+  any legitimate peer generates.
+
+Demonstrated against the two failure directions by test rather than by a new
+capture, because the shape is arithmetic and the Go tests exercise it over
+the exact one-event-per-packet stream the Publisher produces:
+
+| Test | What it drives through both detectors | Result |
+|---|---|---|
+| `TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` | 200 tunnels × 999 pkt/s, interleaved | per-tunnel fires **0**, per-source fires **1** |
+| `TestSourceFlood_SilentOnOrdinaryMultiSubscriberTraffic` | 4 UEs × 25 pkt/s × 60 s | **0** events |
+| `TestSourceFlood_CardinalityFiresWhereRateDoesNot` | 300 distinct TEIDs, 1 pkt each | fires on cardinality, not rate |
+
+The committed multi-UE captures (`real-dataset-v2/`) are single-source and
+top out at four TEIDs, so they are the false-positive baseline the second
+row encodes, not a source for the attack itself; reproducing the 200-tunnel
+case on the live lab is follow-up, not a precondition, since the detector's
+logic is independent of how the packets were produced.
+
+**Two limits, stated not smoothed.** First, the per-peer verdict names no
+tunnel — there is no single tunnel whose removal fixes an aggregate flood —
+so its score carries TEID 0 and drives the source-wide `actions.ebpfBlock`,
+which on N3 drops every subscriber behind that gNB. That blast radius is the
+honest cost of the finding, and it is why the detector ships behind the same
+detection-only pilot path as everything else (§2.1, `docs/production-install.md`).
+Second, the cardinality signal catches rotation *into unused* TEIDs; an
+attacker forging a TEID that genuinely belongs to another live subscriber is
+indistinguishable from that subscriber's own traffic without the UPF's
+session table, which this component does not have. That one is `ROADMAP.md`
+Phase 5.
+
+Note the symmetry with §2.6.5: this per-source signal is given to a *rule*,
+never to the autoencoder. A per-source quantity is identical for every
+subscriber behind a gNB, so a per-packet model fed one would cross-attribute
+the flood to all of them — the exact failure §2.6.5 measured at 150 of 192
+bystander packets. A rule can hold the signal safely because its verdict is
+itself per-source and the operator acts on it with a per-source action.

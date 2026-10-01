@@ -100,6 +100,41 @@ type OperatorConfig struct {
 	// publish thousands of identical scores per second.
 	GTPUTunnelFloodCooldown time.Duration
 
+	// GTPUSourceFloodEnabled turns on the per-PEER aggregate detector
+	// (pkg/detect.GTPUSourceFloodDetector). It is the counterpart to the
+	// per-tunnel rule above, not a replacement: a per-tunnel threshold is
+	// structurally blind to 200 tunnels at 999 pkt/s each, and a per-source
+	// one is structurally blind to one subscriber flooding behind a busy
+	// gNB. Neither threshold can be set to do the other's job, which is why
+	// there are two (ROADMAP.md Phase 4).
+	GTPUSourceFloodEnabled bool
+
+	// GTPUSourceFloodPPS is the AGGREGATE packets-per-second from one source
+	// address across every tunnel it carries. Reasoned, not measured against
+	// a production N3 -- the same caveat GTPUTunnelFloodPPS carries, and a
+	// more consequential one here, because the action that fits a per-peer
+	// verdict is the source-wide drop that takes every subscriber behind
+	// that gNB with it. Run a detection-only pilot and read
+	// sentinel5g_threshold_crossings_total before enabling autoMitigate on
+	// a policy that can act on this.
+	GTPUSourceFloodPPS uint32
+
+	// GTPUSourceFloodDistinctTunnels is how many distinct TEIDs one source
+	// may use within the window before being reported regardless of rate.
+	// A real gNB's TEID set is bounded by its active bearers and turns over
+	// slowly; rapid rotation is the shape of TEID spoofing. Zero disables
+	// this half of the rule.
+	GTPUSourceFloodDistinctTunnels int
+
+	// GTPUSourceFloodWindow is the measurement window for both thresholds
+	// above. Defaults to 1s, matching the kernel's own rate window so the
+	// numbers are in the same units.
+	GTPUSourceFloodWindow time.Duration
+
+	// GTPUSourceFloodCooldown is the minimum interval between events for one
+	// source -- same cost control as GTPUTunnelFloodCooldown.
+	GTPUSourceFloodCooldown time.Duration
+
 	// BPFPinPath is the bpffs directory the eBPF ENFORCEMENT maps
 	// (blocklist, blocklist_v6, tunnel_blocklist, tunnel_blocklist_v6) are
 	// pinned into, so an active drop survives this process. Empty disables
@@ -170,6 +205,31 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
+	sourceFloodEnabled, err := parseBoolEnv("GTPU_SOURCE_FLOOD_ENABLED", true)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodPPS, err := parseUint32Env("GTPU_SOURCE_FLOOD_PPS", 20000)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodDistinct, err := parseIntEnv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", 256)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodWindow, err := parseDurationEnv("GTPU_SOURCE_FLOOD_WINDOW", time.Second)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodCooldown, err := parseDurationEnv("GTPU_SOURCE_FLOOD_COOLDOWN", 30*time.Second)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
 	allowUnauthenticated, err := parseBoolEnv("NATS_ALLOW_UNAUTHENTICATED", false)
 	if err != nil {
 		return OperatorConfig{}, err
@@ -221,6 +281,12 @@ func Load() (OperatorConfig, error) {
 		GTPUTunnelFloodEnabled:  tunnelFloodEnabled,
 		GTPUTunnelFloodPPS:      tunnelFloodPPS,
 		GTPUTunnelFloodCooldown: tunnelFloodCooldown,
+
+		GTPUSourceFloodEnabled:         sourceFloodEnabled,
+		GTPUSourceFloodPPS:             sourceFloodPPS,
+		GTPUSourceFloodDistinctTunnels: sourceFloodDistinct,
+		GTPUSourceFloodWindow:          sourceFloodWindow,
+		GTPUSourceFloodCooldown:        sourceFloodCooldown,
 	}
 
 	if cfg.ThreatScoreThreshold < 0 || cfg.ThreatScoreThreshold > 1 {
@@ -233,6 +299,21 @@ func Load() (OperatorConfig, error) {
 	// GTPU_TUNNEL_FLOOD_ENABLED=false to turn the detector off.
 	if cfg.GTPUTunnelFloodEnabled && cfg.GTPUTunnelFloodPPS == 0 {
 		return OperatorConfig{}, fmt.Errorf("GTPU_TUNNEL_FLOOD_PPS must be greater than 0 when GTPU_TUNNEL_FLOOD_ENABLED is true")
+	}
+
+	// Both thresholds zero leaves the detector enabled but structurally
+	// unable to fire, which is the kind of configuration that looks
+	// protective and is not. Refused rather than logged, matching
+	// GTPU_TUNNEL_FLOOD_PPS above.
+	if cfg.GTPUSourceFloodEnabled && cfg.GTPUSourceFloodPPS == 0 && cfg.GTPUSourceFloodDistinctTunnels == 0 {
+		return OperatorConfig{}, fmt.Errorf(
+			"GTPU_SOURCE_FLOOD_PPS and GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS cannot both be 0 " +
+				"when GTPU_SOURCE_FLOOD_ENABLED is true: set at least one, or set " +
+				"GTPU_SOURCE_FLOOD_ENABLED=false to turn the detector off explicitly")
+	}
+
+	if cfg.GTPUSourceFloodWindow <= 0 {
+		return OperatorConfig{}, fmt.Errorf("GTPU_SOURCE_FLOOD_WINDOW must be greater than 0, got %s", cfg.GTPUSourceFloodWindow)
 	}
 
 	if !cfg.NATSAllowUnauthenticated && !natsHasCredentials(cfg) {
@@ -309,6 +390,25 @@ func parseUint32Env(key string, fallback uint32) (uint32, error) {
 		return 0, fmt.Errorf("invalid %s: %w", key, err)
 	}
 	return uint32(parsed), nil
+}
+
+// parseIntEnv is parseUint32Env's counterpart for a count that is naturally
+// an int (a map size, a cardinality threshold) rather than a kernel-facing
+// u32. Negative is rejected: it would mean "fires on every packet" for a
+// >= comparison, which is the opposite of the intent.
+func parseIntEnv(key string, fallback int) (int, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("invalid %s: must not be negative, got %d", key, parsed)
+	}
+	return parsed, nil
 }
 
 func parseDurationEnv(key string, fallback time.Duration) (time.Duration, error) {

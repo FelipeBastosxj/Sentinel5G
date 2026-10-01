@@ -125,6 +125,35 @@ config:
     # TelecomSecurityPolicy to drop that one tunnel instead of the whole
     # source IP. Needs ebpf.enabled above, like any other drop.
 
+  # Deterministic GTP-U source-flood detector (pkg/detect), the per-PEER
+  # counterpart to gtpuTunnelFlood above. It exists because a per-tunnel
+  # threshold is structurally blind to a flood spread thinly across many
+  # TEIDs -- 200 tunnels at 999 pkt/s each is ~200,000 pkt/s from one peer
+  # and crosses the per-tunnel threshold zero times (ROADMAP.md Phase 4).
+  # Neither threshold can be set to do the other's job, which is why there
+  # are two. Publishes model "rule:gtpu-source-flood" with NO TEID, so the
+  # fitting action is actions.ebpfBlock (source-wide) -- a policy set only
+  # for ebpfBlockTunnel counts a no_teid no-op, because there is no single
+  # tunnel whose removal fixes an aggregate flood.
+  gtpuSourceFlood:
+    enabled: true
+    # AGGREGATE packets/second from one source across every tunnel. NOT
+    # validated against a production N3, and more consequential than the
+    # per-tunnel number because the matching action drops every subscriber
+    # behind the peer -- pilot in detection-only mode first (see
+    # docs/production-install.md). Set to 0 to use cardinality alone.
+    packetsPerSecond: 20000
+    # Distinct TEIDs one source may use within the window before being
+    # reported regardless of rate -- the shape of TEID rotation/spoofing,
+    # which a real gNB (bearers turning over slowly) does not produce. Set
+    # to 0 to use the rate alone. Both 0 is refused at startup.
+    distinctTunnels: 256
+    # Measurement window for both thresholds; 1s matches the kernel's own
+    # rate window so the numbers are in the same units.
+    window: 1s
+    # Minimum interval between events for one source.
+    cooldown: 30s
+
 nats:
   # Set to the URL of an existing NATS JetStream deployment. This chart does
   # not bundle a NATS subchart; bring your own (e.g. the official `nats`
