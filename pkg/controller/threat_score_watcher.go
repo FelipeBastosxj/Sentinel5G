@@ -225,73 +225,92 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 
 	ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "mitigating").Inc()
 
-	// Per-tunnel first: it is the precise action, and a policy that enables
-	// both wants the source-wide block only as the fallback for a score
-	// that carried no tunnel identity.
-	if policy.Spec.Actions.EbpfBlockTunnel {
-		switch ip := net.ParseIP(event.SourceIP); {
-		case ip == nil:
-		case event.TEID == 0:
-			// Deliberately not a silent widening to Block(sourceIP): the
-			// operator asked for one subscriber and would get the whole
-			// gNB. Logged so a policy configured for tunnel blocking
-			// against a capture path that cannot produce a TEID (Hubble,
-			// Falco) is visible rather than mysteriously inert.
-			w.Log.V(1).Info("tunnel block requested but the score carries no TEID; taking no per-tunnel action",
-				"policy", policy.Name, "sourceIp", event.SourceIP)
-			Mitigations.WithLabelValues("ebpf_block_tunnel", "no_teid").Inc()
-		default:
-			if err := w.Blocklist.BlockTunnel(ip, event.TEID); err != nil {
-				Mitigations.WithLabelValues("ebpf_block_tunnel", "error").Inc()
-				if ebpf.IsMapFull(err) {
-					// A full tunnel_blocklist is a reportable operational
-					// condition, not a generic error: the mitigation path
-					// is being denied, and an attacker rotating TEIDs is one
-					// way to get here (ROADMAP.md Phase 4). Counted so it
-					// can be alerted on separately from any other failure.
-					MitigationMapFull.WithLabelValues("tunnel_blocklist").Inc()
-					w.Log.Error(err, "tunnel_blocklist is full; this mitigation was refused -- "+
-						"the map does not evict, so new drops fail until de-escalation frees space",
-						"sourceIp", event.SourceIP, "teid", event.TEID)
-				}
-				return fmt.Errorf("ebpf block tunnel %s/%#x: %w", event.SourceIP, event.TEID, err)
-			}
-			Mitigations.WithLabelValues("ebpf_block_tunnel", "success").Inc()
-			latest.Status.BlockedTunnels = appendUnique(latest.Status.BlockedTunnels, formatTunnel(event.SourceIP, event.TEID))
-		}
-	}
-
-	if policy.Spec.Actions.EbpfBlock {
-		if ip := net.ParseIP(event.SourceIP); ip != nil {
-			if err := w.Blocklist.Block(ip); err != nil {
-				Mitigations.WithLabelValues("ebpf_block", "error").Inc()
-				if ebpf.IsMapFull(err) {
-					MitigationMapFull.WithLabelValues("blocklist").Inc()
-					w.Log.Error(err, "blocklist is full; this mitigation was refused",
-						"sourceIp", event.SourceIP)
-				}
-				return fmt.Errorf("ebpf block %s: %w", event.SourceIP, err)
-			}
-			Mitigations.WithLabelValues("ebpf_block", "success").Inc()
-			latest.Status.BlockedSourceIPs = appendUnique(latest.Status.BlockedSourceIPs, event.SourceIP)
-		}
-	}
-
+	// Write-ahead ordering, and the reason is a fault chaos testing found:
+	// status is the DESIRED state the BlocklistReconciler converges the
+	// kernel to, so a block the kernel holds but status does not record gets
+	// reconciled AWAY -- a transient apiserver error during the status write
+	// used to leave the kernel blocking and status not, and the reconciler
+	// then silently undid the mitigation a pass or two later. So the intent
+	// is decided and PERSISTED before the kernel/mesh is touched. If this
+	// status write fails, nothing has been blocked (a clean retry on the
+	// next score); if a block below fails after it, status already claims the
+	// block and the reconciler re-applies it. The actions are idempotent, so
+	// re-running one that the previous score already applied is harmless.
+	//
+	// Decide what to do with the SAME guards the execution below uses, so the
+	// recorded intent and the attempted action never disagree.
+	ip := net.ParseIP(event.SourceIP)
+	blockTunnel := policy.Spec.Actions.EbpfBlockTunnel && ip != nil && event.TEID != 0
+	blockSource := policy.Spec.Actions.EbpfBlock && ip != nil
+	quarantineSelector := map[string]string(nil)
 	if policy.Spec.Actions.IsolatePod {
-		if selector := firstMatchLabels(policy.Spec.TargetWorkloads); selector != nil {
-			if err := w.Mesh.Quarantine(ctx, policy.Namespace, selector); err != nil {
-				Mitigations.WithLabelValues("mesh_quarantine", "error").Inc()
-				return fmt.Errorf("mesh quarantine for %s/%s: %w", policy.Namespace, policy.Name, err)
-			}
-			Mitigations.WithLabelValues("mesh_quarantine", "success").Inc()
-		}
+		quarantineSelector = firstMatchLabels(policy.Spec.TargetWorkloads)
 	}
 
+	// A tunnel block requested on a TEID-less score takes no action and is
+	// not recorded -- counted here (before the status write) so the
+	// no_teid signal survives even if the write below is throttled.
+	if policy.Spec.Actions.EbpfBlockTunnel && !blockTunnel && ip != nil && event.TEID == 0 {
+		w.Log.V(1).Info("tunnel block requested but the score carries no TEID; taking no per-tunnel action",
+			"policy", policy.Name, "sourceIp", event.SourceIP)
+		Mitigations.WithLabelValues("ebpf_block_tunnel", "no_teid").Inc()
+	}
+
+	if blockTunnel {
+		latest.Status.BlockedTunnels = appendUnique(latest.Status.BlockedTunnels, formatTunnel(event.SourceIP, event.TEID))
+	}
+	if blockSource {
+		latest.Status.BlockedSourceIPs = appendUnique(latest.Status.BlockedSourceIPs, event.SourceIP)
+	}
 	now := metav1.Now()
 	latest.Status.Phase = securityv1alpha1.PolicyPhaseMitigating
 	latest.Status.LastMitigationTime = &now
 
-	return w.writeStatus(ctx, policy, latest)
+	if err := w.writeStatus(ctx, policy, latest); err != nil {
+		// Nothing was applied to the kernel or mesh; the next score retries.
+		return err
+	}
+
+	// Now execute, status having recorded the intent. A failure is counted
+	// and returned (so the score is retried sooner), but the reconciler will
+	// also re-apply from the status just written, so the block is not lost
+	// to a transient action failure.
+	if blockTunnel {
+		if err := w.Blocklist.BlockTunnel(ip, event.TEID); err != nil {
+			Mitigations.WithLabelValues("ebpf_block_tunnel", "error").Inc()
+			if ebpf.IsMapFull(err) {
+				MitigationMapFull.WithLabelValues("tunnel_blocklist").Inc()
+				w.Log.Error(err, "tunnel_blocklist is full; this mitigation was refused -- "+
+					"the map does not evict, so new drops fail until de-escalation frees space",
+					"sourceIp", event.SourceIP, "teid", event.TEID)
+			}
+			return fmt.Errorf("ebpf block tunnel %s/%#x: %w", event.SourceIP, event.TEID, err)
+		}
+		Mitigations.WithLabelValues("ebpf_block_tunnel", "success").Inc()
+	}
+
+	if blockSource {
+		if err := w.Blocklist.Block(ip); err != nil {
+			Mitigations.WithLabelValues("ebpf_block", "error").Inc()
+			if ebpf.IsMapFull(err) {
+				MitigationMapFull.WithLabelValues("blocklist").Inc()
+				w.Log.Error(err, "blocklist is full; this mitigation was refused",
+					"sourceIp", event.SourceIP)
+			}
+			return fmt.Errorf("ebpf block %s: %w", event.SourceIP, err)
+		}
+		Mitigations.WithLabelValues("ebpf_block", "success").Inc()
+	}
+
+	if quarantineSelector != nil {
+		if err := w.Mesh.Quarantine(ctx, policy.Namespace, quarantineSelector); err != nil {
+			Mitigations.WithLabelValues("mesh_quarantine", "error").Inc()
+			return fmt.Errorf("mesh quarantine for %s/%s: %w", policy.Namespace, policy.Name, err)
+		}
+		Mitigations.WithLabelValues("mesh_quarantine", "success").Inc()
+	}
+
+	return nil
 }
 
 // writeStatus persists next, but rate-limits the writes that carry no
