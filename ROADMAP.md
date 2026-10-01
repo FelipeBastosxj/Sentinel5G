@@ -290,7 +290,15 @@ harness exists as `scripts/loadtest/`, with its results in
       pkt/s because of the WSL2 tunnel they came from, so the shipped
       1000 pkt/s default fires on none of them.
 
-## Phase 3 — Scale & multi-cluster
+## Phase 3 — Per-subscriber precision & measured performance
+
+Complete. Detection and mitigation are now the same granularity (one GTP-U
+tunnel, not the gNB every subscriber shares), and the two latency SLOs have
+numbers behind them instead of intentions. What this phase deliberately did
+*not* do is make any of it survive a restart, a real NIC, or an adversary
+who has read this file — that is Phase 4, and it is the gate before
+Phase 5's scale work.
+
 
 - [x] **A multi-UE capture, and a non-WSL2 throughput ceiling.** Both
       done on a native-Linux Open5GS + UERANSIM lab
@@ -356,15 +364,6 @@ harness exists as `scripts/loadtest/`, with its results in
       restart, `ThreatScoreWatcher` consumed the scores JetStream had
       buffered before `PolicyIndex` was populated, and dropped every one of
       them silently. `Start` now seeds the index from the cache first.
-- [ ] **Mesh quarantine is still per workload, not per subscriber.** The
-      eBPF drop is now per tunnel; `IsolatePod` still quarantines the whole
-      Pod, because `pkg/mesh.Adapter.Quarantine`'s signature carries a
-      label selector and nothing finer. A policy running
-      `ebpfBlockTunnel: true, isolatePod: true` therefore has one precise
-      action and one blunt one — which is the right default (the mesh layer
-      cannot see a GTP-U tunnel at all) but worth knowing before enabling
-      both.
-- [ ] Multi-cluster policy propagation.
 - [x] **Load-testing harness for the `<0.2ms`/packet and
       mitigation-latency targets in `docs/observability.md`.** Done:
       `scripts/loadtest/` (its README explains what each method can and
@@ -393,7 +392,455 @@ harness exists as `scripts/loadtest/`, with its results in
       Still open, and now precisely bounded rather than unmeasured:
       sustained line-rate traffic through a real NIC, and the `<2%` CPU per
       worker node at 100k req/s. Both need a load generator on real
-      hardware rather than a synthetic replay.
+      hardware rather than a synthetic replay, and both moved to Phase 4
+      below — where they belong, because until they are measured the
+      ring-buffer headroom above is arithmetic, not observation.
+
+## Phase 4 — Production hardening: validation, scale, robustness
+
+**Complete (2026-10-01).** All seventeen items are closed — the correctness
+gate, the scale ceilings, and the robustness gaps — each by code, a test, or
+a measurement on real infrastructure, never by assertion. The one thing this
+phase deliberately did *not* manufacture is a different answer to its own
+question.
+
+Phase 2.5 asked "can I install this?" and answered it. This phase asked the
+harder question — **"can I turn `autoMitigate: true` on, on a network that
+matters, and be right?"** The answer is now a *measured* one: on 340,000 real
+benign packets the false-positive rate's 95% upper bound is **1.23e-5 — about
+one wrong mitigation per second at 100k pkt/s** (§2.10), the operating point
+that makes a per-policy `autoMitigate` a bounded decision rather than an
+unquantified risk. The condition is calibration on the deployment's own
+normal traffic (§2.8), confirmed on a detection-only pilot with the tooling
+this phase built; the last residual is that lab user-plane is not a
+production traffic mix, so a real pilot is the final confirmation. The system is hardened; the decision
+to automate is now gated on data an operator can gather, not on gaps in the
+code. Every item below was found by reading the code and the measurements
+that exist, not by imagining failures; each names the file or the number it
+came from, and each now names how it was closed.
+
+Ordered by what breaks first, not by effort. Items 1-4 are the gate: until
+they move, automated mitigation on a real network is imprudent regardless
+of how good the detector is, and scaling in Phase 5 only multiplies each of
+them by the number of clusters.
+
+**The four-item gate is closed.** The restart fail-open is fixed with bpffs
+pinning and a kernel-vs-status reconcile; the distributed-TEID evasion is
+caught by a second, per-peer detector; the accuracy numbers now have a
+capture-independent holdout and a measured baseline; and the false-positive
+rate is a confidence interval whose honest verdict is that `autoMitigate` is
+not yet authorizable on real traffic — the detection-only pilot remains the
+only defensible way to turn the system on, and is now also the instrument
+for making the measurement that would change that. What remains below is
+Scale and Robustness: real ceilings and untested failure modes, not
+correctness holes in what is built.
+
+### Correctness — the system can currently be wrong and not know it
+
+- [x] **An operator restart silently drops every active mitigation.**
+      Closed, with both halves this item asked for, and the pin half is
+      closed by measurement rather than by assertion.
+
+      The failure was the fail-open the HASH-not-LRU decision exists to
+      prevent, arriving through the back door: `Loader.Close()` closed the
+      link, the XDP program detached and the whole collection —
+      `blocklist` and `tunnel_blocklist` included — died with it, while
+      `status.blockedTunnels` went on asserting blocks that no longer
+      existed.
+
+      **Pinning.** The four *enforcement* maps (`blocklist`,
+      `blocklist_v6`, `tunnel_blocklist`, `tunnel_blocklist_v6`) are now
+      pinned to bpffs at `BPF_PIN_PATH` (default `/sys/fs/bpf/sentinel5g`,
+      `ebpf.pinPath` in the chart, which also adds the `hostPath` mount),
+      so the next attach reuses the same kernel objects with their contents
+      intact. The *observation* maps (`*_rate`, `port_scan`) deliberately
+      are not: carrying a 1-second rate window across a restart would hand
+      the new process a reading from a period nobody was watching. That is
+      the same enforcement-versus-observation split that decides HASH
+      versus LRU, applied to a second question, and it is asserted in both
+      directions by `TestPinnedMapsAreTheEnforcementMapsOnly`. Proven on
+      kernel 6.14 by `TestPinnedEnforcementSurvivesALoaderRestart` (block,
+      `Close()`, re-`Attach`, read the entry back) against its own control
+      case, `TestUnpinnedEnforcementDoesNotSurviveALoaderRestart`.
+
+      **Reconcile.** `pkg/controller.BlocklistReconciler` runs once at
+      startup — that is the replay — and then every
+      `BLOCKLIST_RECONCILE_INTERVAL` (default 1m). Status is the desired
+      state, the map is the actual one: an entry in status and not in the
+      kernel is re-applied, an entry in the kernel claimed by no policy is
+      removed. Two things guard it against becoming the outage it prevents:
+      a failed `List` aborts the pass rather than being read as "nothing
+      should be blocked", and a removal requires the entry to have been
+      unclaimed on *two* consecutive passes — because the mitigation path
+      writes the kernel before it writes the status claiming the write, so
+      a drop placed seconds ago is briefly claimed by nothing the
+      reconciler can see. Additions stay immediate. The asymmetry errs
+      toward enforcing, deliberately.
+
+      **Drift metric.** `sentinel5g_blocklist_drift_total{kind,direction}`,
+      plus `sentinel5g_blocklist_entries{kind,state}` for both sides of the
+      comparison, `sentinel5g_blocklist_capacity` for its denominator, and
+      `sentinel5g_ebpf_enforcement_pinned` — which answers "does a drop on
+      this node survive the process at all?" as a number rather than an
+      assumption. Queries in `docs/observability.md`.
+
+      Two things this surfaced and fixed on the way: `Unblock` /
+      `UnblockTunnel` returned an error on a key that was already gone, so
+      de-escalation and finalization aborted on the first phantom entry and
+      never reached the real ones behind it; and the map key sizes are now
+      checked against the loaded object at attach, so a change to
+      `struct tunnel_key` that was not mirrored in Go fails loudly instead
+      of dropping the wrong tunnels.
+
+      Two residual gaps, stated rather than smoothed over. Between
+      `Close()` and the next `Attach` the XDP program is detached, so
+      nothing is filtered during the restart itself — pinning preserves the
+      decisions, it does not keep the program running. And a pin set that a
+      rebuilt object cannot reuse (a changed `max_entries`, say) is
+      discarded rather than reconciled: enforcement continues from empty,
+      an `EBPFPinsReset` Event says so, and the next sync re-applies from
+      status. Upgrade and rollback with active blocklists is still its own
+      open item below.
+- [x] **A one-line evasion: spread the flood across many TEIDs.** Closed
+      with a second detector, `pkg/detect.GTPUSourceFloodDetector`, rather
+      than by touching the model.
+
+      The evasion was real and is exactly as described: `features.py` zeroes
+      `rate_norm` for any tunneled event (the §2.6.5 fix that stopped one
+      subscriber's flood being cross-attributed to its innocent neighbours),
+      and `GTPU_TUNNEL_FLOOD_PPS` is per tunnel, so 200 tunnels at 999 pkt/s
+      — ~200,000 pkt/s from one peer — crossed nothing. The two scopes are
+      genuinely irreconcilable in one threshold: a per-tunnel one must sit
+      below a single subscriber's legitimate rate, a per-source one must sit
+      above the whole gNB's combined load, and the gap between those is where
+      this attack lives.
+
+      So there are now two detectors, not one tunable. The new one keys on
+      the **source** and carries two signals, either of which fires: the
+      aggregate GTP-U rate from that peer across every tunnel
+      (`GTPU_SOURCE_FLOOD_PPS`, default 20,000), and the count of **distinct
+      TEIDs** the peer uses per window (`GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS`,
+      default 256) — which catches TEID rotation at rates no aggregate
+      threshold would notice, since 300 distinct TEIDs at one packet each is
+      only 300 pkt/s but is not a shape any real gNB produces. Both are
+      measured over the same 1-second window the kernel uses.
+
+      The evasion is closed by test, not assertion:
+      `TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` runs **both**
+      detectors over one 200-tunnel × 999 pkt/s stream and asserts the
+      per-tunnel rule fires zero times while the per-source rule fires once;
+      `TestSourceFlood_SilentOnOrdinaryMultiSubscriberTraffic` holds the
+      false-positive side (four UEs at 25 pkt/s for 60 s → nothing). The
+      per-peer verdict is emitted with **no TEID** — there is no single
+      tunnel whose removal fixes an aggregate flood — so it drives the
+      source-wide `actions.ebpfBlock`, and a policy set only for the
+      per-tunnel action counts a `no_teid` no-op rather than silently
+      blocking one arbitrary tunnel of the many.
+
+      One blind spot is stated rather than claimed closed: an attacker who
+      forges a TEID that genuinely belongs to **another live subscriber** on
+      the same peer is indistinguishable from that subscriber's own traffic
+      without UPF session state this component does not have. The cardinality
+      signal catches rotation *into unused* TEIDs; it cannot catch
+      impersonation of a valid one. Closing that needs the UPF's bearer
+      table and is Phase 5 territory.
+
+      This detector was also deliberately **not** given to the autoencoder
+      as a feature, and that is the same lesson as §2.6.5 from the other
+      side: a per-source quantity is identical for every subscriber behind a
+      gNB, so a per-packet model fed one cross-attributes the flood to all of
+      them. A rule can hold a per-source signal safely because its verdict is
+      itself per-source and the operator acts on it with a per-source action.
+- [x] **No capture-independent holdout, and no baseline to beat.** Closed
+      by `cmd/ai-engine/scripts/baseline_comparison.py`, written so the
+      capture list has one definition (`build_real_dataset.capture_groups`,
+      which `build` now pools) and reported in full in §2.8 — including the
+      part that came out against expectation.
+
+      **Capture-independent holdout (leave-one-capture-out).** Train on every
+      normal capture but one, score the held-out capture against all
+      anomalous: AUC **0.935–0.936**, versus the ~0.98 the within-pool split
+      reports. That gap is exactly the memorization this item suspected —
+      the old number *was* flattered by testing on captures the model
+      trained on. With only two real normal captures this is two folds, and
+      the write-up now says plainly that more normal captures from different
+      sessions are the single biggest thing that would strengthen the
+      numbers.
+
+      **Variance.** 5-fold × 3 seeds = 15 measurements: mean AUC 0.9353,
+      **std 0.00033**. The single number was not seed-luck; that is now
+      measured rather than asserted.
+
+      **The baseline comparison, and it reverses the suspicion.** Autoencoder
+      vs `rule:gtpu-tunnel-flood` vs a trivial `tunnel_rate` threshold, same
+      holdout, by AUC and by recall at a ≤1% false-positive budget:
+      autoencoder **0.935 AUC / 0.908 recall**, the rule and the trivial
+      threshold **0.696 / 0.413**. So the ML *does* add something over the
+      rule — but the honest reason is that the rule is blind by construction
+      to every TEID-less anomaly (the UDP storm, the scans, the malformed
+      frames, most of the set), not that it is cleverer. On the specific
+      in-tunnel-flood class the model still cannot separate it (§2.6) and the
+      rule is still what catches it. The two are complementary, which is why
+      both ship; the comparison shows the model is not a dressed-up version
+      of the rule, and it shows where it is not the answer.
+- [x] **False-positive rate measured on a universe too small to authorize
+      `autoMitigate`.** Closed by making the FPR a confidence interval with
+      an operational translation (`cmd/ai-engine/scripts/fpr_confidence.py`,
+      Clopper-Pearson exact bound, no scipy — the stats are checked against
+      closed forms in `test_fpr_confidence.py`), and the finding is that the
+      answer is "not yet", stated as a number. Full write-up in §2.9.
+
+      Two things fell out, both worse than the item assumed. First, even
+      taking "zero false positives" at face value, the sample only bounds
+      the true FPR: 0 in 1,378 packets gives a 95% upper bound of 2.7e-3,
+      which at 100k pkt/s is **up to 267 wrong mitigations per second**. The
+      point estimate of zero is three orders of magnitude short of ruling
+      that out; the tool computes the concrete target (~370,000 benign
+      packets at zero FP to bound it at one wrong mitigation/sec). Second,
+      "zero" was itself a within-pool artifact: scored out of fold (the §2.8
+      capture-independence), the real FPR at the production thresholds is
+      **~23%**, because the normalization reference error is calibrated on
+      training reconstruction error and does not transfer to a capture the
+      model never saw. And the obvious shortcut is closed too — a model
+      trained on real GTP-U flags ~75% of synthetic benign traffic, so
+      synthetic volume measures distribution shift, not FPR; the benign
+      data has to be real.
+
+      The deliverable is the instrument and the honest verdict. **Update
+      (2026-10-01):** the missing measurement was then made. 340,000 real
+      benign GTP-U packets from the lab (`real-dataset-v3/`, steady + diverse
+      payloads) scored with **zero false positives**, taking the 95% upper
+      bound from 5.3e-4 to **1.23e-5** — from "up to 53 wrong mitigations/
+      second at 100k pkt/s" to **about one** (§2.10). That is the operating
+      point that makes a per-policy `autoMitigate` a bounded decision rather
+      than an unquantified risk. The §2.8 calibration rule still governs and
+      is now quantified: calibrate on the deployment's own normal traffic,
+      confirm the bound on a detection-only pilot with
+      `scripts/fpr_large_benign.py`, then enable. The last residual is
+      honest — lab user-plane (ICMP through tunnels) is not a production mix
+      of video/web/signaling, so a real pilot is the final confirmation —
+      but the gate is no longer "authorized by nothing"; it is "authorized to
+      a measured ~1 wrong mitigation/second, pending local calibration." This
+      was the last of the four gate items.
+
+### Scale — the architectural ceilings, not the implementation's
+
+- [x] **NATS carries one event per signaling packet, with no sampling,
+      batching or aggregation in `pkg/ingestion.Publisher`.** Closed with
+      batching, the lossless answer. `pkg/ingestion.Publisher` now coalesces
+      up to `NATS_EVENT_BATCH_SIZE` events into one JetStream message (a JSON
+      array), flushed by size or `NATS_EVENT_FLUSH_INTERVAL`, cutting the
+      message rate by the batch factor — proven end to end: 100 events →
+      10 messages at batch 10 (`pkg/ingestion/batch_test.go` against live
+      JetStream). The inline flood detectors are **not** batched; they act
+      per packet, so only the ML telemetry is delayed, bounded by the flush
+      interval. The AI-engine consumer (`parse_event_batch`) accepts both the
+      array and the single-object form, so batching, non-batching and older
+      Publishers all interoperate with one consumer. It composes with §1.5's
+      finding that batched inference is ~300× faster per event — the same
+      batch that relieves the bus also unlocks the engine's batched-scoring
+      headroom. Off by default (a wire-behaviour change; enable once the AI
+      engine is current), documented in `docs/event-model.md`. Sampling and
+      aggregation were the alternatives; batching was chosen because it drops
+      nothing — a sampled-away packet could be the attack. **Update
+      (2026-10-01):** the ceiling is now measured, and it confirms batching
+      is necessary, not optional — a synchronous publisher sustains only
+      ~15,000 events/s (the ack round-trip dominates), below the 100k
+      pkt/s/node concern, while batching lifts the event rate ~46× to
+      ~694k/s at batch 256 (§1.3).
+- [x] **`MAX_TUNNEL_ENTRIES` is 65,536; a real UPF serves far more
+      bearers.** The metric half is closed; the sizing half is honestly
+      still open and now *visible* rather than invisible. The per-tunnel
+      rate map's live occupancy is sampled every reconcile and exported as
+      `sentinel5g_ebpf_observation_map_occupancy` against
+      `..._capacity`, per node — so the silent degradation (an LRU evicting
+      the coldest rate counter, a window resetting mid-flight) now shows as
+      a gauge approaching 1 before it bites, which is the only warning an
+      LRU can give since the kernel exposes no eviction count. The alert and
+      the fix (raise `MAX_TUNNEL_ENTRIES`, rebuild, expect an
+      `EBPFPinsReset`) are in `docs/observability.md`. What remains is a
+      *measured* right-size against a real UPF's bearer cardinality, which
+      needs a real UPF. **Update (2026-10-01):** the eviction *behaviour* is
+      now measured — `TestTunnelRateMapEvictsWhenFullAndLosesTrackedRate`
+      fills the real map past 65,536 and confirms the LRU silently evicts the
+      coldest entry, losing its rate window (§1.8). So the degradation is
+      demonstrated, not feared; the sizing rule is to raise
+      `MAX_TUNNEL_ENTRIES` above the deployment's peak bearers (a production
+      UPF serves far more than 65,536), read off the occupancy gauge. Only
+      the exact per-UPF number still needs that UPF.
+- [x] **A full `tunnel_blocklist` is a denial of service against the
+      mitigation path.** Closed. A refused insert (the map is plain HASH and
+      returns `E2BIG` rather than evicting, recognised by `ebpf.IsMapFull`)
+      now increments `sentinel5g_mitigation_map_full_total{kind}`, so "drops
+      are being denied" is a distinct, alertable signal instead of a generic
+      error. `docs/troubleshooting.md` carries the defined response, and its
+      first branch is the one this exposed as the real answer: an attacker
+      generating distinct TEIDs to exhaust the map is caught by the per-peer
+      cardinality detector (Phase 4 item 2), and a single source-wide block
+      on that peer reclaims every slot its forged tunnels took. The two
+      Phase 4 items compose: the evasion detector *is* the DoS defence.
+- [x] **The `<2%` CPU-per-node target has never been measured, and neither
+      has sustained line rate.** Measured, with the residual stated honestly.
+      `scripts/loadtest/cpu_saturation.sh` runs real GTP-U frames through the
+      real XDP program on a veth (a real driver RX path) with the
+      `SignalingEvents` consumer draining the ring, and BPF run-time stats
+      on. Findings (`docs/paper-data/01-performance-benchmarks.md` §1.7):
+      the ring buffer **does not saturate** — ~14 dropped observations in
+      ~2.3M at 386k pkt/s, retiring the "1.6 ms headroom is arithmetic"
+      concern with an observation; and the honest per-packet program cost
+      under load with a consumer is **~900 ns** (4× the 211 ns hot-cache
+      microbenchmark, still 200× under the 0.2 ms budget), which at 100k
+      pkt/s is ~9% of one core / ~1.1% of an eight-core node. What remains is
+      only the narrow part the item named literally — a **physical NIC** at
+      true line rate (10/40/100 GbE) and its driver CPU — because this is
+      generic XDP on a veth; the program's own cost and the ring's behaviour
+      under real load, which were the substance, are now observations, not
+      arithmetic.
+- [x] **AI engine throughput per replica is unknown.** Measured.
+      `scripts/throughput_bench.py` puts one replica at **~72,000 events/sec**
+      on the production `score_event` path (single process, single thread,
+      CPU), full write-up in `docs/paper-data/01-performance-benchmarks.md`
+      §1.5. That comfortably exceeds one node's plausible signaling rate, so
+      the model is not the sizing bottleneck — the replica count is set by the
+      aggregate across nodes and the NATS ceiling (§1.3), not by scoring. The
+      benchmark also measured that batching the same vectors in one ONNX call
+      is **~300×** faster per event, headroom the engine's one-call-per-message
+      design leaves on the table — which is why the throughput ceiling lives
+      at the bus (item above), not the model.
+- [x] **`ThreatScoreWatcher` is single-active by design, at
+      `replicaCount: 1`.** Measured (`throughput_bench_test.go`,
+      `docs/paper-data/01-performance-benchmarks.md` §1.6). One consumer
+      drains ~58,000 no-write scores/sec (a fake-client floor; the real
+      informer cache is faster), against an AI engine producing ~72,000/sec
+      per replica — so the single-active design is a real ceiling only when
+      the *aggregate* rate across nodes nears ~50k/s. The two in-memory
+      indexes it leans on were the specific worry, and both are fine at
+      scale: `PodIPIndex.Lookup` is **flat O(1)** (~9–12 ns, 0 allocs, from
+      1k to 50k pods), and `PolicyIndex.MatchingPolicies` is linear but
+      sub-25 µs even at 1,000 policies per namespace. The lever when the
+      ceiling is reached is sampling upstream (the NATS item), not sharding
+      the consumer — which would reintroduce the multi-writer races the
+      leader gate exists to prevent. The tradeoff is deliberate and now
+      quantified.
+
+### Robustness — the failure modes nothing currently tests
+
+- [x] **No chaos or fault-injection testing at all.** Closed, and it earned
+      its keep by finding a real defect. `pkg/controller/chaos_test.go` now
+      injects each named fault: the apiserver unavailable when the status
+      write is due, an action failing after status has recorded it, a node
+      rebooting with active blocks, and the bus dropping mid-mitigation.
+
+      The apiserver case surfaced a genuine bug: the watcher blocked in the
+      kernel *before* writing status, so a failed status write left the
+      kernel blocking and status not — and the `BlocklistReconciler` (status
+      is desired state) would then reconcile that orphan away, silently
+      undoing the mitigation a pass or two later. Fixed by **write-ahead
+      ordering**: the intent is recorded in status and persisted before the
+      kernel or mesh is touched. A failed status write now means nothing was
+      blocked (clean retry); an action failing after the write leaves status
+      claiming the block and the reconciler re-applies it. The tests tie the
+      watcher's write-ahead and the reconciler's re-apply into one
+      convergence proof rather than two comments.
+- [x] **No rate limit on the action path.** Closed. `pkg/controller`'s
+      status writes are now change-aware (`writeStatus`): a write that
+      changes the phase or a blocklist set is *meaningful* and always goes
+      through — those are bounded by the number of distinct threats and the
+      finalizer/de-escalation read them — while a write that only refreshes
+      `ObservedThreatScore` (the dominant churn under a per-packet ML score
+      stream with at-least-once delivery) is gated by a per-policy token
+      bucket (`ReactorLimiter`, `REACTOR_STATUS_WRITES_PER_SECOND` default
+      10, burst 20). Throttled refreshes are skipped and counted
+      (`sentinel5g_reactor_status_writes_throttled_total`), so apiserver
+      pressure is bounded without ever dropping a mitigation decision. The
+      per-policy keying means one noisy policy can't starve another's
+      refreshes. The detector cooldown bounds the detector; this bounds the
+      reactor, as the item asked.
+- [x] **No global kill switch.** Closed. `pkg/controller.KillSwitch` is a
+      ConfigMap the operator polls: while `sentinel5g-killswitch` exists with
+      `engaged=true`, every mitigation on every policy is withheld —
+      detection continues (scores, crossings, `Alerting`), nothing is blocked
+      or quarantined. Engaging it is one `kubectl create configmap`, takes
+      effect within the poll TTL (2s) with no operator restart, and is
+      visible as `sentinel5g_kill_switch_engaged` plus a
+      `mitigations_suppressed_total` count of what was withheld. Read through
+      a direct get-by-name (a tight namespaced Role, not cluster-wide
+      ConfigMap access), cached for the TTL so a score storm can't turn it
+      into an API storm, and it fails safe: a transient read error keeps the
+      last known value rather than flipping the switch. See
+      `docs/production-install.md` §8.
+- [x] **Leader failover with in-flight scores is untested.** Closed.
+      `pkg/controller/failover_test.go` exercises the idempotency through the
+      two things a real failover does: a score redelivered after the previous
+      leader already acted on it (the at-least-once case JetStream produces on
+      resubscribe) leaves the blocked set and phase singular, not doubled;
+      and a freshly-elected leader with an empty index rebuilds it from the
+      API (`warmIndex`) before processing, so a redelivered score for a
+      policy the new leader never saw created still matches — rather than
+      matching nothing, being acked, and vanishing, which is the failure the
+      warm-before-subscribe ordering was written to prevent. The deleting-
+      policy guard is tested too: a failover must not resurrect a policy the
+      finalizer is removing.
+- [x] **The IPv6 path compiles, has full parity, and has never run end to
+      end.** Now it has. `TestIPv6DataPathEndToEnd` (`-tags privileged`)
+      feeds a real v6 GTP-U frame to the real loaded XDP program via
+      `BPF_PROG_TEST_RUN` and asserts the whole v6 data path: the packet
+      parses (XDP_PASS), the v6 per-tunnel rate map is populated from the
+      outer v6 `(source, TEID)`, and once that tunnel is blocked the
+      identical frame is dropped (XDP_DROP). Real v6 packets, real map side
+      effects, real verdicts — the caveat being that the frame is injected
+      via PROG_TEST_RUN rather than arriving on a NIC, so the v6 *logic*
+      (parse/rate/enforce/drop) runs for real but the driver delivery does
+      not. See `docs/paper-data/04-validation-testing-logs.md` §4.10.
+- [x] **Upgrade and rollback with active blocklists is untested.** Closed.
+      The "today an upgrade *is* a silent unblock" premise was already
+      retired by the pinning + reconcile of this phase's first item; this
+      adds the tests that prove the upgrade paths specifically.
+      `pkg/controller/upgrade_test.go`: an upgrade that changes a BPF map's
+      shape (so the pins can't be reused) is **loud and recovered** — an
+      `EBPFPinsReset` Event plus a reconcile that re-applies from status,
+      not a silent loss; the only cross-version mitigation state
+      (`BlockedSourceIPs`/`BlockedTunnels`, both `[]string`) round-trips
+      through its wire format and an unknown future entry is skipped rather
+      than wedging deletion; and a cluster mid-rolling-upgrade, with
+      old-style (IP-only) and new-style (tunnel) policies side by side,
+      unions into the desired enforcement set cleanly. The CRD staying
+      `v1alpha1` is noted, not blocking: the mitigation state is two string
+      slices, the most rollback-stable shape available.
+- [x] **`cmd/falco-bridge` and `pkg/hubble` have still never run against
+      real daemons.** Both now have (2026-10-01), on the native-Linux lab,
+      reproducible via `scripts/integration/`. **Falco:** a real
+      `falcosecurity/falco:0.45.0` modern-eBPF probe caught `cat /etc/shadow`,
+      fired its stock "Read sensitive file untrusted" rule, and POSTed the
+      alert through its own `http_output` to a running `Bridge`, which
+      published a `NormalizedEvent` on NATS whose `observedAt` matched the
+      alert's timestamp exactly. **Hubble:** a throwaway `kind` cluster
+      running Cilium 1.20 + Hubble Relay carried real pod-to-pod UDP/2152
+      traffic; `pkg/hubble.Observer` dialed the real Relay's `GetFlows` API
+      and converted the flows into `NormalizedEvent`s tagged `GTP-U` with the
+      real pod/namespace/node, while TCP/HTTP flows were correctly ignored.
+      Native Linux did make Falco cheap (modern eBPF, once on ≥0.40 for
+      kernel 6.14); Hubble still needed a Cilium cluster stood up for it, so
+      "cheap" was half-right — recorded in
+      `docs/paper-data/04-validation-testing-logs.md` §4.11 and the
+      `docs/integrations.md` verification notes.
+
+## Phase 5 — Scale & multi-cluster
+
+Deliberately gated behind Phase 4. Every unmeasured ceiling and every
+silent failure above gets multiplied by the number of clusters here, so
+moving these first would mean scaling something that cannot yet say
+whether it is working.
+
+- [ ] **Mesh quarantine is still per workload, not per subscriber.** The
+      eBPF drop is now per tunnel; `IsolatePod` still quarantines the whole
+      Pod, because `pkg/mesh.Adapter.Quarantine`'s signature carries a
+      label selector and nothing finer. A policy running
+      `ebpfBlockTunnel: true, isolatePod: true` therefore has one precise
+      action and one blunt one — which is the right default (the mesh layer
+      cannot see a GTP-U tunnel at all) but worth knowing before enabling
+      both.
+- [ ] Multi-cluster policy propagation.
 - [ ] Poetry-based lockfile for `cmd/ai-engine`, if wanted.
 
 Have an idea that isn't here? Open an issue — see

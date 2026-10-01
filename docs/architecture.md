@@ -15,7 +15,7 @@ while the architecture scales to real telecom deployments.
 +-----------------------------------------------------------------------------------+
 |                          LAYER 2: INGESTION & PIPELINE                            |
 |     pkg/ingestion (ring buffer -> NormalizedEvent) ---> NATS JetStream            |
-|     pkg/detect: deterministic GTP-U tunnel-flood rule, inline, per node           |
+|     pkg/detect: GTP-U tunnel-flood + source-flood rules, inline, per node        |
 +-----------------------------------------------------------------------------------+
                                           |
                                           v (NormalizedEvent)
@@ -63,6 +63,18 @@ maps — `blocklist` (by source address) and `tunnel_blocklist` (by
 others behind the same gNB) — both populated exclusively
 by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
 at the kernel/NIC level.
+
+Those two drop maps (and their `_v6` twins) are **pinned to bpffs**, so the
+drops in them outlive the operator process: closing the XDP link otherwise
+destroys the whole collection, and a rollout or a crash would un-block
+everything while each policy's status went on claiming the opposite. The
+rate and scan maps deliberately are *not* pinned — they are observation, and
+a 1-second rate window carried into a process that was not running when it
+started is a reading of a period nobody watched. The same
+enforcement-versus-observation line decides `HASH` versus `LRU_HASH`
+(`CLAUDE.md`). Layer 4 re-applies anything the kernel is still missing on
+startup and on a timer; see `pkg/controller.BlocklistReconciler` and
+`docs/observability.md`'s "Is enforcement actually on?".
 
 IPv6 traffic is inspected through a parallel set of maps (`blocklist_v6`,
 `tunnel_blocklist_v6`, `signal_rate_v6`, `scan_rate_v6`, `tunnel_rate_v6`,
@@ -158,6 +170,21 @@ enforcement path: `pkg/controller.ThreatScoreWatcher` has no branch for it at
 all, so a rule-sourced score goes through the same policy matching,
 sensitivity tier, and `autoMitigate` gating as an ML score. A detection-only
 pilot stays detection-only.
+
+A per-tunnel threshold cannot, by construction, catch a flood spread thinly
+across many tunnels: its job is to *stop* aggregating subscribers, so 200
+tunnels at 999 pkt/s each — ~200,000 pkt/s from one peer — crosses nothing.
+A second rule, `GTPUSourceFloodDetector` (`model: "rule:gtpu-source-flood"`),
+closes that: it is scoped to the source and fires on either the aggregate
+GTP-U rate from that peer or the count of distinct TEIDs it uses per window
+(the latter catching TEID rotation at rates no aggregate would notice). Its
+verdict is about the *peer*, not a subscriber, so its score carries no TEID
+and drives the source-wide `actions.ebpfBlock`; a policy set only for the
+per-tunnel action counts a `no_teid` no-op, because no single tunnel's
+removal fixes an aggregate flood. The two run side by side over the same
+event and neither short-circuits the other — they answer different questions
+about the same packet. See `docs/paper-data/02-ai-training-inference.md`
+§2.7.
 
 A second, separate detector (`port_scan`/`track_port_scan()`) closes exactly
 the low-and-slow multi-port gap `scan_rate` leaves (described above the
@@ -310,7 +337,7 @@ policy.
 What remains blunter than the detection is the *mesh* action: `isolatePod`
 quarantines the whole workload, because `pkg/mesh.Adapter` sees label
 selectors and not GTP-U tunnels. That is inherent to the layer rather than
-an oversight, and it is recorded in `ROADMAP.md` Phase 3.
+an oversight, and it is recorded in `ROADMAP.md` Phase 5.
 
 `ThreatScoreWatcher` calls `Block`/`Quarantine` but never `Unblock`/`Release`
 itself, and a later low score does not touch a `Mitigating` policy's phase

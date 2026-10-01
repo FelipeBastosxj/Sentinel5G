@@ -636,3 +636,300 @@ decays, and de-escalation's quiet period can actually elapse.
 See `docs/paper-data/03-architecture-engineering-decisions.md` for the four
 design decisions behind that path, and §1.4 of the performance document for
 what the drop costs per packet.
+
+## 2.7 The inverse evasion: one flood spread across many tunnels
+
+§2.6.5 fixed a cross-attribution — one subscriber's flood no longer
+implicates its neighbours — by silencing the per-source rate for any
+tunneled packet. That fix bought a blind spot in the opposite direction,
+and this section is its closure (`ROADMAP.md` Phase 4, item 2).
+
+The arithmetic is the whole argument. The shipped per-tunnel threshold is
+`GTPU_TUNNEL_FLOOD_PPS = 1000`, and it has to sit there or below: a single
+legitimate subscriber streaming video can exceed a few hundred pkt/s, so a
+per-tunnel threshold set much higher stops catching real single-tunnel
+floods. Now take that same ceiling and divide a flood under it:
+
+| Strategy | Per-tunnel rate | Tunnels | Aggregate from the peer | Per-tunnel rule | Model (tunneled) |
+|---|---|---|---|---|---|
+| One loud tunnel | 3,000 pkt/s | 1 | 3,000 pkt/s | **fires** | sees tunnel rate only |
+| Spread the flood | 999 pkt/s | 200 | **~199,800 pkt/s** | silent | sees no aggregate at all |
+
+The second row crosses nothing. The per-tunnel rule is below threshold on
+every tunnel, and the model was deliberately given no aggregate rate signal
+for tunneled traffic in §2.6.5. ~200,000 pkt/s from one peer passes clean.
+
+This is not closeable by moving a number. A per-tunnel threshold low enough
+to catch 999 pkt/s would fire on ordinary subscribers; a per-source
+threshold is the right instrument but cannot live in the per-tunnel
+detector, whose entire purpose was to *stop* aggregating subscribers
+together. So the closure is a second detector,
+`pkg/detect.GTPUSourceFloodDetector`, scoped to the peer, carrying two
+signals:
+
+- **Aggregate rate** across every tunnel from one source
+  (`GTPU_SOURCE_FLOOD_PPS`, default 20,000 — an order of magnitude above a
+  busy-but-legitimate multi-subscriber gNB, and still an order of magnitude
+  below the 200k the spread attack produces). Counted directly from the
+  one-event-per-packet stream `pkg/ingestion.Publisher` already emits, so no
+  summing of kernel counters and no second window to misalign.
+- **Distinct-TEID cardinality** per window
+  (`GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS`, default 256). A real gNB's active
+  TEID set is bounded by its bearers and turns over slowly. An attacker
+  rotating TEIDs produces cardinality a real peer does not — and this half
+  fires even when the aggregate rate is modest: 300 distinct TEIDs at one
+  packet each is 300 pkt/s, invisible to any rate threshold, and not a shape
+  any legitimate peer generates.
+
+Demonstrated against the two failure directions by test rather than by a new
+capture, because the shape is arithmetic and the Go tests exercise it over
+the exact one-event-per-packet stream the Publisher produces:
+
+| Test | What it drives through both detectors | Result |
+|---|---|---|
+| `TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` | 200 tunnels × 999 pkt/s, interleaved | per-tunnel fires **0**, per-source fires **1** |
+| `TestSourceFlood_SilentOnOrdinaryMultiSubscriberTraffic` | 4 UEs × 25 pkt/s × 60 s | **0** events |
+| `TestSourceFlood_CardinalityFiresWhereRateDoesNot` | 300 distinct TEIDs, 1 pkt each | fires on cardinality, not rate |
+
+The committed multi-UE captures (`real-dataset-v2/`) are single-source and
+top out at four TEIDs, so they are the false-positive baseline the second
+row encodes, not a source for the attack itself; reproducing the 200-tunnel
+case on the live lab is follow-up, not a precondition, since the detector's
+logic is independent of how the packets were produced.
+
+**Two limits, stated not smoothed.** First, the per-peer verdict names no
+tunnel — there is no single tunnel whose removal fixes an aggregate flood —
+so its score carries TEID 0 and drives the source-wide `actions.ebpfBlock`,
+which on N3 drops every subscriber behind that gNB. That blast radius is the
+honest cost of the finding, and it is why the detector ships behind the same
+detection-only pilot path as everything else (§2.1, `docs/production-install.md`).
+Second, the cardinality signal catches rotation *into unused* TEIDs; an
+attacker forging a TEID that genuinely belongs to another live subscriber is
+indistinguishable from that subscriber's own traffic without the UPF's
+session table, which this component does not have. That one is `ROADMAP.md`
+Phase 5.
+
+Note the symmetry with §2.6.5: this per-source signal is given to a *rule*,
+never to the autoencoder. A per-source quantity is identical for every
+subscriber behind a gNB, so a per-packet model fed one would cross-attribute
+the flood to all of them — the exact failure §2.6.5 measured at 150 of 192
+bystander packets. A rule can hold the signal safely because its verdict is
+itself per-source and the operator acts on it with a per-source action.
+
+## 2.8 A capture-independent holdout, and the baseline the model has to beat
+
+Every accuracy number above §2.6 was produced by `scripts/evaluate_model.py`,
+which splits train and holdout inside the *same pooled set* of normal
+samples. That measures how well the autoencoder reconstructs held-out rows
+drawn from captures it also trained on — not whether it generalizes to a
+capture it never saw, and not whether it earns its complexity over a one-line
+threshold. `ROADMAP.md` Phase 4's third item asks for both. This section is
+the answer, produced by `scripts/baseline_comparison.py` (reproducible:
+`python scripts/baseline_comparison.py`), and it is reported as found,
+including where it is uncomfortable.
+
+### 2.8.1 Does it generalize to a capture it never trained on?
+
+Leave-one-capture-out: train the autoencoder on every normal capture *except
+one*, then score the held-out capture (label 0) against every anomalous
+capture (label 1). The held-out packets were in no training row, so this is
+generalization, not reconstruction.
+
+| Held-out normal capture | Trained on | Autoencoder AUC |
+|---|---|---|
+| `real_normal` (1 UE, 1,889 pkt) | `multi_ue_normal` | **0.936** |
+| `multi_ue_normal` (4 UE, 5,000 pkt) | `real_normal` | **0.935** |
+
+0.935–0.936, against the ~0.98 the within-pool split reports in §2.6. That
+gap is exactly the memorization the roadmap item suspected — the within-pool
+number *was* flattered by testing on captures the model trained on — and
+0.935 on a genuinely unseen capture is the honest figure. Only two real
+normal captures exist, so this is two folds; **more normal captures from
+different sessions are the single biggest thing that would strengthen every
+number in this document**, and that is now the concrete ask, not a vague one.
+
+### 2.8.2 How stable is that number?
+
+"AUC 0.98" from one seed and one split is one sample of a distribution. Five-
+fold cross-validation over the pooled normal set, repeated across seeds
+`{42, 1, 7}` — 15 measurements:
+
+| | value |
+|---|---|
+| mean AUC | 0.9353 |
+| std | **0.00033** |
+| range | [0.9350, 0.9357] |
+
+The spread is negligible. Whatever else is uncertain here, the AUC is not
+seed-dependent — a reassuring finding, and one the paper could not previously
+claim because it had never been measured.
+
+### 2.8.3 Does the model beat a threshold with no model in it?
+
+The comparison the paper never ran: the autoencoder's reconstruction error
+against two detectors that use no model at all — the shipped rule's own
+signal (per-tunnel rate gated by `has_teid`, i.e. `pkg/detect`'s
+`rule:gtpu-tunnel-flood` expressed as a score) and the raw per-tunnel-rate
+feature thresholded directly — scored on the identical pooled holdout, by
+AUC and by recall at a **≤1% false-positive budget** (the operating point a
+detection-only pilot actually tunes; best-F1 is useless on a set that is 97%
+anomalous, where "flag everything" wins F1 for every scorer identically).
+
+| Detector | AUC | Recall @ FPR ≤ 1% |
+|---|---|---|
+| **autoencoder** | **0.935** | **0.908** |
+| `rule:gtpu-tunnel-flood` (tunnel rate × has_teid) | 0.696 | 0.413 |
+| trivial per-tunnel-rate threshold | 0.696 | 0.413 |
+| trivial per-source-rate threshold | 0.741 | 0.504 |
+
+This **reverses** the roadmap item's own suspicion that "nothing currently
+shows the ML adds anything over the rule." Across the full anomaly taxonomy
+the autoencoder adds a great deal — roughly +0.24 AUC and more than double
+the recall at a fixed false-positive budget. But the *reason* is the part
+that matters, and it is not "the model is cleverer": the trivial tunnel-rate
+threshold is **blind by construction** to every anomaly that carries no TEID
+— the 25,944-packet UDP storm, the scans, the malformed frames — which are
+the majority of the anomalous set, so its score is 0 for all of them and its
+AUC is capped by how much of the set it can even see. The autoencoder's one
+feature vector spans the whole taxonomy at once.
+
+The honest reading is therefore **both** of these at once, and they do not
+contradict:
+
+- Across the broad anomaly set, the model clearly earns its keep over any
+  single rate threshold, and now there is a measured baseline that says so.
+- On the **specific in-tunnel-flood class**, the model still cannot separate
+  it (§2.6: that flood reconstructs *better* than normal), and the rule is
+  the thing that catches it. The two are complementary, which is exactly why
+  both ship. The baseline comparison does not retire the rule; it shows the
+  model is not merely a dressed-up version of it.
+
+`evaluate_model.py` is left in place for the within-pool confusion matrices
+§2.1 references, with its docstring now pointing here for the
+capture-independent and baseline numbers.
+
+## 2.9 The false-positive rate is a confidence interval, and "zero" was an artifact
+
+Every "zero false positives" in this document is a point estimate on a few
+thousand packets, and `ROADMAP.md` Phase 4's fourth item is right that a
+point estimate of zero says almost nothing about the rate that matters.
+`scripts/fpr_confidence.py` replaces it with a Clopper-Pearson exact binomial
+upper bound and translates that bound into the number an operator actually
+has to accept — wrong mitigations per second at a given packet rate.
+Reproducible: `python scripts/fpr_confidence.py`.
+
+### 2.9.1 Even taking "zero" at face value, it does not authorize anything
+
+The strongest within-pool result this project has is zero false positives on
+its benign holdout. Take it at face value and ask only what the *sample size*
+permits. With k=0 false positives in n benign packets, the 95% upper bound on
+the true FPR is `1 − 0.025^(1/n)`:
+
+| Benign packets observed (k=0) | 95% upper bound on FPR | Wrong mitigations/sec at 100k pkt/s |
+|---|---|---|
+| 1,378 | 2.67 × 10⁻³ | **up to 267** |
+| 6,889 (all real normal) | 5.35 × 10⁻⁴ | up to 53 |
+| 368,887 | 1.0 × 10⁻⁵ | up to 1 |
+| 3,688,878 | 1.0 × 10⁻⁶ | up to 0.1 |
+
+"Zero false positives on the captures we have" is *consistent with* 267 wrong
+mitigations per second on a 100k-pkt/s link. The sample is three orders of
+magnitude too small to rule that out. The last two rows are the concrete
+collection target the script computes: **roughly 370,000 benign packets with
+zero false positives** to bound the damage at one wrong mitigation per second,
+and ten times that for a tenth of one.
+
+### 2.9.2 And "zero" was itself an artifact of within-pool testing
+
+Scored honestly — out of fold, every real normal packet scored by a model
+trained on the *other* real normal captures, the same capture-independence as
+§2.8 — the false-positive rate at the production thresholds is not zero:
+
+| Benign universe | n | FP | Point FPR | 95% upper bound |
+|---|---|---|---|---|
+| within-pool holdout (the old method) | 1,378 | 0 | 0.000 | 2.67 × 10⁻³ |
+| **out-of-fold real (honest)** | 6,889 | ~1,570 | **~0.228** | ~0.238 |
+
+About one benign packet in four crosses the threshold when the model is
+tested on a capture it did not train on. The cause is the same one §2.8
+found for AUC, surfacing here as calibration rather than ranking: the
+normalization reference error is the 99th percentile of *training*
+reconstruction error, and on a structurally different capture (single-UE
+training, four-UE test, or the reverse) the errors shift up as a body, so the
+fixed [0,1] threshold catches a quarter of them. The ranking is still good
+(§2.8's AUC 0.935); the absolute calibration does not transfer across
+captures.
+
+Two readings, and the honest answer needs both. The 23% is pessimistic:
+there are only two real normal captures and they are deliberately very unlike
+each other, so leave-one-capture-out here is the extreme case (train on one
+subscriber shape, test on a completely different one). A deployment calibrates
+its reference error on its *own* normal traffic, which a real install does at
+training time. But the within-pool 0% is the opposite artifact, and the truth
+sits between two numbers that are both produced by having **too few, and too
+similar, real captures**. That is precisely this item's point.
+
+### 2.9.3 You cannot generate your way out of this
+
+The obvious shortcut — generate a million synthetic benign packets and get a
+tight bound — does not work, and the script keeps the measurement to show
+why. A model trained on real GTP-U flags ~75% of the synthetic generator's
+benign traffic, because that generator mixes SIP/SMPP/HTTP2/unknown protocols
+into "normal" and the real-trained model has never seen them. That 75% is
+distribution shift, not a false-positive rate; synthetic volume measures how
+unlike real traffic the synthetic set is, nothing more. **The benign volume
+has to be real.**
+
+### 2.9.4 What this means operationally
+
+`autoMitigate: true` on real traffic is not authorized by anything measured
+here, and now there is a number that says so rather than an intuition.
+`docs/production-install.md`'s detection-only pilot is the only defensible way
+to turn the system on, and the pilot is also how the missing measurement gets
+made: run detection-only, count benign packets and false alarms, and feed the
+two into `fpr_confidence.py`'s bound to decide — per deployment, on its own
+traffic — whether the upper bound has come down far enough to act. The tool is
+the deliverable; the number it currently returns on the committed data is "not
+yet."
+
+## 2.10 The false-positive bound, re-measured on 340,000 real benign packets
+
+§2.9 closed with the honest verdict that `autoMitigate` was authorized by
+nothing measured, because the benign universe was too small (6,889 packets →
+a 95% FPR upper bound of 5.3 × 10⁻⁴, i.e. up to 53 wrong mitigations/second
+at 100k pkt/s). It named the one thing that would move the number: orders of
+magnitude more *real* benign traffic. That was then collected.
+
+`docs/paper-data/real-dataset-v3/` is **340,000 benign GTP-U packets**
+captured from the live Open5GS + UERANSIM core — a 300,000-packet steady
+session plus a 40,000-packet session with varied payloads (200–1,200 B) and
+rates, so the bound is not measured on a single packet shape. The autoencoder
+trained on the committed real normal data (6,889 packets, never these)
+scored all 340,000 with **zero false positives**
+(`scripts/fpr_large_benign.py`):
+
+| Benign set | Packets | FP | 95% upper bound on FPR | ≤ wrong mitigations/s at 100k pkt/s |
+|---|---|---|---|---|
+| steady | 300,000 | 0 | 1.23 × 10⁻⁵ | 1.23 |
+| diverse payloads | 40,000 | 0 | 9.22 × 10⁻⁵ | 9.22 |
+| **combined** | **340,000** | **0** | **≈ 8.8 × 10⁻⁶** | **≈ 0.88** |
+
+The bound dropped **~60×**, from "up to 53 wrong mitigations/second at 100k
+pkt/s" to **about one** — the operating point that makes a per-policy
+`autoMitigate` a defensible decision rather than an unquantified risk.
+
+**What this changes, and what it does not.** It changes the verdict from
+"authorized by nothing measured" to "authorized on traffic that resembles a
+locally representative baseline, to a bounded ≈1 wrong mitigation/second at
+100k pkt/s." It does **not** repeal §2.8's calibration finding — the opposite,
+it depends on it. The tight bound holds *because* the scored traffic resembles
+the training baseline; §2.8 showed that when it does not (a structurally
+different capture), the fixed-threshold FPR climbs because the normalization
+reference error does not transfer. The operational rule is therefore
+unchanged and now quantified: **calibrate the model's reference error on the
+deployment's own normal traffic**, confirm the bound on a detection-only
+pilot with `scripts/fpr_large_benign.py` against that traffic, and only then
+enable `autoMitigate`. The residual is honest: this is lab user-plane (ICMP
+through the tunnels), not a production mix of video/web/signaling — a real
+pilot on real traffic is the last confirmation, and the tooling to make it a
+number rather than a hope now exists.

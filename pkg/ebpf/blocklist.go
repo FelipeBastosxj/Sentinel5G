@@ -38,6 +38,71 @@ type BlocklistUpdater interface {
 	Close() error
 }
 
+// DefaultPinPath is the bpffs directory the enforcement maps are pinned
+// into when nothing overrides it (BPF_PIN_PATH, see pkg/config).
+// /sys/fs/bpf is the conventional bpffs mountpoint on every distribution
+// that mounts one at all; the per-project subdirectory keeps these pins
+// distinguishable from any other BPF tooling on the same node.
+//
+// Declared here rather than in pin_linux.go so pkg/config can name it on
+// every platform the module builds on, not only Linux.
+const DefaultPinPath = "/sys/fs/bpf/sentinel5g"
+
+// BlockedTunnel is one entry read back out of the tunnel_blocklist /
+// tunnel_blocklist_v6 maps: the GTP-U tunnel (IP, TEID) the kernel is
+// actually dropping right now.
+type BlockedTunnel struct {
+	IP   net.IP
+	TEID uint32
+}
+
+// BlocklistInspector is implemented by BlocklistUpdaters that can report
+// what the kernel is ACTUALLY enforcing, as opposed to what a
+// TelecomSecurityPolicy's status claims should be enforced.
+//
+// It exists because those two can diverge, and until ROADMAP.md Phase 4
+// nothing noticed when they did. The enforcement maps are process-scoped
+// unless they are pinned (see pin_linux.go), so an operator restart used to
+// drop every active drop while every status subresource went on asserting
+// them — a control that reports itself as on while being off, which is
+// strictly worse than one that is plainly off.
+// pkg/controller.BlocklistReconciler closes that loop: status is the
+// desired state, these methods are the actual one, and the difference is a
+// metric.
+//
+// Like EventSource above, callers should type-assert for this and treat a
+// missing implementation as "no inspection available" rather than an error
+// — the no-op blocklist cmd/operator/main.go falls back to when eBPF is not
+// attached deliberately does not implement it, because it enforces nothing
+// and so has nothing to compare against.
+type BlocklistInspector interface {
+	// BlockedIPs returns every source address currently in the
+	// blocklist/blocklist_v6 maps.
+	BlockedIPs() ([]net.IP, error)
+	// BlockedTunnels returns every (source, TEID) pair currently in the
+	// tunnel_blocklist/tunnel_blocklist_v6 maps.
+	BlockedTunnels() ([]BlockedTunnel, error)
+	// PinPath is the bpffs directory the enforcement maps are pinned into,
+	// or "" when they are not pinned — in which case the drops do NOT
+	// survive this process and a restart is still a silent unblock until
+	// the next reconcile re-applies them.
+	PinPath() string
+	// PinReset reports that an existing but incompatible set of pins had to
+	// be discarded at attach time, i.e. that the kernel started this
+	// process with none of the drops it ended the last one with.
+	PinReset() bool
+	// MapCapacity is max_entries for the two enforcement maps. Both are
+	// plain HASH and refuse inserts when full rather than evicting, so
+	// occupancy against this is the warning before a mitigation starts
+	// failing outright.
+	MapCapacity() (ips, tunnels uint32)
+	// ObservationOccupancy counts live entries in the per-tunnel RATE map
+	// (an LRU) against its capacity. Unlike the enforcement maps, this one
+	// evicts silently when full, so occupancy near capacity is the only
+	// signal that detection is about to start losing rate windows.
+	ObservationOccupancy() (entries, capacity uint32, err error)
+}
+
 // SignalProtocol identifies which signaling protocol a SignalingEvent was
 // classified as, mirroring bpf/headers/common.h's SIGNAL_PROTO_* constants.
 type SignalProtocol uint8

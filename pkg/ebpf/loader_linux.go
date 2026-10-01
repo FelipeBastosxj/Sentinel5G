@@ -55,6 +55,14 @@ type Loader struct {
 	tunnelBlocklistV6 *ebpf.Map
 	signalingEventsV6 *ebpf.Map
 
+	// pinPath is the bpffs directory the enforcement maps are pinned into,
+	// or "" when this Loader created them unpinned (see pin_linux.go's
+	// pinnedMapNames for which maps and why). pinReset records that an
+	// existing, incompatible set of pins had to be discarded to get here —
+	// i.e. that the kernel lost every active drop at attach time.
+	pinPath  string
+	pinReset bool
+
 	// bootTime is wall-clock "now" minus CLOCK_MONOTONIC "now", read once at
 	// attach time, so SignalingEvents can convert the kernel's monotonic
 	// bpf_ktime_get_ns() timestamps into real time.Time values: bootTime +
@@ -63,9 +71,30 @@ type Loader struct {
 	bootTime time.Time
 }
 
+// Options tunes what Attach does beyond loading and attaching.
+type Options struct {
+	// PinPath is a bpffs directory to pin the enforcement maps into, so
+	// their contents — the operator's active drops — outlive this process.
+	// Empty means no pinning, which is what the plain Attach below does:
+	// pinning writes state into the kernel that deliberately survives the
+	// caller, so it is an explicit decision at the call site rather than a
+	// default that benchmarks and privileged tests would inherit by
+	// accident. cmd/operator/main.go passes BPF_PIN_PATH here.
+	//
+	// See pin_linux.go for which maps are pinned, which are not, and why
+	// that split is the same one that decides HASH versus LRU_HASH.
+	PinPath string
+}
+
 // Attach loads the compiled BPF object at objPath and attaches its XDP
-// program to the network interface named iface.
+// program to the network interface named iface, with no map pinning — see
+// Options.PinPath and AttachWithOptions.
 func Attach(objPath, iface string) (*Loader, error) {
+	return AttachWithOptions(objPath, iface, Options{})
+}
+
+// AttachWithOptions is Attach with opts applied.
+func AttachWithOptions(objPath, iface string, opts Options) (*Loader, error) {
 	// Checked first, before touching the kernel at all: a wrong --bpf-interface
 	// is the cheapest of the "four settings that all have to be right"
 	// misconfigurations (see docs/integrations.md) to rule out, and doing so
@@ -81,7 +110,25 @@ func Attach(objPath, iface string) (*Loader, error) {
 		return nil, fmt.Errorf("load bpf collection spec from %q: %w", objPath, err)
 	}
 
-	coll, err := ebpf.NewCollection(spec)
+	var (
+		coll     *ebpf.Collection
+		pinReset bool
+	)
+	if opts.PinPath != "" {
+		// Both of these run before anything is loaded: a pin path on the
+		// wrong filesystem, or an object missing one of the four maps, is
+		// cheaper to diagnose here than as a bpf(BPF_OBJ_PIN) EINVAL after
+		// a successful load.
+		if pinErr := ensurePinDir(opts.PinPath); pinErr != nil {
+			return nil, fmt.Errorf("prepare pin path: %w", pinErr)
+		}
+		if pinErr := markPinnedMaps(spec); pinErr != nil {
+			return nil, fmt.Errorf("prepare pin path %q: %w", opts.PinPath, pinErr)
+		}
+		coll, pinReset, err = newPinnedCollection(spec, opts.PinPath)
+	} else {
+		coll, err = ebpf.NewCollection(spec)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("instantiate bpf collection: %w", err)
 	}
@@ -169,6 +216,11 @@ func Attach(objPath, iface string) (*Loader, error) {
 		return nil, fmt.Errorf("bpf object %q does not export map %q", objPath, signalingEventsV6MapName)
 	}
 
+	if keyErr := verifyEnforcementKeySizes(coll.Maps); keyErr != nil {
+		coll.Close()
+		return nil, keyErr
+	}
+
 	xdpLink, err := link.AttachXDP(link.XDPOptions{
 		Program:   prog,
 		Interface: ifi.Index,
@@ -200,8 +252,31 @@ func Attach(objPath, iface string) (*Loader, error) {
 		tunnelRateV6:      tunnelRateV6,
 		tunnelBlocklistV6: tunnelBlocklistV6,
 		signalingEventsV6: signalingEventsV6,
+		pinPath:           opts.PinPath,
+		pinReset:          pinReset,
 		bootTime:          bootTime,
 	}, nil
+}
+
+// ProgramRunStats returns the XDP program's accumulated execution count and
+// total run time, as the kernel tracks them when BPF run-time statistics are
+// enabled (ebpf.EnableStats / `sysctl kernel.bpf_stats_enabled=1`). Zero
+// values mean stats were never enabled. The run time is the program's OWN
+// on-CPU time, independent of the attach mode (native vs generic XDP), so it
+// is a faithful per-packet CPU cost even on a veth — which is what
+// scripts/loadtest/xdp_saturation uses it for (ROADMAP.md Phase 4's
+// CPU-per-node item). Returns an error only if the program handle can't be
+// queried.
+func (l *Loader) ProgramRunStats() (runCount uint64, runTime time.Duration, err error) {
+	prog, ok := l.collection.Programs[xdpProgramName]
+	if !ok {
+		return 0, 0, fmt.Errorf("xdp program %q not in collection", xdpProgramName)
+	}
+	stats, err := prog.Stats()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read program stats: %w", err)
+	}
+	return stats.RunCount, stats.Runtime, nil
 }
 
 // monotonicToWallClockOffset returns wall-clock "now" minus CLOCK_MONOTONIC
@@ -236,6 +311,16 @@ func (l *Loader) Unblock(ip net.IP) error {
 		return err
 	}
 	if err := m.Delete(key); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			// Already gone is the outcome Unblock is asking for, so it is
+			// not an error. This is not hypothetical politeness: a restart
+			// that lost the maps, or a BlocklistReconciler sync that
+			// already pruned the entry, both leave the policy's status
+			// naming a drop the kernel no longer has — and before this,
+			// de-escalation and finalization would fail on the first such
+			// phantom and never reach the real entries behind it.
+			return nil
+		}
 		return fmt.Errorf("remove %s from blocklist map: %w", ip, err)
 	}
 	return nil
@@ -268,6 +353,9 @@ func (l *Loader) UnblockTunnel(ip net.IP, teid uint32) error {
 		return err
 	}
 	if err := m.Delete(key); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil // Already absent; see Unblock for why that is success.
+		}
 		return fmt.Errorf("remove tunnel %s/%#x from tunnel blocklist map: %w", ip, teid, err)
 	}
 	return nil
@@ -303,7 +391,15 @@ func (l *Loader) blocklistMapAndKey(ip net.IP) (*ebpf.Map, []byte, error) {
 	return l.blocklistV6, key, err
 }
 
-// Close implements BlocklistUpdater.
+// Close implements BlocklistUpdater: detaches the XDP program and releases
+// this process's handles on the collection.
+//
+// It deliberately does NOT unpin. A pinned enforcement map outliving the
+// process is the entire point (see pin_linux.go): between this Close and
+// the next Attach nothing is being filtered, because the program is
+// detached, but the drops themselves are still there and come back into
+// force the moment it re-attaches — rather than being silently forgotten.
+// Use RemovePins to clear them on a real uninstall.
 func (l *Loader) Close() error {
 	var errs []error
 	if err := l.link.Close(); err != nil {
@@ -318,6 +414,18 @@ func (l *Loader) Close() error {
 
 var _ BlocklistUpdater = (*Loader)(nil)
 var _ EventSource = (*Loader)(nil)
+
+// IsMapFull reports whether err is a map-capacity rejection -- a plain HASH
+// (blocklist, tunnel_blocklist) returns E2BIG from the kernel when a new key
+// would exceed max_entries, rather than evicting one. Callers use this to
+// tell "the mitigation map is full" apart from any other write failure, so
+// a full map becomes a counted, alertable condition instead of a generic
+// error (ROADMAP.md Phase 4: a full tunnel_blocklist is a denial of service
+// against the mitigation path). See TestBlocklistIsBoundedAndFailsLoudly
+// WhenFull for the behaviour this keys off.
+func IsMapFull(err error) bool {
+	return errors.Is(err, unix.E2BIG)
+}
 
 // rawSignalingEvent is the byte-exact Go mirror of bpf/packet_filter.c's
 // `struct signaling_event` — field order, sizes, and the trailing 2-byte pad

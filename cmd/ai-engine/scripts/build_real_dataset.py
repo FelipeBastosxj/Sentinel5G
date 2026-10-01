@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -203,59 +204,119 @@ def _kernel_malformed_samples(
     ]
 
 
-def build(real_dataset_dir: Path, seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
+@dataclass
+class CaptureGroup:
+    """One labelled source of events, kept separate from the others so a
+    caller can do capture-independent evaluation (train on some captures,
+    test on a capture the model never saw -- see
+    scripts/baseline_comparison.py). ``build`` below just pools these.
+
+    ``name`` is the capture's own name; ``synthetic`` marks the one group
+    that is not an on-wire capture (the kernel-malformed degenerate vectors),
+    so an evaluator can exclude it from a leave-one-*capture*-out split where
+    "capture" means a real pcap.
+    """
+
+    name: str
+    label: int  # 0 = normal, 1 = anomalous
+    events: list[NormalizedEvent]
+    synthetic: bool = False
+
+    def features(self) -> np.ndarray:
+        return np.asarray([extract_features(e) for e in self.events], dtype=np.float32)
+
+
+def capture_groups(real_dataset_dir: Path, seed: int = 42) -> list[CaptureGroup]:
+    """Builds the per-capture labelled event groups the dataset is pooled
+    from. This is the single definition of which captures feed training and
+    evaluation; ``build`` pools it, and baseline_comparison.py splits on it.
+    """
     # Reproducible sampling (kernel-malformed timestamp jitter), not a security context.
     rng = random.Random(seed)  # nosec B311
 
-    # Every real capture gets its time-of-day spread -- see
-    # events_from_capture's docstring. Applied to the anomalous captures too,
-    # not just normal: there is no evidence about time-of-day for any real
-    # category here, so leaving hour_sin/hour_cos as pure noise for all of
-    # them is the honest encoding, and it is what lets the model learn to
-    # ignore those two features rather than learning a capture schedule.
-    normal_events = events_from_capture(
-        real_dataset_dir / "real_normal.pcap",
-        protocol="GTP-U",
-        dest_port_override=2152,
-        spread_time_of_day=rng,
+    groups: list[CaptureGroup] = []
+
+    groups.append(
+        CaptureGroup(
+            "real_normal",
+            0,
+            events_from_capture(
+                real_dataset_dir / "real_normal.pcap",
+                protocol="GTP-U",
+                dest_port_override=2152,
+                spread_time_of_day=rng,
+            ),
+        )
     )
+
     # The multi-UE baseline from real-dataset-v2/ (four subscribers, four
-    # TEIDs, one gNB source IP) joins the normal set so "normal" is no longer
-    # defined by a single tunnel's shape. See real-dataset-v2/README.md.
+    # TEIDs, one gNB source IP) is a SEPARATE normal capture, so "normal" is
+    # no longer defined by a single tunnel's shape -- and so an evaluator can
+    # hold it out whole. See real-dataset-v2/README.md.
     v2_dir = real_dataset_dir.parent / "real-dataset-v2"
     if (v2_dir / "multi_ue_normal.pcap").exists():
-        normal_events += events_from_capture(
-            v2_dir / "multi_ue_normal.pcap",
-            protocol="GTP-U",
-            dest_port_override=2152,
-            spread_time_of_day=rng,
+        groups.append(
+            CaptureGroup(
+                "multi_ue_normal",
+                0,
+                events_from_capture(
+                    v2_dir / "multi_ue_normal.pcap",
+                    protocol="GTP-U",
+                    dest_port_override=2152,
+                    spread_time_of_day=rng,
+                ),
+            )
         )
 
-    anomalous_events: list[NormalizedEvent] = []
-    anomalous_events += events_from_capture(
-        real_dataset_dir / "real_storm_pingflood.pcap",
-        protocol="GTP-U",
-        dest_port_override=2152,
-        spread_time_of_day=rng,
+    groups.append(
+        CaptureGroup(
+            "real_storm_pingflood",
+            1,
+            events_from_capture(
+                real_dataset_dir / "real_storm_pingflood.pcap",
+                protocol="GTP-U",
+                dest_port_override=2152,
+                spread_time_of_day=rng,
+            ),
+        )
     )
-    anomalous_events += events_from_capture(
-        real_dataset_dir / "real_storm_udpflood.pcap",
-        protocol="GTP-U",
-        dest_port_override=2152,
-        spread_time_of_day=rng,
+    groups.append(
+        CaptureGroup(
+            "real_storm_udpflood",
+            1,
+            events_from_capture(
+                real_dataset_dir / "real_storm_udpflood.pcap",
+                protocol="GTP-U",
+                dest_port_override=2152,
+                spread_time_of_day=rng,
+            ),
+        )
     )
-    anomalous_events += events_from_capture(
-        real_dataset_dir / "real_malformed.pcap",
-        protocol="GTP-U",
-        dest_port_override=2152,
-        spread_time_of_day=rng,
+    groups.append(
+        CaptureGroup(
+            "real_malformed",
+            1,
+            events_from_capture(
+                real_dataset_dir / "real_malformed.pcap",
+                protocol="GTP-U",
+                dest_port_override=2152,
+                spread_time_of_day=rng,
+            ),
+        )
     )
-    anomalous_events += events_from_capture(
-        real_dataset_dir / "real_scan.pcap",
-        protocol="UNKNOWN",
-        dest_port_override=None,  # keep each packet's real (random) dest port
-        spread_time_of_day=rng,
+    groups.append(
+        CaptureGroup(
+            "real_scan",
+            1,
+            events_from_capture(
+                real_dataset_dir / "real_scan.pcap",
+                protocol="UNKNOWN",
+                dest_port_override=None,  # keep each packet's real (random) dest port
+                spread_time_of_day=rng,
+            ),
+        )
     )
+
     if (v2_dir / "multi_ue_one_flooding.pcap").exists():
         # Three of the four tunnels in this capture are behaving normally --
         # that is the entire point of the scenario -- so only the flooding
@@ -273,15 +334,35 @@ def build(real_dataset_dir: Path, seed: int = 42) -> tuple[np.ndarray, np.ndarra
         for e in flooding:
             counts[e.teid] = counts.get(e.teid, 0) + 1
         flooding_teid = max(counts, key=counts.get)
-        anomalous_events += [e for e in flooding if e.teid == flooding_teid]
+        groups.append(
+            CaptureGroup(
+                "multi_ue_one_flooding",
+                1,
+                [e for e in flooding if e.teid == flooding_teid],
+            )
+        )
 
-    all_ts = [e.observed_at for e in normal_events + anomalous_events]
+    all_ts = [e.observed_at for g in groups for e in g.events]
+    anomalous_so_far = sum(len(g.events) for g in groups if g.label == 1)
     kernel_malformed_count = max(
-        1, len(anomalous_events) // 20
+        1, anomalous_so_far // 20
     )  # order-of-magnitude-matched, not dominant
-    anomalous_events += _kernel_malformed_samples(
-        rng, kernel_malformed_count, (min(all_ts), max(all_ts))
+    groups.append(
+        CaptureGroup(
+            "kernel_malformed",
+            1,
+            _kernel_malformed_samples(rng, kernel_malformed_count, (min(all_ts), max(all_ts))),
+            synthetic=True,
+        )
     )
+
+    return groups
+
+
+def build(real_dataset_dir: Path, seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
+    groups = capture_groups(real_dataset_dir, seed)
+    normal_events = [e for g in groups if g.label == 0 for e in g.events]
+    anomalous_events = [e for g in groups if g.label == 1 for e in g.events]
 
     normal = np.asarray([extract_features(e) for e in normal_events], dtype=np.float32)
     anomalous = np.asarray([extract_features(e) for e in anomalous_events], dtype=np.float32)

@@ -44,11 +44,31 @@ type Publisher struct {
 	// Nil disables it, the same convention Blocklist/Mesh use elsewhere.
 	TunnelFlood *detect.GTPUFloodDetector
 
-	// ThreatsSubject is where TunnelFlood's scores are published -- the same
+	// SourceFlood is the per-PEER counterpart of TunnelFlood: the same
+	// inline, non-leader-gated placement, catching the aggregate a
+	// per-tunnel threshold structurally cannot see (ROADMAP.md Phase 4's
+	// evasion item). Nil disables it.
+	SourceFlood *detect.GTPUSourceFloodDetector
+
+	// ThreatsSubject is where TunnelFlood's and SourceFlood's scores are
+	// published -- the same
 	// subject the AI engine publishes to, consumed by the same
 	// pkg/controller.ThreatScoreWatcher, so a rule-sourced score is subject
 	// to identical policy/sensitivity/autoMitigate gating.
 	ThreatsSubject string
+
+	// BatchSize coalesces up to this many NormalizedEvents into one NATS
+	// message instead of publishing one per packet -- the bus is the
+	// design's first throughput ceiling, not eBPF (ROADMAP.md Phase 4). 0 or
+	// 1 publishes per event (the pre-batching behaviour). The inline
+	// detectors below are NOT batched: they run per event the moment it
+	// arrives, so batching the telemetry publish never delays detection.
+	BatchSize int
+
+	// FlushInterval bounds how long a partial batch waits before it is
+	// published anyway, so a quiet period does not strand events in the
+	// buffer. Ignored when BatchSize <= 1.
+	FlushInterval time.Duration
 
 	// Now returns the current time; nil uses time.Now. Overridden in tests.
 	Now func() time.Time
@@ -72,10 +92,22 @@ func (p *Publisher) Start(ctx context.Context) error {
 		return fmt.Errorf("start signaling event stream: %w", err)
 	}
 
+	// The flush timer only matters when batching; with batching off it is
+	// created but never consulted (batch is flushed inline below).
+	flushEvery := p.FlushInterval
+	if flushEvery <= 0 {
+		flushEvery = time.Second
+	}
+	ticker := time.NewTicker(flushEvery)
+	defer ticker.Stop()
+
+	batch := make([]events.NormalizedEvent, 0, p.batchCap())
+
 	for {
 		select {
 		case evt, ok := <-stream:
 			if !ok {
+				p.flush(&batch) // publish whatever is buffered before exiting
 				return nil
 			}
 			bus, connected := p.Bus.Bus()
@@ -85,33 +117,108 @@ func (p *Publisher) Start(ctx context.Context) error {
 				continue
 			}
 			normalized := FromSignalingEvent(evt, p.PodIndex, p.Source.SignalRate, p.NodeName)
-			if err := bus.PublishNormalizedEvent(p.Subject, normalized); err != nil {
-				p.Log.Error(err, "failed to publish normalized event",
-					"sourceIp", normalized.SourceIP, "destPort", normalized.DestPort)
-			}
 
-			// Published regardless of whether the NormalizedEvent above
-			// succeeded: the two are independent statements, and losing a
-			// real mitigation signal because a telemetry publish failed would
-			// be the wrong trade.
-			if p.TunnelFlood == nil {
+			// Detectors run per event, immediately, BEFORE any batching, so a
+			// flood is acted on the instant its packet arrives rather than
+			// when a telemetry batch happens to flush. Both see every event
+			// and neither short-circuits the other: they answer different
+			// questions (is THIS tunnel flooding / is this PEER abusive in
+			// aggregate), and a flood that trips both produces one score of
+			// each, scoped differently.
+			now := p.now()
+			p.evaluateTunnelFlood(bus, normalized, now)
+			p.evaluateSourceFlood(bus, normalized, now)
+
+			// Telemetry publish: batched (the bus ceiling), or per-event when
+			// batching is off.
+			if p.batchCap() <= 1 {
+				if err := bus.PublishNormalizedEvent(p.Subject, normalized); err != nil {
+					p.Log.Error(err, "failed to publish normalized event",
+						"sourceIp", normalized.SourceIP, "destPort", normalized.DestPort)
+				}
 				continue
 			}
-			score, fired := p.TunnelFlood.Evaluate(normalized, p.now())
-			if !fired {
-				continue
+			batch = append(batch, normalized)
+			if len(batch) >= p.batchCap() {
+				p.flush(&batch)
 			}
-			p.Log.Info("gtpu tunnel flood detected",
-				"sourceIp", normalized.SourceIP, "teid", normalized.TEID,
-				"tunnelRatePerSecond", normalized.TunnelRatePerSecond)
-			if err := bus.PublishThreatScore(p.ThreatsSubject, score); err != nil {
-				p.Log.Error(err, "failed to publish tunnel flood threat score",
-					"sourceIp", normalized.SourceIP, "teid", normalized.TEID)
-			}
+		case <-ticker.C:
+			p.flush(&batch)
 		case <-ctx.Done():
+			p.flush(&batch)
 			return nil
 		}
 	}
+}
+
+// evaluateTunnelFlood runs the per-tunnel rule and publishes its score.
+func (p *Publisher) evaluateTunnelFlood(bus *events.Bus, normalized events.NormalizedEvent, now time.Time) {
+	if p.TunnelFlood == nil {
+		return
+	}
+	score, fired := p.TunnelFlood.Evaluate(normalized, now)
+	if !fired {
+		return
+	}
+	p.Log.Info("gtpu tunnel flood detected",
+		"sourceIp", normalized.SourceIP, "teid", normalized.TEID,
+		"tunnelRatePerSecond", normalized.TunnelRatePerSecond)
+	if err := bus.PublishThreatScore(p.ThreatsSubject, score); err != nil {
+		p.Log.Error(err, "failed to publish tunnel flood threat score",
+			"sourceIp", normalized.SourceIP, "teid", normalized.TEID)
+	}
+}
+
+// evaluateSourceFlood runs the per-peer rule and publishes its score. The
+// log line carries both counts because the verdict is source-wide and the
+// action an operator takes on it drops every subscriber behind that peer --
+// "which half fired, and by how much" is the minimum needed to justify
+// that.
+func (p *Publisher) evaluateSourceFlood(bus *events.Bus, normalized events.NormalizedEvent, now time.Time) {
+	if p.SourceFlood == nil {
+		return
+	}
+	score, observed, fired := p.SourceFlood.Evaluate(normalized, now)
+	if !fired {
+		return
+	}
+	p.Log.Info("gtpu source flood detected (aggregate across tunnels)",
+		"sourceIp", normalized.SourceIP,
+		"packetsInWindow", observed.PacketsInWindow,
+		"distinctTunnels", observed.DistinctTunnels)
+	if err := bus.PublishThreatScore(p.ThreatsSubject, score); err != nil {
+		p.Log.Error(err, "failed to publish source flood threat score",
+			"sourceIp", normalized.SourceIP)
+	}
+}
+
+// batchCap is the effective batch size (0/1 both mean "no batching").
+func (p *Publisher) batchCap() int {
+	if p.BatchSize < 1 {
+		return 1
+	}
+	return p.BatchSize
+}
+
+// flush publishes the buffered events as one batch message and resets the
+// buffer. A publish failure is logged, not retried: the events are telemetry
+// for the ML path, the inline detectors already acted on anything urgent, and
+// a bounded kernel ring buffer left undrained waiting on a retry is worse
+// than dropping a telemetry batch (the same trade PublishNormalizedEvent's
+// error handling already makes).
+func (p *Publisher) flush(batch *[]events.NormalizedEvent) {
+	if len(*batch) == 0 {
+		return
+	}
+	bus, connected := p.Bus.Bus()
+	if connected {
+		if err := bus.PublishNormalizedEventBatch(p.Subject, *batch); err != nil {
+			p.Log.Error(err, "failed to publish normalized event batch", "events", len(*batch))
+		}
+	} else {
+		p.Log.V(1).Info("dropping normalized event batch: NATS not connected", "events", len(*batch))
+	}
+	*batch = (*batch)[:0]
 }
 
 // NeedLeaderElection implements manager.LeaderElectionRunnable. Publisher

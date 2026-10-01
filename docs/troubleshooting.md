@@ -334,11 +334,102 @@ blocklist map: update: key too big for map`, and
 **Cause:** the map is full (16,384 tunnels, `MAX_TUNNEL_BLOCKLIST_ENTRIES`).
 It is a plain HASH rather than an LRU on purpose — evicting an
 operator-owned drop to make room would un-block traffic nobody asked to
-un-block — so a full map refuses loudly instead. Either de-escalation isn't
-running (check `DE_ESCALATION_DWELL` and that policies are reaching
-`Monitoring` again), or you genuinely have more concurrent blocked
-subscribers than the map holds, in which case rebuild the object with a
-larger `MAX_TUNNEL_BLOCKLIST_ENTRIES`.
+un-block — so a full map refuses loudly instead. Each refusal increments
+`sentinel5g_mitigation_map_full_total{kind="tunnel_blocklist"}`, so this is
+alertable rather than buried in a generic error count.
+
+**Defined operational response**, in order:
+
+1. Confirm it is real over-capacity and not a leak: compare
+   `sentinel5g_blocklist_entries{kind="tunnel",state="kernel"}` against
+   `sentinel5g_blocklist_capacity{kind="tunnel"}`. If occupancy is near
+   capacity *and* de-escalation is running (policies returning to
+   `Monitoring`, `DE_ESCALATION_DWELL` sane), it is genuine load.
+2. If it is an **attack** — a source generating distinct TEIDs to exhaust
+   the map — the per-peer source-flood detector (`gtpuSourceFlood`,
+   `distinctTunnels`) is what catches the cardinality that causes this, and
+   a single source-wide `actions.ebpfBlock` on that peer reclaims every
+   slot its forged tunnels took. That is the intended answer, and it is why
+   the cardinality detector exists.
+3. If it is genuine subscriber count, rebuild the object with a larger
+   `MAX_TUNNEL_BLOCKLIST_ENTRIES` (note: changing a map's `max_entries`
+   resets the pins — expect an `EBPFPinsReset` Event and a drift re-apply,
+   see above).
+
+The same counter with `kind="blocklist"` is the source-IP map's equivalent;
+its `MAX_BLOCKLIST_ENTRIES` is 65,536.
+
+To see it coming rather than meeting it, watch occupancy against capacity:
+`sentinel5g_blocklist_entries{kind="tunnel",state="kernel"}` over
+`sentinel5g_blocklist_capacity{kind="tunnel"}` (docs/observability.md).
+Note that rebuilding with a different `max_entries` makes the existing pins
+unusable — see `EBPFPinsReset` below.
+
+## An operator restart un-blocked everything (`EBPFPinUnavailable`)
+
+**Symptom:** after a `helm upgrade`, a node drain or an OOM kill, traffic
+from a source the policy still lists in `status.blockedSourceIPs` is
+flowing again. The policy still reads `Phase: Mitigating`.
+
+**Cause:** the enforcement maps are not pinned on that node, so they died
+with the previous process. `Loader.Close()` detaches the XDP program and
+the whole collection goes with it. Confirm with:
+
+```sh
+kubectl -n sentinel5g-system exec deploy/sentinel5g-operator -- \
+  wget -qO- localhost:8080/metrics | grep enforcement_pinned
+# sentinel5g_ebpf_enforcement_pinned 0
+kubectl -n sentinel5g-system describe pod -l app.kubernetes.io/name=sentinel5g-operator | grep -A3 EBPFPin
+```
+
+**Fix:** pinning needs a bpffs mounted into the Pod. Set `ebpf.pinPath`
+(default `/sys/fs/bpf/sentinel5g`) with `ebpf.enabled: true` and the chart
+adds the `hostPath` mount for its parent directory. On the node itself,
+`/sys/fs/bpf` must actually be a bpffs:
+
+```sh
+mount | grep /sys/fs/bpf
+# bpf on /sys/fs/bpf type bpf (rw,nosuid,nodev,noexec,relatime,mode=700)
+mount -t bpf bpffs /sys/fs/bpf   # if it is missing
+```
+
+Note the operator does **not** fail to start over this: it falls back to an
+unpinned attach, because losing XDP entirely over a mount problem would be
+worse than losing restart survival. The periodic kernel-vs-status
+reconciliation re-applies the drops within `BLOCKLIST_RECONCILE_INTERVAL`
+of the restart either way, and the startup sync runs before the first tick
+— pinning is what makes them correct *during* that gap rather than from the
+first sync onwards. `sentinel5g_blocklist_drift_total{direction="missing"}`
+is the count of entries that had to be put back.
+
+## `EBPFPinsReset`: an upgrade discarded the pinned maps
+
+**Symptom:** a warning Event saying the pinned enforcement maps were
+incompatible with this build and were recreated empty.
+
+**Cause:** the new `bpf/packet_filter.o` changed a key, a value or
+`max_entries` on one of the four enforcement maps (e.g. a rebuild with a
+larger `MAX_TUNNEL_BLOCKLIST_ENTRIES`, per the section above). The kernel
+cannot reuse a pinned map whose definition no longer matches, so there is
+no outcome that preserves the drops. The operator picks the least-bad one:
+it removes the stale pins, recreates the maps empty, and says so rather
+than refusing to attach — which would leave the node with no enforcement at
+all. The reconciliation immediately after re-applies whatever the policies'
+status still claims.
+
+Nothing to fix, but the window is real: expect a matching spike in
+`sentinel5g_blocklist_drift_total{direction="missing"}` at that moment.
+
+To clear the pins deliberately — a real uninstall, or starting from a known
+empty state:
+
+```sh
+ls /sys/fs/bpf/sentinel5g          # blocklist blocklist_v6 tunnel_blocklist tunnel_blocklist_v6
+rm /sys/fs/bpf/sentinel5g/*        # the NEXT attach then starts empty
+```
+
+Removing a pin does not by itself undo anything while a loaded program
+still holds the map; it only decides what the next attach inherits.
 
 ## GitHub Codespaces specifics
 

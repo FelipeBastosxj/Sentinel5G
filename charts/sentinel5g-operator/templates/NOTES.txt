@@ -29,6 +29,35 @@ isolation, but neither drop reaches the XDP layer until you set
 ebpf.enabled=true (the chart then adds ebpf.capabilities -- CAP_BPF +
 CAP_NET_ADMIN by default; override on pre-5.8 kernels). See docs/integrations.md.
 {{- end }}
+{{- if and .Values.ebpf.enabled (not .Values.ebpf.pinPath) }}
+
+NOTE: ebpf.pinPath is empty, so the enforcement maps are NOT pinned to
+bpffs. Every active drop is lost whenever this Pod restarts (a helm
+upgrade, an OOM kill, a node drain), while each policy's status goes on
+claiming the blocks are in force. The operator re-applies them from status
+within config.blocklistReconcileInterval ({{ .Values.config.blocklistReconcileInterval }}),
+and once at startup, so the gap is bounded -- but it is a real gap. Watch
+sentinel5g_ebpf_enforcement_pinned and sentinel5g_blocklist_drift_total
+(docs/observability.md).
+{{- end }}
+{{- if and .Values.ebpf.enabled .Values.ebpf.pinPath }}
+
+NOTE: the enforcement maps are pinned at {{ .Values.ebpf.pinPath }}, which
+requires {{ dir .Values.ebpf.pinPath }} to be a bpf filesystem on every node
+this runs on (`mount | grep /sys/fs/bpf`). If it is not, the Pod will fail
+to schedule on the hostPath, or -- where the path exists but is not bpffs --
+the operator attaches UNPINNED and records an EBPFPinUnavailable warning
+Event rather than giving up enforcement entirely. Confirm with
+`kubectl exec deploy/{{ include "sentinel5g-operator.fullname" . }} -- wget -qO- localhost:8080/metrics | grep enforcement_pinned`.
+{{- end }}
+
+{{- if .Values.config.killSwitch.enabled }}
+
+Global mitigation kill switch: ENABLED. To stop ALL mitigation across every
+policy at once (detection keeps running), with no operator restart:
+  kubectl -n {{ .Release.Namespace }} create configmap {{ .Values.config.killSwitch.configMapName }} --from-literal=engaged=true
+Resume by deleting that ConfigMap. Watch sentinel5g_kill_switch_engaged.
+{{- end }}
 
 GTP-U tunnel-flood detector (pkg/detect): {{ if .Values.config.gtpuTunnelFlood.enabled }}on, {{ .Values.config.gtpuTunnelFlood.packetsPerSecond }} pkt/s per tunnel -- a reasoned default, not one measured on your N3; tune it from a detection-only pilot (docs/production-install.md){{ else }}off{{ end }}.
 {{- if .Values.nats.allowUnauthenticated }}

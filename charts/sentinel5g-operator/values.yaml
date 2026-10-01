@@ -49,6 +49,21 @@ ebpf:
   # ebpf.enabled: true -- easy to flip the feature "on" and still get a
   # silent no-op from a missing capability.
   capabilities: ["BPF", "NET_ADMIN"]
+  # bpffs directory the ENFORCEMENT maps (blocklist, blocklist_v6,
+  # tunnel_blocklist, tunnel_blocklist_v6) are pinned into, so an active
+  # drop outlives the operator process. Without it, a `helm upgrade`, an
+  # OOM kill or a crash detaches the XDP program and takes every mitigation
+  # with it, while each policy's status goes on asserting blocks that are no
+  # longer in force -- the control reporting itself as on while being off
+  # (ROADMAP.md Phase 4). Its PARENT directory is mounted from the node as a
+  # hostPath (see templates/deployment.yaml), which is why this is a path
+  # and not a boolean.
+  #
+  # Set to "" to disable pinning and the hostPath mount. The periodic
+  # kernel-vs-status reconciliation below still repairs the maps after a
+  # restart; pinning is what makes the drops correct DURING the gap rather
+  # than from the next sync onwards.
+  pinPath: /sys/fs/bpf/sentinel5g
 
 securityContext:
   allowPrivilegeEscalation: false
@@ -80,6 +95,58 @@ config:
   # operator starts saying it hasn't seen a score.
   scoringPipelineGrace: 10m
 
+  # NATS event batching. Coalesces up to batchSize NormalizedEvents into one
+  # JetStream message instead of one per packet -- the bus is the design's
+  # first throughput ceiling, not eBPF (ROADMAP.md Phase 4), and a batch of N
+  # cuts the message rate by N. The inline flood detectors are NOT batched;
+  # they act per packet regardless, so batching never delays detection, only
+  # the ML telemetry.
+  #
+  # Off by default (batchSize: 1): it is a wire-behaviour change the AI engine
+  # consumer must understand, which it does on any current build. Enable it
+  # AFTER the AI engine is on a current build, by raising batchSize. A partial
+  # batch is flushed after flushInterval so events never strand in a quiet
+  # period.
+  eventBatching:
+    batchSize: 1
+    flushInterval: 250ms
+
+  # Reactor rate limit. Bounds how fast the operator issues NON-meaningful
+  # status refreshes per policy -- the ObservedThreatScore-only writes a
+  # score storm produces (one ML score per packet, at-least-once delivery).
+  # Meaningful writes (phase transitions, blocklist changes) are NEVER
+  # throttled, so no decision is ever lost; this only protects the API server
+  # from refresh pressure. statusWritesPerSecond: 0 disables it. Visible as
+  # sentinel5g_reactor_status_writes_throttled_total.
+  reactor:
+    statusWritesPerSecond: 10
+    statusWriteBurst: 20
+
+  # Global mitigation kill switch. When enabled, the operator polls a
+  # ConfigMap (killSwitch.configMapName, in the release namespace) and, while
+  # that ConfigMap has data engaged=true, withholds EVERY mitigation across
+  # EVERY policy -- detection continues (scores, crossings, Alerting phase),
+  # nothing is blocked or quarantined. It is the one lever for an operator
+  # watching a mitigation go wrong across many policies at once, and it takes
+  # effect within killSwitch.pollInterval with no operator restart:
+  #   kubectl -n <release-ns> create configmap sentinel5g-killswitch   #     --from-literal=engaged=true     # stop now
+  #   kubectl -n <release-ns> delete configmap sentinel5g-killswitch   # resume
+  # A tight get-by-name Role (templates/killswitch-rbac.yaml) is created for
+  # it; set enabled=false to add neither the poll nor the RBAC.
+  killSwitch:
+    enabled: true
+    configMapName: sentinel5g-killswitch
+    pollInterval: 2s
+
+  # How often the operator compares the eBPF enforcement maps against what
+  # the TelecomSecurityPolicy status subresources say should be enforced,
+  # re-applying the difference and exporting it as
+  # sentinel5g_blocklist_drift_total. A sync always runs once at startup
+  # regardless of this value -- that is the restart replay -- so this only
+  # sets the periodic cadence. Set to a negative duration (e.g. -1s) to keep
+  # only the startup sync.
+  blocklistReconcileInterval: 1m
+
   # Deterministic (non-ML) GTP-U tunnel-flood detector (pkg/detect). Closes
   # ROADMAP.md Phase 2.5's in-tunnel-flood gap, which the autoencoder
   # provably cannot: a real in-tunnel flood reconstructs BETTER than normal
@@ -100,6 +167,35 @@ config:
     # chart value: set actions.ebpfBlockTunnel: true on the
     # TelecomSecurityPolicy to drop that one tunnel instead of the whole
     # source IP. Needs ebpf.enabled above, like any other drop.
+
+  # Deterministic GTP-U source-flood detector (pkg/detect), the per-PEER
+  # counterpart to gtpuTunnelFlood above. It exists because a per-tunnel
+  # threshold is structurally blind to a flood spread thinly across many
+  # TEIDs -- 200 tunnels at 999 pkt/s each is ~200,000 pkt/s from one peer
+  # and crosses the per-tunnel threshold zero times (ROADMAP.md Phase 4).
+  # Neither threshold can be set to do the other's job, which is why there
+  # are two. Publishes model "rule:gtpu-source-flood" with NO TEID, so the
+  # fitting action is actions.ebpfBlock (source-wide) -- a policy set only
+  # for ebpfBlockTunnel counts a no_teid no-op, because there is no single
+  # tunnel whose removal fixes an aggregate flood.
+  gtpuSourceFlood:
+    enabled: true
+    # AGGREGATE packets/second from one source across every tunnel. NOT
+    # validated against a production N3, and more consequential than the
+    # per-tunnel number because the matching action drops every subscriber
+    # behind the peer -- pilot in detection-only mode first (see
+    # docs/production-install.md). Set to 0 to use cardinality alone.
+    packetsPerSecond: 20000
+    # Distinct TEIDs one source may use within the window before being
+    # reported regardless of rate -- the shape of TEID rotation/spoofing,
+    # which a real gNB (bearers turning over slowly) does not produce. Set
+    # to 0 to use the rate alone. Both 0 is refused at startup.
+    distinctTunnels: 256
+    # Measurement window for both thresholds; 1s matches the kernel's own
+    # rate window so the numbers are in the same units.
+    window: 1s
+    # Minimum interval between events for one source.
+    cooldown: 30s
 
 nats:
   # Set to the URL of an existing NATS JetStream deployment. This chart does

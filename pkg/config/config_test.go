@@ -1,8 +1,11 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
+
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 )
 
 // clearNATSAuthEnv resets every env var natsHasCredentials/Load consult, so
@@ -133,5 +136,182 @@ func TestLoad_RejectsAnOutOfRangeTunnelFloodThreshold(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to reject a GTPU_TUNNEL_FLOOD_PPS above uint32")
+	}
+}
+
+// unsetEnv removes key for the duration of the test and restores whatever
+// the developer's shell had afterwards.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	if old, ok := os.LookupEnv(key); ok {
+		t.Cleanup(func() { _ = os.Setenv(key, old) })
+	}
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+}
+
+// Pinning is on by default, because the alternative is a restart that
+// silently un-blocks every active mitigation -- the same fail-open the
+// enforcement maps' HASH-not-LRU choice exists to prevent, arriving through
+// the back door (ROADMAP.md Phase 4).
+func TestLoad_PinsEnforcementMapsByDefault(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	// Unset, not set-to-empty: empty is a MEANING for this variable
+	// ("disable pinning"), so t.Setenv(key, "") would assert the opposite of
+	// what this test is about.
+	unsetEnv(t, "BPF_PIN_PATH")
+	unsetEnv(t, "BLOCKLIST_RECONCILE_INTERVAL")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BPFPinPath != ebpf.DefaultPinPath {
+		t.Errorf("BPFPinPath = %q, want %q", cfg.BPFPinPath, ebpf.DefaultPinPath)
+	}
+	if cfg.BlocklistReconcileInterval != time.Minute {
+		t.Errorf("BlocklistReconcileInterval = %v, want 1m", cfg.BlocklistReconcileInterval)
+	}
+}
+
+// The documented way to turn pinning off is BPF_PIN_PATH="". getEnv treats
+// an empty value as "unset" and would hand back the default, which would
+// make the documented opt-out silently an opt-in -- hence
+// getEnvAllowEmpty, and hence this test.
+func TestLoad_EmptyPinPathDisablesPinning(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("BPF_PIN_PATH", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BPFPinPath != "" {
+		t.Errorf("BPF_PIN_PATH=\"\" left BPFPinPath = %q; pinning would still be on", cfg.BPFPinPath)
+	}
+}
+
+// A negative interval is the documented way to keep only the startup
+// replay, so it must survive Load rather than being normalized away.
+func TestLoad_NegativeReconcileIntervalIsPreserved(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("BLOCKLIST_RECONCILE_INTERVAL", "-1s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BlocklistReconcileInterval != -time.Second {
+		t.Errorf("BlocklistReconcileInterval = %v, want -1s", cfg.BlocklistReconcileInterval)
+	}
+}
+
+// The per-peer detector is the counterpart to the per-tunnel one, on by
+// default for the same reason: the evasion it closes (a flood spread across
+// many TEIDs) is free to attempt, and a detector shipped off closes
+// nothing (ROADMAP.md Phase 4).
+func TestLoad_SourceFloodDefaults(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.GTPUSourceFloodEnabled {
+		t.Error("expected the source flood detector on by default")
+	}
+	if cfg.GTPUSourceFloodPPS != 20000 {
+		t.Errorf("GTPUSourceFloodPPS = %d, want 20000", cfg.GTPUSourceFloodPPS)
+	}
+	if cfg.GTPUSourceFloodDistinctTunnels != 256 {
+		t.Errorf("GTPUSourceFloodDistinctTunnels = %d, want 256", cfg.GTPUSourceFloodDistinctTunnels)
+	}
+	if cfg.GTPUSourceFloodWindow != time.Second {
+		t.Errorf("GTPUSourceFloodWindow = %v, want 1s", cfg.GTPUSourceFloodWindow)
+	}
+}
+
+// Both thresholds at zero is a detector that is "enabled" and can never
+// fire -- a configuration that looks protective and is not. Refused loudly,
+// matching the GTPU_TUNNEL_FLOOD_PPS==0 rule.
+func TestLoad_RejectsAnInertSourceFloodDetector(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_SOURCE_FLOOD_PPS", "0")
+	t.Setenv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", "0")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to reject a source flood detector with both thresholds at 0")
+	}
+}
+
+// One half alone is a valid configuration -- cardinality-only catches TEID
+// rotation at rates an aggregate threshold would never see.
+func TestLoad_SourceFloodCardinalityOnlyIsValid(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_SOURCE_FLOOD_PPS", "0")
+	t.Setenv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", "128")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.GTPUSourceFloodPPS != 0 || cfg.GTPUSourceFloodDistinctTunnels != 128 {
+		t.Fatalf("unexpected thresholds: pps=%d distinct=%d", cfg.GTPUSourceFloodPPS, cfg.GTPUSourceFloodDistinctTunnels)
+	}
+}
+
+// A negative count is nonsense for a >= comparison (it would mean "fires on
+// every packet") and must fail loudly rather than being coerced.
+func TestLoad_RejectsNegativeDistinctTunnels(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", "-1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to reject a negative GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS")
+	}
+}
+
+// The kill switch defaults on (name set), reads its namespace from
+// POD_NAMESPACE, and is disabled by an empty name.
+func TestLoad_KillSwitchDefaults(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("POD_NAMESPACE", "sentinel5g-system")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KillSwitchConfigMapName != "sentinel5g-killswitch" {
+		t.Errorf("KillSwitchConfigMapName = %q", cfg.KillSwitchConfigMapName)
+	}
+	if cfg.KillSwitchNamespace != "sentinel5g-system" {
+		t.Errorf("KillSwitchNamespace = %q, want it from POD_NAMESPACE", cfg.KillSwitchNamespace)
+	}
+	if cfg.KillSwitchPollInterval != 2*time.Second {
+		t.Errorf("KillSwitchPollInterval = %v, want 2s", cfg.KillSwitchPollInterval)
+	}
+}
+
+func TestLoad_KillSwitchDisabledByEmptyName(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("KILL_SWITCH_CONFIGMAP_NAME", "")
+	t.Setenv("POD_NAMESPACE", "sentinel5g-system")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KillSwitchConfigMapName != "" {
+		t.Errorf("KillSwitchConfigMapName = %q, want empty (disabled)", cfg.KillSwitchConfigMapName)
 	}
 }

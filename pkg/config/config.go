@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 )
 
 // OperatorConfig holds the operator's runtime configuration.
@@ -98,6 +100,105 @@ type OperatorConfig struct {
 	// publish thousands of identical scores per second.
 	GTPUTunnelFloodCooldown time.Duration
 
+	// GTPUSourceFloodEnabled turns on the per-PEER aggregate detector
+	// (pkg/detect.GTPUSourceFloodDetector). It is the counterpart to the
+	// per-tunnel rule above, not a replacement: a per-tunnel threshold is
+	// structurally blind to 200 tunnels at 999 pkt/s each, and a per-source
+	// one is structurally blind to one subscriber flooding behind a busy
+	// gNB. Neither threshold can be set to do the other's job, which is why
+	// there are two (ROADMAP.md Phase 4).
+	GTPUSourceFloodEnabled bool
+
+	// GTPUSourceFloodPPS is the AGGREGATE packets-per-second from one source
+	// address across every tunnel it carries. Reasoned, not measured against
+	// a production N3 -- the same caveat GTPUTunnelFloodPPS carries, and a
+	// more consequential one here, because the action that fits a per-peer
+	// verdict is the source-wide drop that takes every subscriber behind
+	// that gNB with it. Run a detection-only pilot and read
+	// sentinel5g_threshold_crossings_total before enabling autoMitigate on
+	// a policy that can act on this.
+	GTPUSourceFloodPPS uint32
+
+	// GTPUSourceFloodDistinctTunnels is how many distinct TEIDs one source
+	// may use within the window before being reported regardless of rate.
+	// A real gNB's TEID set is bounded by its active bearers and turns over
+	// slowly; rapid rotation is the shape of TEID spoofing. Zero disables
+	// this half of the rule.
+	GTPUSourceFloodDistinctTunnels int
+
+	// GTPUSourceFloodWindow is the measurement window for both thresholds
+	// above. Defaults to 1s, matching the kernel's own rate window so the
+	// numbers are in the same units.
+	GTPUSourceFloodWindow time.Duration
+
+	// GTPUSourceFloodCooldown is the minimum interval between events for one
+	// source -- same cost control as GTPUTunnelFloodCooldown.
+	GTPUSourceFloodCooldown time.Duration
+
+	// NATSEventBatchSize coalesces up to this many NormalizedEvents into one
+	// JetStream message instead of one per packet. The bus is the design's
+	// first throughput ceiling (ROADMAP.md Phase 4), and a batch of N cuts
+	// the message rate by N. 0 or 1 publishes per event. Off by default: it
+	// is a wire-behaviour change the AI engine consumer must understand
+	// first (it does, for any value), so enable it after both sides are on a
+	// current build. The inline flood detectors are never batched -- they act
+	// per packet regardless.
+	NATSEventBatchSize int
+
+	// NATSEventFlushInterval bounds how long a partial batch waits before it
+	// is published anyway. Ignored when NATSEventBatchSize <= 1.
+	NATSEventFlushInterval time.Duration
+
+	// BPFPinPath is the bpffs directory the eBPF ENFORCEMENT maps
+	// (blocklist, blocklist_v6, tunnel_blocklist, tunnel_blocklist_v6) are
+	// pinned into, so an active drop survives this process. Empty disables
+	// pinning, which is the pre-Phase-4 behaviour: a rollout, an OOM kill
+	// or a crash then un-blocks everything the policies' status still
+	// claims is blocked, until pkg/controller.BlocklistReconciler re-applies
+	// it. See pkg/ebpf/pin_linux.go for which maps are pinned and why the
+	// rate/observation maps deliberately are not.
+	//
+	// Needs /sys/fs/bpf mounted into the container (the Helm chart does this
+	// when ebpf.enabled and ebpf.pinPath are both set). A pin path that is
+	// not on a bpffs is NOT fatal -- cmd/operator/main.go falls back to an
+	// unpinned attach with a warning Event, because losing XDP entirely over
+	// a mount problem would be worse than losing restart survival.
+	BPFPinPath string
+
+	// BlocklistReconcileInterval is how often the operator compares the
+	// kernel's enforcement maps against what the TelecomSecurityPolicy
+	// status subresources say should be enforced, re-applying the
+	// difference (pkg/controller.BlocklistReconciler). A sync always runs
+	// once at startup regardless; this only sets the periodic cadence.
+	// Negative disables the periodic pass and leaves only that startup one.
+	BlocklistReconcileInterval time.Duration
+
+	// ReactorStatusWritesPerSecond bounds non-meaningful status refreshes
+	// per policy (ObservedThreatScore-only writes under a score storm), so a
+	// busy source can't turn one policy's scores into apiserver pressure.
+	// Meaningful writes (phase transitions, blocklist changes) are never
+	// throttled. 0 disables the limit. See pkg/controller.ReactorLimiter.
+	ReactorStatusWritesPerSecond float64
+
+	// ReactorStatusWriteBurst is the token-bucket burst for the above.
+	ReactorStatusWriteBurst int
+
+	// KillSwitchConfigMapName is the ConfigMap whose presence with
+	// engaged=true suppresses ALL mitigation globally (detection continues).
+	// Empty disables the kill switch entirely. See
+	// pkg/controller.KillSwitch -- the point is that engaging it is one
+	// kubectl command with no operator restart.
+	KillSwitchConfigMapName string
+
+	// KillSwitchNamespace is where that ConfigMap is read from. Defaults to
+	// the operator's own namespace (POD_NAMESPACE), so the switch lives
+	// next to the operator and needs no cross-namespace RBAC.
+	KillSwitchNamespace string
+
+	// KillSwitchPollInterval bounds how often the ConfigMap is read and so
+	// how quickly engaging it takes effect. Default 2s.
+	KillSwitchPollInterval time.Duration
+
 	// ScoringPipelineGrace is how long after startup the operator waits
 	// before reporting ScoringPipelineReady=False on every policy (see
 	// pkg/controller's scoring_pipeline.go). It only covers the window where
@@ -144,7 +245,62 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
+	sourceFloodEnabled, err := parseBoolEnv("GTPU_SOURCE_FLOOD_ENABLED", true)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodPPS, err := parseUint32Env("GTPU_SOURCE_FLOOD_PPS", 20000)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodDistinct, err := parseIntEnv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", 256)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodWindow, err := parseDurationEnv("GTPU_SOURCE_FLOOD_WINDOW", time.Second)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	sourceFloodCooldown, err := parseDurationEnv("GTPU_SOURCE_FLOOD_COOLDOWN", 30*time.Second)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
 	allowUnauthenticated, err := parseBoolEnv("NATS_ALLOW_UNAUTHENTICATED", false)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	blocklistReconcileInterval, err := parseDurationEnv("BLOCKLIST_RECONCILE_INTERVAL", time.Minute)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	killSwitchPoll, err := parseDurationEnv("KILL_SWITCH_POLL_INTERVAL", 2*time.Second)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	eventBatchSize, err := parseIntEnv("NATS_EVENT_BATCH_SIZE", 1)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	eventFlushInterval, err := parseDurationEnv("NATS_EVENT_FLUSH_INTERVAL", 250*time.Millisecond)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	reactorRate, err := parseFloatEnv("REACTOR_STATUS_WRITES_PER_SECOND", 10)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	reactorBurst, err := parseIntEnv("REACTOR_STATUS_WRITE_BURST", 20)
 	if err != nil {
 		return OperatorConfig{}, err
 	}
@@ -180,9 +336,32 @@ func Load() (OperatorConfig, error) {
 		DeEscalationDwell:    deEscalationDwell,
 		ScoringPipelineGrace: scoringPipelineGrace,
 
+		// Defaults to pinning: the alternative is a restart that silently
+		// un-blocks every active mitigation, which is the exact fail-open
+		// the enforcement maps' HASH-not-LRU choice exists to prevent.
+		// BPF_PIN_PATH="" opts back out.
+		BPFPinPath:                 getEnvAllowEmpty("BPF_PIN_PATH", ebpf.DefaultPinPath),
+		BlocklistReconcileInterval: blocklistReconcileInterval,
+
+		NATSEventBatchSize:     eventBatchSize,
+		NATSEventFlushInterval: eventFlushInterval,
+
+		ReactorStatusWritesPerSecond: reactorRate,
+		ReactorStatusWriteBurst:      reactorBurst,
+
+		KillSwitchConfigMapName: getEnvAllowEmpty("KILL_SWITCH_CONFIGMAP_NAME", "sentinel5g-killswitch"),
+		KillSwitchNamespace:     getEnv("KILL_SWITCH_NAMESPACE", os.Getenv("POD_NAMESPACE")),
+		KillSwitchPollInterval:  killSwitchPoll,
+
 		GTPUTunnelFloodEnabled:  tunnelFloodEnabled,
 		GTPUTunnelFloodPPS:      tunnelFloodPPS,
 		GTPUTunnelFloodCooldown: tunnelFloodCooldown,
+
+		GTPUSourceFloodEnabled:         sourceFloodEnabled,
+		GTPUSourceFloodPPS:             sourceFloodPPS,
+		GTPUSourceFloodDistinctTunnels: sourceFloodDistinct,
+		GTPUSourceFloodWindow:          sourceFloodWindow,
+		GTPUSourceFloodCooldown:        sourceFloodCooldown,
 	}
 
 	if cfg.ThreatScoreThreshold < 0 || cfg.ThreatScoreThreshold > 1 {
@@ -195,6 +374,21 @@ func Load() (OperatorConfig, error) {
 	// GTPU_TUNNEL_FLOOD_ENABLED=false to turn the detector off.
 	if cfg.GTPUTunnelFloodEnabled && cfg.GTPUTunnelFloodPPS == 0 {
 		return OperatorConfig{}, fmt.Errorf("GTPU_TUNNEL_FLOOD_PPS must be greater than 0 when GTPU_TUNNEL_FLOOD_ENABLED is true")
+	}
+
+	// Both thresholds zero leaves the detector enabled but structurally
+	// unable to fire, which is the kind of configuration that looks
+	// protective and is not. Refused rather than logged, matching
+	// GTPU_TUNNEL_FLOOD_PPS above.
+	if cfg.GTPUSourceFloodEnabled && cfg.GTPUSourceFloodPPS == 0 && cfg.GTPUSourceFloodDistinctTunnels == 0 {
+		return OperatorConfig{}, fmt.Errorf(
+			"GTPU_SOURCE_FLOOD_PPS and GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS cannot both be 0 " +
+				"when GTPU_SOURCE_FLOOD_ENABLED is true: set at least one, or set " +
+				"GTPU_SOURCE_FLOOD_ENABLED=false to turn the detector off explicitly")
+	}
+
+	if cfg.GTPUSourceFloodWindow <= 0 {
+		return OperatorConfig{}, fmt.Errorf("GTPU_SOURCE_FLOOD_WINDOW must be greater than 0, got %s", cfg.GTPUSourceFloodWindow)
 	}
 
 	if !cfg.NATSAllowUnauthenticated && !natsHasCredentials(cfg) {
@@ -218,6 +412,17 @@ func natsHasCredentials(cfg OperatorConfig) bool {
 
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+// getEnvAllowEmpty is getEnv for a setting where the EMPTY string is a
+// meaningful value rather than "unset". getEnv treats BPF_PIN_PATH="" as
+// unset and hands back the default, which would make the documented way to
+// turn pinning off silently turn it on.
+func getEnvAllowEmpty(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return fallback
@@ -260,6 +465,25 @@ func parseUint32Env(key string, fallback uint32) (uint32, error) {
 		return 0, fmt.Errorf("invalid %s: %w", key, err)
 	}
 	return uint32(parsed), nil
+}
+
+// parseIntEnv is parseUint32Env's counterpart for a count that is naturally
+// an int (a map size, a cardinality threshold) rather than a kernel-facing
+// u32. Negative is rejected: it would mean "fires on every packet" for a
+// >= comparison, which is the opposite of the intent.
+func parseIntEnv(key string, fallback int) (int, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("invalid %s: must not be negative, got %d", key, parsed)
+	}
+	return parsed, nil
 }
 
 func parseDurationEnv(key string, fallback time.Duration) (time.Duration, error) {

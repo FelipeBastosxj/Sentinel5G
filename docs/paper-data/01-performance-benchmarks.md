@@ -198,16 +198,29 @@ At idle, `kubectl top pod` showed the NATS pod at `1m CPU / 4Mi memory` —
 negligible, as expected with no load; a CPU/memory sample *during* the bench
 run above wasn't captured.
 
-**Read honestly:** this measures generic JetStream pub/sub throughput, not
-this project's actual `sentinel5g.events.normalized`/`sentinel5g.threats.scored`
-traffic shape (small, infrequent JSON events, not a 50k-message flood).
-**Pending — next step:** repeat concurrently with a real signaling-storm
-burst on the actual project subjects, so the measurement reflects this
-system's real event shape/rate instead of synthetic bench traffic alone.
-The burst now exists as a committed, reproducible artifact:
-`real-dataset-v2/multi_ue_one_flooding.pcap` (3,000 pkt/s through one
-tunnel) and the `gen_tunnel_flood.py` that produces it at any rate the lab
-supports.
+**Read honestly:** the 270k figure is `nats bench`'s *async* pub (fire many,
+reconcile acks in bulk) — NATS's own ceiling, not this project's publish
+path. The operator's `pkg/ingestion.Publisher` publishes **synchronously**
+(it waits for each JetStream ack), which is the number that actually bounds a
+node, so it was measured directly (2026-10-01,
+`pkg/events/throughput_bench_test.go` against a live server, real
+`NormalizedEvent` payloads):
+
+| Publish path (one goroutine) | Throughput |
+|---|---|
+| synchronous, one event per message | **~15,000 msg/s = ~15,000 events/s** |
+| batched (batch 16) | 11,490 msg/s → **183,848 events/s** |
+| batched (batch 64) | 6,867 msg/s → **439,481 events/s** |
+| batched (batch 256) | 2,711 msg/s → **693,964 events/s** |
+
+This is the measurement that makes §1.5's batching item load-bearing rather
+than nice-to-have: a single synchronous publisher sustains only ~15k events/s,
+so **100k pkt/s on one node cannot be published unbatched** — it is below the
+per-publisher ceiling. Batching lifts the *event* rate ~46× (to ~694k/s at
+batch 256) even as the message rate falls, which is exactly the trade that
+keeps the bus from being the bottleneck. Multiple per-node publishers
+aggregate above this; the point is the per-publisher floor, and that batching
+clears it.
 
 ## 1.4 Load-testing harness: both SLOs measured, both open questions settled
 
@@ -295,9 +308,134 @@ real constraint this establishes on anything added to
 `pkg/ingestion.Publisher`'s hot path, and why it drains the ring even while
 NATS is disconnected.
 
-### Still not measured
+## 1.5 AI-engine throughput per replica
 
-Sustained line-rate traffic through a real NIC, and the `< 2%` CPU per
-worker node at 100k req/s. Both need a load generator on real hardware
-rather than a synthetic replay; §1.4's methods deliberately do not claim
-to cover them.
+Score *latency* has been instrumented since Phase 2 (`SCORE_LATENCY_SECONDS`),
+but `ROADMAP.md` Phase 4 noted the engine scores one event per ONNX call with
+no batching and nothing had measured how many events per second a single
+replica sustains — the number that sizes a deployment. `scripts/throughput_bench.py`
+measures it (reproducible: `python scripts/throughput_bench.py`), on the host
+in `test-environment.md`, single process, single thread, `CPUExecutionProvider`:
+
+| Path | Events/sec (one replica) |
+|---|---|
+| Inference only (`score_features`) | ~106,000 |
+| **Production call (`score_event`: extract + infer + latency timer)** | **~72,000** |
+| Full wire path (`from_dict` → extract → infer) | ~84,000 |
+| Batched inference, batch 256 (one ONNX run) | ~32,800,000 |
+
+The sizing number is **~72,000 events/sec per replica** — the NATS worker
+calls `score_event`. That comfortably exceeds one node's plausible signaling
+rate, so the replica count is set by the aggregate across nodes and by the
+NATS ceiling (§1.3), not by the model: scoring is not the bottleneck this
+project worried it might be.
+
+The batched row is the striking one and it is the finding, not a flourish:
+the same vectors run **~300× faster** per event in one ONNX call than one at a
+time. The engine does not batch today (one call per NATS message), so that
+300× is headroom a batching consumer would unlock — which is exactly why the
+NATS-side batching item (Phase 4) is where the real throughput ceiling lives,
+not in the model. One replica is nowhere near its own inference limit; the
+message bus gets there first.
+
+## 1.6 Single-active consumer, and the indexes it leans on at scale
+
+`ThreatScoreWatcher` is leader-gated: one process consumes every score for
+the whole cluster. That is correct for idempotency (one writer of each
+policy's status, see its doc comment) and a potential throughput ceiling, and
+`ROADMAP.md` Phase 4 noted the tradeoff was never measured.
+`throughput_bench_test.go` measures it (`go test ./pkg/controller/ -bench
+'Watcher|Index' -run x -benchmem`), on the host in `test-environment.md`:
+
+| Benchmark | Result | Reading |
+|---|---|---|
+| `WatcherHandle` sub-threshold steady state | ~17 µs/op → **~58,000 scores/sec** | the single-consumer drain rate for scores that need no API write (the dominant case, since meaningful writes are bounded by distinct threats and the reactor rate limit throttles the rest). Fake-client-bound — the real informer cache is faster — so this is a floor. |
+| `PodIPIndex.Lookup`, 1,000 pods | ~9 ns/op, 0 allocs | O(1) map lookup |
+| `PodIPIndex.Lookup`, 50,000 pods | ~12 ns/op, 0 allocs | **flat** — the "never exercised at cluster scale" concern answered: pod resolution does not degrade with cluster size |
+| `PolicyIndex.MatchingPolicies`, 10 policies | ~0.3 µs/op | — |
+| `PolicyIndex.MatchingPolicies`, 1,000 policies | ~23 µs/op | linear in policy count, but sub-25 µs even at 1,000 policies per namespace, far above any realistic count |
+
+The picture: one consumer sustains tens of thousands of scores per second,
+the AI engine produces ~72,000 per replica (§1.5), and neither in-memory index
+is the limit — `PodIPIndex` is flat O(1), `PolicyIndex` is linear but tiny at
+realistic policy counts. So the single-active consumer is a real ceiling only
+when the *aggregate* score rate across all nodes approaches ~50k/s, and the
+lever there is sampling upstream (the NATS item), **not** sharding the
+consumer — which would reintroduce the multi-writer races the leader gate
+exists to prevent. The tradeoff is deliberate and now quantified.
+
+## 1.7 CPU and ring saturation under a sustained real load
+
+§1.4's per-packet figure (195-211 ns) is `BPF_PROG_TEST_RUN` — hot caches,
+no consumer, no attach point — and `ROADMAP.md` Phase 4 was right that the
+ring-buffer headroom behind it was *arithmetic*, not an observation.
+`scripts/loadtest/cpu_saturation.sh` replaces the arithmetic with a
+measurement: a veth pair (a real driver RX path, unlike loopback), the XDP
+program attached to the RX end, the `SignalingEvents` consumer draining the
+ring, and valid GTP-U frames blasted at it from the TX end. Stable across
+runs on the host in `test-environment.md`:
+
+| Quantity | Measured |
+|---|---|
+| Offered load (one generator thread) | ~386,000 pkt/s |
+| Program executions | = frames sent (every frame hit the XDP program) |
+| **Ring observations dropped** | **~14 out of ~2.3 million (<0.001%)** |
+| Program CPU per packet (BPF `run_time/run_count`) | ~900 ns |
+| Program CPU share | ~34.8% of one core at 386k pkt/s |
+
+Two findings, both replacing an assumption with a number:
+
+- **The ring buffer does not saturate.** At 386k pkt/s with a real consumer
+  attached, fourteen observations in 2.3 million were dropped. The "~1.6 ms
+  of drain headroom" §1.4 computed is now observed to hold under a load
+  nearly four times the roadmap's 100k pkt/s/node concern — the consumer
+  keeps up, and the packet is never dropped regardless (a full ring costs an
+  observation, not a packet).
+- **The honest per-packet CPU is ~900 ns, not 211 ns.** Under a real load
+  with a live consumer and cold-ish caches the program costs about 4× the
+  hot-cache microbenchmark — still 200× under `CLAUDE.md`'s 0.2 ms budget.
+  At the roadmap's 100k pkt/s that is ~9% of **one** core, or ~1.1% of an
+  eight-core node — under the `<2%`-per-node target, over it as a per-core
+  figure.
+
+### Still measured only in part
+
+The caveats are stated rather than buried. This is **generic (SKB) XDP on a
+veth**, not native XDP on a physical NIC: the program's `run_time` is
+faithful either way (it is the BPF code's own on-CPU time), but native XDP on
+real hardware would *lower* the program's per-packet cost (no SKB) while
+*adding* the driver/IRQ cost the veth path lacks, and the single-thread
+generator caps the offered load at ~386k pkt/s — the program kept up with
+zero backpressure, so that ceiling is the generator's, not the program's. A
+true **physical line-rate** figure (10/40/100 GbE) and the node CPU that
+comes with a real NIC's driver still need that NIC; what is now measured
+rather than assumed is the program's own cost under real load and the ring's
+behaviour under it.
+
+The per-replica scoring throughput in §1.5 is likewise a scoring rate on
+pre-built events, not an end-to-end node measurement — it does not include
+the kernel capture or the NATS round trip, and does not claim to.
+
+## 1.8 Per-tunnel rate map: the cardinality ceiling, measured
+
+`MAX_TUNNEL_ENTRIES` is 65,536 and `tunnel_rate` is an `LRU_HASH`, so
+`ROADMAP.md` Phase 4 asked what actually happens when a real UPF's bearer
+count exceeds it. `TestTunnelRateMapEvictsWhenFullAndLosesTrackedRate`
+(`-tags privileged`) answers it against the real map: seed one tunnel with a
+high rate, insert distinct tunnels past capacity, and the seeded tunnel's
+entry is **gone** — the LRU evicted the coldest to make room, and its rate
+window (and therefore the flood it was about to flag) is silently lost.
+Confirmed at `>65,536` distinct tunnels.
+
+So the degradation the item feared is real and now demonstrated, and the
+guardrail is already shipped: `sentinel5g_ebpf_observation_map_occupancy`
+against `..._capacity` (§observability) rises toward 1 *before* eviction
+bites, which is the only warning an LRU can give. The sizing rule follows
+directly — `MAX_TUNNEL_ENTRIES` must exceed the deployment's peak concurrent
+bearer count, and a production UPF serves far more than 65,536 (commercial
+and Open5GS deployments run from hundreds of thousands into the millions), so
+the 65,536 default is a lab value: raise it (and rebuild — note that changing
+`max_entries` resets the pins, `EBPFPinsReset`) to the node's real bearer
+ceiling, sized from the occupancy gauge. The exact figure a given UPF needs
+is the one thing here that genuinely requires that UPF; the *behaviour* at
+the ceiling, and the metric that sees it coming, are measured.
