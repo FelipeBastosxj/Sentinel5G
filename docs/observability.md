@@ -26,6 +26,9 @@ deployment side changes to scrape them):
 | `sentinel5g_blocklist_capacity` | gauge | `kind` | `max_entries` of each enforcement map, so the gauge above has a denominator. |
 | `sentinel5g_blocklist_reconciles_total` | counter | `result` | Reconciliation passes, `success`/`error`. |
 | `sentinel5g_ebpf_enforcement_pinned` | gauge | — | `1` when this node's enforcement maps are pinned to bpffs and survive an operator restart, `0` when not. Absent entirely when eBPF isn't attached. |
+| `sentinel5g_ebpf_observation_map_occupancy` | gauge | `kind` | Live entries in the per-tunnel **rate** (LRU) map on this node. Approaching its capacity means the kernel is about to evict rate counters and detection degrades silently — the only warning there is, since an LRU exposes no eviction count. |
+| `sentinel5g_ebpf_observation_map_capacity` | gauge | `kind` | `max_entries` of that rate map (`MAX_TUNNEL_ENTRIES`). |
+| `sentinel5g_mitigation_map_full_total` | counter | `kind` | A mitigation was **refused** because the enforcement map was at capacity. The maps are plain `HASH` and refuse rather than evict, so any non-zero rate here is drops being denied — an attacker generating distinct TEIDs is one way to get there. |
 
 `source` on the first metric is a **closed set** (`model`, `rule`,
 `unknown`), not the raw `ThreatScoreEvent.model` string. That's deliberate:
@@ -116,6 +119,25 @@ approaching the point where new mitigations start failing outright, which
 is an attacker-reachable state for anyone who can generate distinct TEIDs.
 The alerting threshold and the operational response to it are tracked as
 open work in ROADMAP.md Phase 4; this ratio is the input to them.
+
+```promql
+# 4. Is the rate map about to start evicting (detection degrading silently)?
+max by (kind) (
+  sentinel5g_ebpf_observation_map_occupancy / on(kind) sentinel5g_ebpf_observation_map_capacity
+)
+# 5. Are mitigations being REFUSED because an enforcement map is full?
+sum(rate(sentinel5g_mitigation_map_full_total[5m]))
+```
+
+Query 4 approaching 1 means the per-tunnel rate map (`MAX_TUNNEL_ENTRIES`,
+65,536) is near capacity for this node's real bearer cardinality; past it the
+LRU evicts the coldest counter and a rate window resets mid-flight, so a flood
+can be undercounted at exactly the load the detector exists for. There is no
+eviction counter to watch — occupancy is the signal, and the fix is to raise
+`MAX_TUNNEL_ENTRIES` in `bpf/headers/common.h` and rebuild (note that changing
+it resets the pins, see `EBPFPinsReset`). Query 5 non-zero means
+`tunnel_blocklist` (or `blocklist`) is full and legitimate drops are being
+refused; the operational response is in `docs/troubleshooting.md`.
 
 The reconciliation itself runs once at startup — that is the replay — and
 then every `BLOCKLIST_RECONCILE_INTERVAL` (`config.blocklistReconcileInterval`,

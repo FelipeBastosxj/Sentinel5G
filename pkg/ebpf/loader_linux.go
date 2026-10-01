@@ -394,6 +394,18 @@ func (l *Loader) Close() error {
 var _ BlocklistUpdater = (*Loader)(nil)
 var _ EventSource = (*Loader)(nil)
 
+// IsMapFull reports whether err is a map-capacity rejection -- a plain HASH
+// (blocklist, tunnel_blocklist) returns E2BIG from the kernel when a new key
+// would exceed max_entries, rather than evicting one. Callers use this to
+// tell "the mitigation map is full" apart from any other write failure, so
+// a full map becomes a counted, alertable condition instead of a generic
+// error (ROADMAP.md Phase 4: a full tunnel_blocklist is a denial of service
+// against the mitigation path). See TestBlocklistIsBoundedAndFailsLoudly
+// WhenFull for the behaviour this keys off.
+func IsMapFull(err error) bool {
+	return errors.Is(err, unix.E2BIG)
+}
+
 // rawSignalingEvent is the byte-exact Go mirror of bpf/packet_filter.c's
 // `struct signaling_event` — field order, sizes, and the trailing 2-byte pad
 // MUST stay in sync by hand with that struct's `packed, aligned(8)` layout.

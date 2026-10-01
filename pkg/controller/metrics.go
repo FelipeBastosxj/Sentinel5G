@@ -153,6 +153,47 @@ var (
 		[]string{"result"},
 	)
 
+	// ObservationMapOccupancy is the live entry count of the per-tunnel
+	// rate map (an LRU), per kind. It is the metric ROADMAP.md Phase 4 asks
+	// for against MAX_TUNNEL_ENTRIES: unlike the enforcement maps, this one
+	// evicts the coldest counter silently when full, so a rate window resets
+	// mid-flight and detection degrades under exactly the bearer cardinality
+	// it exists for -- invisibly, until this gauge approaches
+	// ObservationMapCapacity below. There is no kernel-exposed eviction
+	// count for an LRU; occupancy is the warning.
+	ObservationMapOccupancy = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_ebpf_observation_map_occupancy",
+			Help: "Live entries in the per-tunnel rate (LRU) map, per node.",
+		},
+		[]string{"kind"},
+	)
+
+	// ObservationMapCapacity is max_entries for that map, so the occupancy
+	// gauge has a denominator.
+	ObservationMapCapacity = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_ebpf_observation_map_capacity",
+			Help: "max_entries of the per-tunnel rate (LRU) map.",
+		},
+		[]string{"kind"},
+	)
+
+	// MitigationMapFull counts mitigations rejected because the enforcement
+	// map was full. This is the event ROADMAP.md Phase 4 names as a denial
+	// of service against the mitigation path: the maps are plain HASH and
+	// refuse rather than evict (the fail-loudly choice), so an attacker who
+	// can generate distinct TEIDs can exhaust tunnel_blocklist and every
+	// subsequent legitimate drop is refused. A non-zero rate here is that
+	// attack, or genuine over-capacity, and either way is a page.
+	MitigationMapFull = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_mitigation_map_full_total",
+			Help: "Mitigations rejected because the enforcement map was at capacity, by kind.",
+		},
+		[]string{"kind"},
+	)
+
 	// EnforcementPinned reports whether this node's enforcement maps are
 	// pinned to bpffs, i.e. whether a drop survives the operator process at
 	// all. 0 is not a failure -- it is the documented behaviour with
@@ -205,6 +246,9 @@ func init() {
 		BlocklistCapacity,
 		BlocklistReconciles,
 		EnforcementPinned,
+		ObservationMapOccupancy,
+		ObservationMapCapacity,
+		MitigationMapFull,
 	)
 }
 

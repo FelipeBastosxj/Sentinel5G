@@ -17,6 +17,19 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **eBPF map-occupancy metrics and a mitigation-refused signal**, closing
+  ROADMAP.md Phase 4's fifth and sixth scale items. The per-tunnel rate map
+  is an LRU that evicts silently when full -- a rate window resetting
+  mid-flight, detection degrading under exactly the bearer cardinality it
+  exists for -- so its live occupancy is now sampled every reconcile and
+  exported as `sentinel5g_ebpf_observation_map_occupancy` against
+  `..._capacity`, the only warning an LRU can give. And a mitigation refused
+  because an enforcement map is at capacity (plain HASH, returns E2BIG rather
+  than evicting -- recognised by the new `ebpf.IsMapFull`) now increments
+  `sentinel5g_mitigation_map_full_total{kind}`, with a defined operational
+  response in docs/troubleshooting.md whose first branch is that the per-peer
+  cardinality detector IS the defence against a TEID-exhaustion DoS -- the
+  two Phase 4 items compose.
 - **The false-positive rate is now a confidence interval, not a point
   estimate** (`cmd/ai-engine/scripts/fpr_confidence.py`), closing ROADMAP.md
   Phase 4's fourth item and completing the four-item correctness gate. A

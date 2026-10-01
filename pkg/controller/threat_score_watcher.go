@@ -213,6 +213,17 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 		default:
 			if err := w.Blocklist.BlockTunnel(ip, event.TEID); err != nil {
 				Mitigations.WithLabelValues("ebpf_block_tunnel", "error").Inc()
+				if ebpf.IsMapFull(err) {
+					// A full tunnel_blocklist is a reportable operational
+					// condition, not a generic error: the mitigation path
+					// is being denied, and an attacker rotating TEIDs is one
+					// way to get here (ROADMAP.md Phase 4). Counted so it
+					// can be alerted on separately from any other failure.
+					MitigationMapFull.WithLabelValues("tunnel_blocklist").Inc()
+					w.Log.Error(err, "tunnel_blocklist is full; this mitigation was refused -- "+
+						"the map does not evict, so new drops fail until de-escalation frees space",
+						"sourceIp", event.SourceIP, "teid", event.TEID)
+				}
 				return fmt.Errorf("ebpf block tunnel %s/%#x: %w", event.SourceIP, event.TEID, err)
 			}
 			Mitigations.WithLabelValues("ebpf_block_tunnel", "success").Inc()
@@ -224,6 +235,11 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 		if ip := net.ParseIP(event.SourceIP); ip != nil {
 			if err := w.Blocklist.Block(ip); err != nil {
 				Mitigations.WithLabelValues("ebpf_block", "error").Inc()
+				if ebpf.IsMapFull(err) {
+					MitigationMapFull.WithLabelValues("blocklist").Inc()
+					w.Log.Error(err, "blocklist is full; this mitigation was refused",
+						"sourceIp", event.SourceIP)
+				}
 				return fmt.Errorf("ebpf block %s: %w", event.SourceIP, err)
 			}
 			Mitigations.WithLabelValues("ebpf_block", "success").Inc()

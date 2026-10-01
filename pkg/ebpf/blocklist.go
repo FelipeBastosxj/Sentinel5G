@@ -96,6 +96,11 @@ type BlocklistInspector interface {
 	// occupancy against this is the warning before a mitigation starts
 	// failing outright.
 	MapCapacity() (ips, tunnels uint32)
+	// ObservationOccupancy counts live entries in the per-tunnel RATE map
+	// (an LRU) against its capacity. Unlike the enforcement maps, this one
+	// evicts silently when full, so occupancy near capacity is the only
+	// signal that detection is about to start losing rate windows.
+	ObservationOccupancy() (entries, capacity uint32, err error)
 }
 
 // SignalProtocol identifies which signaling protocol a SignalingEvent was
