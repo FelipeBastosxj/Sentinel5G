@@ -41,7 +41,7 @@ def main() -> None:
     # would ship), then score the LARGE lab benign set the model never saw.
     import random
 
-    rng = random.Random(args.seed)
+    rng = random.Random(args.seed)  # nosec B311
     groups = capture_groups(_REAL_DATASET_DIR, args.seed)
     train_events = [e for g in groups if g.label == 0 and not g.synthetic for e in g.events]
     train_rows = np.asarray([extract_features(e) for e in train_events], dtype=np.float32)
