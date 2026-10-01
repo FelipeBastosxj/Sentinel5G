@@ -17,6 +17,13 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **The IPv6 data path now runs end to end** (`TestIPv6DataPathEndToEnd`,
+  privileged): a real v6 GTP-U frame fed to the real loaded XDP program via
+  BPF_PROG_TEST_RUN parses (XDP_PASS), populates the v6 per-tunnel rate map,
+  and once the tunnel is blocked the identical frame is dropped (XDP_DROP).
+  Closes ROADMAP.md Phase 4's "IPv6 path never run end to end" item -- the v6
+  maps had structural/unit parity but no v6 packet had ever traversed the
+  program. See docs/paper-data/04-validation-testing-logs.md §4.10.
 - **NATS event batching** (`pkg/ingestion.Publisher` + a new
   `Bus.PublishNormalizedEventBatch`), closing ROADMAP.md Phase 4's bus-ceiling
   item -- the design's first throughput limit, reached before eBPF's. The

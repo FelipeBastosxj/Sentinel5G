@@ -734,10 +734,17 @@ correctness holes in what is built.
       warm-before-subscribe ordering was written to prevent. The deleting-
       policy guard is tested too: a failover must not resurrect a policy the
       finalizer is removing.
-- [ ] **The IPv6 path compiles, has full parity, and has never run end to
-      end.** Every v6 map, the v6 ring buffer and the v6 tunnel blocklist
-      are asserted structurally and by unit test; no real v6 traffic has
-      ever gone through them.
+- [x] **The IPv6 path compiles, has full parity, and has never run end to
+      end.** Now it has. `TestIPv6DataPathEndToEnd` (`-tags privileged`)
+      feeds a real v6 GTP-U frame to the real loaded XDP program via
+      `BPF_PROG_TEST_RUN` and asserts the whole v6 data path: the packet
+      parses (XDP_PASS), the v6 per-tunnel rate map is populated from the
+      outer v6 `(source, TEID)`, and once that tunnel is blocked the
+      identical frame is dropped (XDP_DROP). Real v6 packets, real map side
+      effects, real verdicts — the caveat being that the frame is injected
+      via PROG_TEST_RUN rather than arriving on a NIC, so the v6 *logic*
+      (parse/rate/enforce/drop) runs for real but the driver delivery does
+      not. See `docs/paper-data/04-validation-testing-logs.md` §4.10.
 - [x] **Upgrade and rollback with active blocklists is untested.** Closed.
       The "today an upgrade *is* a silent unblock" premise was already
       retired by the pinning + reconcile of this phase's first item; this
