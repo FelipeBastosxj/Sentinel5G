@@ -194,6 +194,32 @@ var (
 		[]string{"kind"},
 	)
 
+	// KillSwitchEngaged is 1 while the global mitigation kill switch is
+	// engaged (the sentinel5g-killswitch ConfigMap present with
+	// engaged=true). Detection continues while it is 1; no drop or
+	// quarantine is taken. It is the one lever an operator flips to stop a
+	// mitigation going wrong across many policies at once (ROADMAP.md
+	// Phase 4), and it belongs on a dashboard so "why did everything stop
+	// mitigating" has a one-glance answer.
+	KillSwitchEngaged = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_kill_switch_engaged",
+			Help: "1 while the global mitigation kill switch is engaged, 0 otherwise.",
+		},
+	)
+
+	// MitigationsSuppressed counts actions withheld because the kill switch
+	// was engaged, by what would have been done. Separate from a withheld
+	// detection-only pilot (ThresholdCrossings{outcome="alerting"}): this is
+	// an operator pulling the lever on mitigation that was otherwise armed.
+	MitigationsSuppressed = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_mitigations_suppressed_total",
+			Help: "Mitigation actions withheld because the global kill switch was engaged, by action.",
+		},
+		[]string{"action"},
+	)
+
 	// EnforcementPinned reports whether this node's enforcement maps are
 	// pinned to bpffs, i.e. whether a drop survives the operator process at
 	// all. 0 is not a failure -- it is the documented behaviour with
@@ -249,6 +275,8 @@ func init() {
 		ObservationMapOccupancy,
 		ObservationMapCapacity,
 		MitigationMapFull,
+		KillSwitchEngaged,
+		MitigationsSuppressed,
 	)
 }
 

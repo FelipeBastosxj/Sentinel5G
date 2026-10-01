@@ -29,6 +29,8 @@ deployment side changes to scrape them):
 | `sentinel5g_ebpf_observation_map_occupancy` | gauge | `kind` | Live entries in the per-tunnel **rate** (LRU) map on this node. Approaching its capacity means the kernel is about to evict rate counters and detection degrades silently — the only warning there is, since an LRU exposes no eviction count. |
 | `sentinel5g_ebpf_observation_map_capacity` | gauge | `kind` | `max_entries` of that rate map (`MAX_TUNNEL_ENTRIES`). |
 | `sentinel5g_mitigation_map_full_total` | counter | `kind` | A mitigation was **refused** because the enforcement map was at capacity. The maps are plain `HASH` and refuse rather than evict, so any non-zero rate here is drops being denied — an attacker generating distinct TEIDs is one way to get there. |
+| `sentinel5g_kill_switch_engaged` | gauge | — | `1` while the global mitigation kill switch is engaged (the `sentinel5g-killswitch` ConfigMap present with `engaged=true`). Detection continues; no drop or quarantine is taken. A one-glance answer to "why did everything stop mitigating". |
+| `sentinel5g_mitigations_suppressed_total` | counter | `action` | Actions withheld because the kill switch was engaged, by what would have been done. Distinct from a detection-only pilot's `ThresholdCrossings{outcome="alerting"}`: this is an operator pulling the lever on otherwise-armed mitigation. |
 
 `source` on the first metric is a **closed set** (`model`, `rule`,
 `unknown`), not the raw `ThreatScoreEvent.model` string. That's deliberate:

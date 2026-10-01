@@ -278,3 +278,40 @@ func TestLoad_RejectsNegativeDistinctTunnels(t *testing.T) {
 		t.Fatal("expected Load to reject a negative GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS")
 	}
 }
+
+// The kill switch defaults on (name set), reads its namespace from
+// POD_NAMESPACE, and is disabled by an empty name.
+func TestLoad_KillSwitchDefaults(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("POD_NAMESPACE", "sentinel5g-system")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KillSwitchConfigMapName != "sentinel5g-killswitch" {
+		t.Errorf("KillSwitchConfigMapName = %q", cfg.KillSwitchConfigMapName)
+	}
+	if cfg.KillSwitchNamespace != "sentinel5g-system" {
+		t.Errorf("KillSwitchNamespace = %q, want it from POD_NAMESPACE", cfg.KillSwitchNamespace)
+	}
+	if cfg.KillSwitchPollInterval != 2*time.Second {
+		t.Errorf("KillSwitchPollInterval = %v, want 2s", cfg.KillSwitchPollInterval)
+	}
+}
+
+func TestLoad_KillSwitchDisabledByEmptyName(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("KILL_SWITCH_CONFIGMAP_NAME", "")
+	t.Setenv("POD_NAMESPACE", "sentinel5g-system")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KillSwitchConfigMapName != "" {
+		t.Errorf("KillSwitchConfigMapName = %q, want empty (disabled)", cfg.KillSwitchConfigMapName)
+	}
+}

@@ -95,6 +95,22 @@ config:
   # operator starts saying it hasn't seen a score.
   scoringPipelineGrace: 10m
 
+  # Global mitigation kill switch. When enabled, the operator polls a
+  # ConfigMap (killSwitch.configMapName, in the release namespace) and, while
+  # that ConfigMap has data engaged=true, withholds EVERY mitigation across
+  # EVERY policy -- detection continues (scores, crossings, Alerting phase),
+  # nothing is blocked or quarantined. It is the one lever for an operator
+  # watching a mitigation go wrong across many policies at once, and it takes
+  # effect within killSwitch.pollInterval with no operator restart:
+  #   kubectl -n <release-ns> create configmap sentinel5g-killswitch   #     --from-literal=engaged=true     # stop now
+  #   kubectl -n <release-ns> delete configmap sentinel5g-killswitch   # resume
+  # A tight get-by-name Role (templates/killswitch-rbac.yaml) is created for
+  # it; set enabled=false to add neither the poll nor the RBAC.
+  killSwitch:
+    enabled: true
+    configMapName: sentinel5g-killswitch
+    pollInterval: 2s
+
   # How often the operator compares the eBPF enforcement maps against what
   # the TelecomSecurityPolicy status subresources say should be enforced,
   # re-applying the difference and exporting it as

@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	clientgoevents "k8s.io/client-go/tools/events"
@@ -235,6 +236,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The global mitigation kill switch reads its ConfigMap through the
+	// APIReader (direct, uncached) so it doesn't force the manager to watch
+	// every ConfigMap in scope just for this one. Disabled when the name is
+	// empty or no namespace is resolvable (e.g. `go run` outside a Pod, with
+	// no POD_NAMESPACE).
+	var killSwitch *sentinelcontroller.KillSwitch
+	if cfg.KillSwitchConfigMapName != "" && cfg.KillSwitchNamespace != "" {
+		killSwitch = &sentinelcontroller.KillSwitch{
+			Reader: mgr.GetAPIReader(),
+			Key: types.NamespacedName{
+				Namespace: cfg.KillSwitchNamespace,
+				Name:      cfg.KillSwitchConfigMapName,
+			},
+			TTL: cfg.KillSwitchPollInterval,
+		}
+		log.Info("global mitigation kill switch enabled",
+			"configMap", cfg.KillSwitchNamespace+"/"+cfg.KillSwitchConfigMapName, "pollInterval", cfg.KillSwitchPollInterval)
+	} else {
+		log.Info("global mitigation kill switch disabled (no ConfigMap name or namespace resolved)")
+	}
+
 	watcher := &sentinelcontroller.ThreatScoreWatcher{
 		Client:        mgr.GetClient(),
 		Log:           log.WithName("threat-score-watcher"),
@@ -245,6 +267,7 @@ func main() {
 		Mesh:          meshAdapter,
 		BaseThreshold: cfg.ThreatScoreThreshold,
 		Scoring:       scoring,
+		KillSwitch:    killSwitch,
 	}
 	if err := mgr.Add(watcher); err != nil {
 		log.Error(err, "unable to register threat score watcher")

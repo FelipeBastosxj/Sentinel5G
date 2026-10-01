@@ -249,3 +249,32 @@ Once a policy's `Alerting` phase history from step 4 looks right, set
 `threatDetection.autoMitigate: true` on it. There's no global switch — this
 is deliberately per-`TelecomSecurityPolicy`, so you can roll it out one
 protected workload at a time rather than flipping it cluster-wide.
+
+## 8. Keep the kill switch within reach
+
+`autoMitigate` is per policy. The moment you have more than a handful of
+policies acting, you need one lever that stops *all* of them without editing
+each — and without an operator rollout, because a rollout is minutes you may
+not have while a mis-scored mitigation spreads. That lever is the global kill
+switch (`config.killSwitch`, on by default):
+
+```sh
+# Stop all mitigation now. Detection keeps running; nothing new is blocked
+# or quarantined, and existing blocks de-escalate normally.
+kubectl -n <release-namespace> create configmap sentinel5g-killswitch   --from-literal=engaged=true
+
+# Resume.
+kubectl -n <release-namespace> delete configmap sentinel5g-killswitch
+```
+
+It takes effect within `config.killSwitch.pollInterval` (2s). While engaged,
+`sentinel5g_kill_switch_engaged` reads 1 and every withheld action is counted
+in `sentinel5g_mitigations_suppressed_total` — so a dashboard answers "why did
+everything stop" at a glance, and an alert on that gauge tells you the switch
+is still armed if someone forgot to resume. The operator reads the ConfigMap
+through a tight get-by-name Role in its own namespace; it is not cluster-wide
+ConfigMap access. Engaging it is a deliberately ordinary `kubectl` command an
+on-call already knows, with an audit trail in the API server.
+
+This is the control that makes turning `autoMitigate` on reversible in one
+step, which is the precondition for turning it on at all.
