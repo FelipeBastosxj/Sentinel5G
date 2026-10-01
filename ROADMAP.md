@@ -479,17 +479,56 @@ closed by measurements this project does not yet have.
       an `EBPFPinsReset` Event says so, and the next sync re-applies from
       status. Upgrade and rollback with active blocklists is still its own
       open item below.
-- [ ] **A one-line evasion: spread the flood across many TEIDs.**
-      `features.py` zeroes `rate_norm` for *any* event carrying a TEID, and
-      `GTPU_TUNNEL_FLOOD_PPS` is per tunnel. So 200 tunnels at 999 pkt/s —
-      roughly 200,000 pkt/s in aggregate — crosses no rule threshold, and
-      the model sees no aggregate rate signal at all for tunneled traffic,
-      by construction. This is not a bug; it is the untested cost of the
-      §2.6.5 fix, which traded bystander false positives for aggregate
-      blindness. Needs a second-order signal: per-source aggregate across
-      *distinct* tunnels, or TEID cardinality/entropy per window. TEID
-      spoofing is the same blind spot from the other direction and is also
-      untested.
+- [x] **A one-line evasion: spread the flood across many TEIDs.** Closed
+      with a second detector, `pkg/detect.GTPUSourceFloodDetector`, rather
+      than by touching the model.
+
+      The evasion was real and is exactly as described: `features.py` zeroes
+      `rate_norm` for any tunneled event (the §2.6.5 fix that stopped one
+      subscriber's flood being cross-attributed to its innocent neighbours),
+      and `GTPU_TUNNEL_FLOOD_PPS` is per tunnel, so 200 tunnels at 999 pkt/s
+      — ~200,000 pkt/s from one peer — crossed nothing. The two scopes are
+      genuinely irreconcilable in one threshold: a per-tunnel one must sit
+      below a single subscriber's legitimate rate, a per-source one must sit
+      above the whole gNB's combined load, and the gap between those is where
+      this attack lives.
+
+      So there are now two detectors, not one tunable. The new one keys on
+      the **source** and carries two signals, either of which fires: the
+      aggregate GTP-U rate from that peer across every tunnel
+      (`GTPU_SOURCE_FLOOD_PPS`, default 20,000), and the count of **distinct
+      TEIDs** the peer uses per window (`GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS`,
+      default 256) — which catches TEID rotation at rates no aggregate
+      threshold would notice, since 300 distinct TEIDs at one packet each is
+      only 300 pkt/s but is not a shape any real gNB produces. Both are
+      measured over the same 1-second window the kernel uses.
+
+      The evasion is closed by test, not assertion:
+      `TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` runs **both**
+      detectors over one 200-tunnel × 999 pkt/s stream and asserts the
+      per-tunnel rule fires zero times while the per-source rule fires once;
+      `TestSourceFlood_SilentOnOrdinaryMultiSubscriberTraffic` holds the
+      false-positive side (four UEs at 25 pkt/s for 60 s → nothing). The
+      per-peer verdict is emitted with **no TEID** — there is no single
+      tunnel whose removal fixes an aggregate flood — so it drives the
+      source-wide `actions.ebpfBlock`, and a policy set only for the
+      per-tunnel action counts a `no_teid` no-op rather than silently
+      blocking one arbitrary tunnel of the many.
+
+      One blind spot is stated rather than claimed closed: an attacker who
+      forges a TEID that genuinely belongs to **another live subscriber** on
+      the same peer is indistinguishable from that subscriber's own traffic
+      without UPF session state this component does not have. The cardinality
+      signal catches rotation *into unused* TEIDs; it cannot catch
+      impersonation of a valid one. Closing that needs the UPF's bearer
+      table and is Phase 5 territory.
+
+      This detector was also deliberately **not** given to the autoencoder
+      as a feature, and that is the same lesson as §2.6.5 from the other
+      side: a per-source quantity is identical for every subscriber behind a
+      gNB, so a per-packet model fed one cross-attributes the flood to all of
+      them. A rule can hold a per-source signal safely because its verdict is
+      itself per-source and the operator acts on it with a per-source action.
 - [ ] **No capture-independent holdout, and no baseline to beat.**
       `cmd/ai-engine/scripts/evaluate_model.py` splits train/holdout inside
       the *same* pcap, which measures reconstruction, not generalization —

@@ -155,6 +155,15 @@ Two sources feed that counter, and the pilot is the place to tune both:
   N3; `sentinel5g_threat_scores_received_total{source="rule"}` tells you
   how often it is the one firing, and the alerting counter tells you
   whether that would have been right.
+- The deterministic GTP-U **source**-flood rule
+  (`config.gtpuSourceFlood`, on by default), the per-peer counterpart that
+  catches a flood spread across many tunnels. Tune its two thresholds here
+  with particular care: unlike the per-tunnel rule, its verdict is
+  source-wide and the action that fits it (`actions.ebpfBlock`) drops every
+  subscriber behind the peer. Its `packetsPerSecond` default of 20,000
+  aggregate is well above a busy legitimate gNB but is still not *your*
+  number, and `distinctTunnels` (256) should be set from your real bearer
+  cardinality. Both share the `source="rule"` counter above.
 
 ## 5. Opt into eBPF enforcement only after its preflight passes
 

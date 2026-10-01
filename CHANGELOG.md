@@ -17,6 +17,25 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **A per-peer GTP-U source-flood detector** (`pkg/detect.GTPUSourceFloodDetector`),
+  closing ROADMAP.md Phase 4's second item: a flood spread thinly across
+  many TEIDs evaded the per-tunnel rule entirely. 200 tunnels at 999 pkt/s
+  is ~200,000 pkt/s from one peer and crossed the 1000 pkt/s per-tunnel
+  threshold zero times, by construction -- the per-tunnel detector's whole
+  purpose was to stop aggregating subscribers together, so it cannot also
+  be the thing that catches an aggregate. The new detector is scoped to the
+  source and fires on either an aggregate rate (`GTPU_SOURCE_FLOOD_PPS`,
+  default 20,000) or distinct-TEID cardinality per window
+  (`GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS`, default 256, which catches TEID
+  rotation at rates no aggregate threshold would see). On by default, same
+  policy/sensitivity/autoMitigate gating as any other score. Its verdict
+  names no tunnel -- there is no single tunnel whose removal fixes an
+  aggregate flood -- so it carries TEID 0 and drives the source-wide
+  `actions.ebpfBlock`. The evasion is closed by test
+  (`TestSourceFlood_CatchesTheEvasionThePerTunnelRuleMisses` runs both
+  detectors over the identical stream; per-tunnel fires 0, per-source fires
+  1) and the false-positive side is held by another (ordinary four-UE
+  traffic → nothing). See docs/paper-data/02-ai-training-inference.md §2.7.
 - **The eBPF enforcement maps now survive the operator process**, closing
   `ROADMAP.md` Phase 4's first item. Up to now `Loader.Close()` detached
   the XDP program and the whole collection went with it, so a `helm

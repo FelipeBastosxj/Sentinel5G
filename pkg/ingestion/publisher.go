@@ -44,7 +44,14 @@ type Publisher struct {
 	// Nil disables it, the same convention Blocklist/Mesh use elsewhere.
 	TunnelFlood *detect.GTPUFloodDetector
 
-	// ThreatsSubject is where TunnelFlood's scores are published -- the same
+	// SourceFlood is the per-PEER counterpart of TunnelFlood: the same
+	// inline, non-leader-gated placement, catching the aggregate a
+	// per-tunnel threshold structurally cannot see (ROADMAP.md Phase 4's
+	// evasion item). Nil disables it.
+	SourceFlood *detect.GTPUSourceFloodDetector
+
+	// ThreatsSubject is where TunnelFlood's and SourceFlood's scores are
+	// published -- the same
 	// subject the AI engine publishes to, consumed by the same
 	// pkg/controller.ThreatScoreWatcher, so a rule-sourced score is subject
 	// to identical policy/sensitivity/autoMitigate gating.
@@ -94,23 +101,60 @@ func (p *Publisher) Start(ctx context.Context) error {
 			// succeeded: the two are independent statements, and losing a
 			// real mitigation signal because a telemetry publish failed would
 			// be the wrong trade.
-			if p.TunnelFlood == nil {
-				continue
-			}
-			score, fired := p.TunnelFlood.Evaluate(normalized, p.now())
-			if !fired {
-				continue
-			}
-			p.Log.Info("gtpu tunnel flood detected",
-				"sourceIp", normalized.SourceIP, "teid", normalized.TEID,
-				"tunnelRatePerSecond", normalized.TunnelRatePerSecond)
-			if err := bus.PublishThreatScore(p.ThreatsSubject, score); err != nil {
-				p.Log.Error(err, "failed to publish tunnel flood threat score",
-					"sourceIp", normalized.SourceIP, "teid", normalized.TEID)
-			}
+			//
+			// Both detectors see every event, and neither short-circuits the
+			// other: they answer different questions about the same packet
+			// (is THIS tunnel flooding / is this PEER abusive in aggregate),
+			// and a flood that trips both legitimately produces one score of
+			// each, scoped differently, for the policy to act on
+			// independently.
+			now := p.now()
+			p.evaluateTunnelFlood(bus, normalized, now)
+			p.evaluateSourceFlood(bus, normalized, now)
 		case <-ctx.Done():
 			return nil
 		}
+	}
+}
+
+// evaluateTunnelFlood runs the per-tunnel rule and publishes its score.
+func (p *Publisher) evaluateTunnelFlood(bus *events.Bus, normalized events.NormalizedEvent, now time.Time) {
+	if p.TunnelFlood == nil {
+		return
+	}
+	score, fired := p.TunnelFlood.Evaluate(normalized, now)
+	if !fired {
+		return
+	}
+	p.Log.Info("gtpu tunnel flood detected",
+		"sourceIp", normalized.SourceIP, "teid", normalized.TEID,
+		"tunnelRatePerSecond", normalized.TunnelRatePerSecond)
+	if err := bus.PublishThreatScore(p.ThreatsSubject, score); err != nil {
+		p.Log.Error(err, "failed to publish tunnel flood threat score",
+			"sourceIp", normalized.SourceIP, "teid", normalized.TEID)
+	}
+}
+
+// evaluateSourceFlood runs the per-peer rule and publishes its score. The
+// log line carries both counts because the verdict is source-wide and the
+// action an operator takes on it drops every subscriber behind that peer --
+// "which half fired, and by how much" is the minimum needed to justify
+// that.
+func (p *Publisher) evaluateSourceFlood(bus *events.Bus, normalized events.NormalizedEvent, now time.Time) {
+	if p.SourceFlood == nil {
+		return
+	}
+	score, observed, fired := p.SourceFlood.Evaluate(normalized, now)
+	if !fired {
+		return
+	}
+	p.Log.Info("gtpu source flood detected (aggregate across tunnels)",
+		"sourceIp", normalized.SourceIP,
+		"packetsInWindow", observed.PacketsInWindow,
+		"distinctTunnels", observed.DistinctTunnels)
+	if err := bus.PublishThreatScore(p.ThreatsSubject, score); err != nil {
+		p.Log.Error(err, "failed to publish source flood threat score",
+			"sourceIp", normalized.SourceIP)
 	}
 }
 
