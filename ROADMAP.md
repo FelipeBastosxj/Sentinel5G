@@ -692,10 +692,18 @@ correctness holes in what is built.
       into an API storm, and it fails safe: a transient read error keeps the
       last known value rather than flipping the switch. See
       `docs/production-install.md` §8.
-- [ ] **Leader failover with in-flight scores is untested.** Delivery is
-      at-least-once and the mitigation path is written to be idempotent,
-      but that idempotency has never been exercised *through an actual
-      failover*, which is the only place it matters.
+- [x] **Leader failover with in-flight scores is untested.** Closed.
+      `pkg/controller/failover_test.go` exercises the idempotency through the
+      two things a real failover does: a score redelivered after the previous
+      leader already acted on it (the at-least-once case JetStream produces on
+      resubscribe) leaves the blocked set and phase singular, not doubled;
+      and a freshly-elected leader with an empty index rebuilds it from the
+      API (`warmIndex`) before processing, so a redelivered score for a
+      policy the new leader never saw created still matches — rather than
+      matching nothing, being acked, and vanishing, which is the failure the
+      warm-before-subscribe ordering was written to prevent. The deleting-
+      policy guard is tested too: a failover must not resurrect a policy the
+      finalizer is removing.
 - [ ] **The IPv6 path compiles, has full parity, and has never run end to
       end.** Every v6 map, the v6 ring buffer and the v6 tunnel blocklist
       are asserted structurally and by unit test; no real v6 traffic has
