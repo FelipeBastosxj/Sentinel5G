@@ -17,6 +17,21 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **The false-positive rate is now a confidence interval, not a point
+  estimate** (`cmd/ai-engine/scripts/fpr_confidence.py`), closing ROADMAP.md
+  Phase 4's fourth item and completing the four-item correctness gate. A
+  Clopper-Pearson exact binomial upper bound (implemented without scipy,
+  checked against closed forms) translated into wrong mitigations per second
+  at a given packet rate. Two findings, both worse than assumed: even taking
+  "zero false positives" at face value, 0 in 1,378 packets bounds the FPR at
+  only 2.7e-3 -- up to 267 wrong mitigations/sec at 100k pkt/s -- and scored
+  out of fold (capture-independent, per §2.8) the real FPR at the production
+  thresholds is ~23%, because the normalization calibration does not transfer
+  to an unseen capture. Synthetic benign traffic can't substitute (a
+  real-GTP-U model flags ~75% of it as unfamiliar). Verdict: autoMitigate is
+  not authorized by anything measured; the detection-only pilot stays the
+  only defensible path, and is now the instrument for making the measurement
+  that would change that. See docs/paper-data/02-ai-training-inference.md §2.9.
 - **A capture-independent holdout and a model-vs-rule baseline**
   (`cmd/ai-engine/scripts/baseline_comparison.py`), closing ROADMAP.md
   Phase 4's third item. The accuracy numbers to date came from a within-pool
