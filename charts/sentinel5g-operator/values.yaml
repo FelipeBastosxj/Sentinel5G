@@ -95,6 +95,22 @@ config:
   # operator starts saying it hasn't seen a score.
   scoringPipelineGrace: 10m
 
+  # NATS event batching. Coalesces up to batchSize NormalizedEvents into one
+  # JetStream message instead of one per packet -- the bus is the design's
+  # first throughput ceiling, not eBPF (ROADMAP.md Phase 4), and a batch of N
+  # cuts the message rate by N. The inline flood detectors are NOT batched;
+  # they act per packet regardless, so batching never delays detection, only
+  # the ML telemetry.
+  #
+  # Off by default (batchSize: 1): it is a wire-behaviour change the AI engine
+  # consumer must understand, which it does on any current build. Enable it
+  # AFTER the AI engine is on a current build, by raising batchSize. A partial
+  # batch is flushed after flushInterval so events never strand in a quiet
+  # period.
+  eventBatching:
+    batchSize: 1
+    flushInterval: 250ms
+
   # Reactor rate limit. Bounds how fast the operator issues NON-meaningful
   # status refreshes per policy -- the ObservedThreatScore-only writes a
   # score storm produces (one ML score per packet, at-least-once delivery).

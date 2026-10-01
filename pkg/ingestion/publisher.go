@@ -57,6 +57,19 @@ type Publisher struct {
 	// to identical policy/sensitivity/autoMitigate gating.
 	ThreatsSubject string
 
+	// BatchSize coalesces up to this many NormalizedEvents into one NATS
+	// message instead of publishing one per packet -- the bus is the
+	// design's first throughput ceiling, not eBPF (ROADMAP.md Phase 4). 0 or
+	// 1 publishes per event (the pre-batching behaviour). The inline
+	// detectors below are NOT batched: they run per event the moment it
+	// arrives, so batching the telemetry publish never delays detection.
+	BatchSize int
+
+	// FlushInterval bounds how long a partial batch waits before it is
+	// published anyway, so a quiet period does not strand events in the
+	// buffer. Ignored when BatchSize <= 1.
+	FlushInterval time.Duration
+
 	// Now returns the current time; nil uses time.Now. Overridden in tests.
 	Now func() time.Time
 }
@@ -79,10 +92,22 @@ func (p *Publisher) Start(ctx context.Context) error {
 		return fmt.Errorf("start signaling event stream: %w", err)
 	}
 
+	// The flush timer only matters when batching; with batching off it is
+	// created but never consulted (batch is flushed inline below).
+	flushEvery := p.FlushInterval
+	if flushEvery <= 0 {
+		flushEvery = time.Second
+	}
+	ticker := time.NewTicker(flushEvery)
+	defer ticker.Stop()
+
+	batch := make([]events.NormalizedEvent, 0, p.batchCap())
+
 	for {
 		select {
 		case evt, ok := <-stream:
 			if !ok {
+				p.flush(&batch) // publish whatever is buffered before exiting
 				return nil
 			}
 			bus, connected := p.Bus.Bus()
@@ -92,26 +117,35 @@ func (p *Publisher) Start(ctx context.Context) error {
 				continue
 			}
 			normalized := FromSignalingEvent(evt, p.PodIndex, p.Source.SignalRate, p.NodeName)
-			if err := bus.PublishNormalizedEvent(p.Subject, normalized); err != nil {
-				p.Log.Error(err, "failed to publish normalized event",
-					"sourceIp", normalized.SourceIP, "destPort", normalized.DestPort)
-			}
 
-			// Published regardless of whether the NormalizedEvent above
-			// succeeded: the two are independent statements, and losing a
-			// real mitigation signal because a telemetry publish failed would
-			// be the wrong trade.
-			//
-			// Both detectors see every event, and neither short-circuits the
-			// other: they answer different questions about the same packet
-			// (is THIS tunnel flooding / is this PEER abusive in aggregate),
-			// and a flood that trips both legitimately produces one score of
-			// each, scoped differently, for the policy to act on
-			// independently.
+			// Detectors run per event, immediately, BEFORE any batching, so a
+			// flood is acted on the instant its packet arrives rather than
+			// when a telemetry batch happens to flush. Both see every event
+			// and neither short-circuits the other: they answer different
+			// questions (is THIS tunnel flooding / is this PEER abusive in
+			// aggregate), and a flood that trips both produces one score of
+			// each, scoped differently.
 			now := p.now()
 			p.evaluateTunnelFlood(bus, normalized, now)
 			p.evaluateSourceFlood(bus, normalized, now)
+
+			// Telemetry publish: batched (the bus ceiling), or per-event when
+			// batching is off.
+			if p.batchCap() <= 1 {
+				if err := bus.PublishNormalizedEvent(p.Subject, normalized); err != nil {
+					p.Log.Error(err, "failed to publish normalized event",
+						"sourceIp", normalized.SourceIP, "destPort", normalized.DestPort)
+				}
+				continue
+			}
+			batch = append(batch, normalized)
+			if len(batch) >= p.batchCap() {
+				p.flush(&batch)
+			}
+		case <-ticker.C:
+			p.flush(&batch)
 		case <-ctx.Done():
+			p.flush(&batch)
 			return nil
 		}
 	}
@@ -156,6 +190,35 @@ func (p *Publisher) evaluateSourceFlood(bus *events.Bus, normalized events.Norma
 		p.Log.Error(err, "failed to publish source flood threat score",
 			"sourceIp", normalized.SourceIP)
 	}
+}
+
+// batchCap is the effective batch size (0/1 both mean "no batching").
+func (p *Publisher) batchCap() int {
+	if p.BatchSize < 1 {
+		return 1
+	}
+	return p.BatchSize
+}
+
+// flush publishes the buffered events as one batch message and resets the
+// buffer. A publish failure is logged, not retried: the events are telemetry
+// for the ML path, the inline detectors already acted on anything urgent, and
+// a bounded kernel ring buffer left undrained waiting on a retry is worse
+// than dropping a telemetry batch (the same trade PublishNormalizedEvent's
+// error handling already makes).
+func (p *Publisher) flush(batch *[]events.NormalizedEvent) {
+	if len(*batch) == 0 {
+		return
+	}
+	bus, connected := p.Bus.Bus()
+	if connected {
+		if err := bus.PublishNormalizedEventBatch(p.Subject, *batch); err != nil {
+			p.Log.Error(err, "failed to publish normalized event batch", "events", len(*batch))
+		}
+	} else {
+		p.Log.V(1).Info("dropping normalized event batch: NATS not connected", "events", len(*batch))
+	}
+	*batch = (*batch)[:0]
 }
 
 // NeedLeaderElection implements manager.LeaderElectionRunnable. Publisher

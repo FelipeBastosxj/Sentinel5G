@@ -157,12 +157,14 @@ func main() {
 			os.Exit(1)
 		}
 		publisher := &ingestion.Publisher{
-			Source:   source,
-			PodIndex: podIndex,
-			Bus:      busConnector,
-			Subject:  cfg.NATSEventsSubject,
-			NodeName: nodeName,
-			Log:      log.WithName("ingestion-publisher"),
+			Source:        source,
+			PodIndex:      podIndex,
+			Bus:           busConnector,
+			Subject:       cfg.NATSEventsSubject,
+			NodeName:      nodeName,
+			BatchSize:     cfg.NATSEventBatchSize,
+			FlushInterval: cfg.NATSEventFlushInterval,
+			Log:           log.WithName("ingestion-publisher"),
 			// Runs here, per node, rather than as a second NATS consumer --
 			// see Publisher.TunnelFlood's doc comment for both reasons.
 			TunnelFlood: detect.NewGTPUFloodDetector(detect.GTPUFloodConfig{

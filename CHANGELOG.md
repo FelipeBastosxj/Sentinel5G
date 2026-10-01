@@ -17,6 +17,19 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **NATS event batching** (`pkg/ingestion.Publisher` + a new
+  `Bus.PublishNormalizedEventBatch`), closing ROADMAP.md Phase 4's bus-ceiling
+  item -- the design's first throughput limit, reached before eBPF's. The
+  Publisher coalesces up to NATS_EVENT_BATCH_SIZE events into one JetStream
+  message (a JSON array), flushed by size or NATS_EVENT_FLUSH_INTERVAL,
+  cutting the message rate by the batch factor (proven: 100 events -> 10
+  messages at batch 10, against live JetStream). The inline flood detectors
+  are not batched -- they act per packet, so only ML telemetry is delayed.
+  The AI-engine consumer (parse_event_batch) accepts both the array and the
+  single-object form, so batching/non-batching/older Publishers all
+  interoperate. Off by default (a wire-behaviour change); see
+  docs/event-model.md. Batching was chosen over sampling because it drops
+  nothing -- a sampled-away packet could be the attack.
 - **A reactor rate limit** bounding apiserver pressure under a score storm,
   closing ROADMAP.md Phase 4's "nothing bounds the reactor" item. Status
   writes are now change-aware: a phase transition or a blocklist delta is

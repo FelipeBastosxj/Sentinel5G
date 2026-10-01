@@ -18,6 +18,8 @@ data:
   # namespace comes from POD_NAMESPACE via the Downward API in the Deployment.
   KILL_SWITCH_CONFIGMAP_NAME: {{ ternary .Values.config.killSwitch.configMapName "" .Values.config.killSwitch.enabled | quote }}
   KILL_SWITCH_POLL_INTERVAL: {{ .Values.config.killSwitch.pollInterval | quote }}
+  NATS_EVENT_BATCH_SIZE: {{ .Values.config.eventBatching.batchSize | quote }}
+  NATS_EVENT_FLUSH_INTERVAL: {{ .Values.config.eventBatching.flushInterval | quote }}
   REACTOR_STATUS_WRITES_PER_SECOND: {{ .Values.config.reactor.statusWritesPerSecond | quote }}
   REACTOR_STATUS_WRITE_BURST: {{ .Values.config.reactor.statusWriteBurst | quote }}
   # Empty when ebpf.enabled is false or ebpf.pinPath is "" -- pkg/config
