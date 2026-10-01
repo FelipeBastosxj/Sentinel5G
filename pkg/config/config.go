@@ -159,6 +159,22 @@ type OperatorConfig struct {
 	// Negative disables the periodic pass and leaves only that startup one.
 	BlocklistReconcileInterval time.Duration
 
+	// KillSwitchConfigMapName is the ConfigMap whose presence with
+	// engaged=true suppresses ALL mitigation globally (detection continues).
+	// Empty disables the kill switch entirely. See
+	// pkg/controller.KillSwitch -- the point is that engaging it is one
+	// kubectl command with no operator restart.
+	KillSwitchConfigMapName string
+
+	// KillSwitchNamespace is where that ConfigMap is read from. Defaults to
+	// the operator's own namespace (POD_NAMESPACE), so the switch lives
+	// next to the operator and needs no cross-namespace RBAC.
+	KillSwitchNamespace string
+
+	// KillSwitchPollInterval bounds how often the ConfigMap is read and so
+	// how quickly engaging it takes effect. Default 2s.
+	KillSwitchPollInterval time.Duration
+
 	// ScoringPipelineGrace is how long after startup the operator waits
 	// before reporting ScoringPipelineReady=False on every policy (see
 	// pkg/controller's scoring_pipeline.go). It only covers the window where
@@ -240,6 +256,11 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
+	killSwitchPoll, err := parseDurationEnv("KILL_SWITCH_POLL_INTERVAL", 2*time.Second)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
 	cfg := OperatorConfig{
 		MetricsBindAddress:     getEnv("METRICS_BIND_ADDRESS", ":8080"),
 		HealthProbeBindAddress: getEnv("HEALTH_PROBE_BIND_ADDRESS", ":8081"),
@@ -277,6 +298,10 @@ func Load() (OperatorConfig, error) {
 		// BPF_PIN_PATH="" opts back out.
 		BPFPinPath:                 getEnvAllowEmpty("BPF_PIN_PATH", ebpf.DefaultPinPath),
 		BlocklistReconcileInterval: blocklistReconcileInterval,
+
+		KillSwitchConfigMapName: getEnvAllowEmpty("KILL_SWITCH_CONFIGMAP_NAME", "sentinel5g-killswitch"),
+		KillSwitchNamespace:     getEnv("KILL_SWITCH_NAMESPACE", os.Getenv("POD_NAMESPACE")),
+		KillSwitchPollInterval:  killSwitchPoll,
 
 		GTPUTunnelFloodEnabled:  tunnelFloodEnabled,
 		GTPUTunnelFloodPPS:      tunnelFloodPPS,

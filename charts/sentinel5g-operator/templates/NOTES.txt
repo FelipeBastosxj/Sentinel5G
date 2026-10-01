@@ -51,6 +51,14 @@ Event rather than giving up enforcement entirely. Confirm with
 `kubectl exec deploy/{{ include "sentinel5g-operator.fullname" . }} -- wget -qO- localhost:8080/metrics | grep enforcement_pinned`.
 {{- end }}
 
+{{- if .Values.config.killSwitch.enabled }}
+
+Global mitigation kill switch: ENABLED. To stop ALL mitigation across every
+policy at once (detection keeps running), with no operator restart:
+  kubectl -n {{ .Release.Namespace }} create configmap {{ .Values.config.killSwitch.configMapName }} --from-literal=engaged=true
+Resume by deleting that ConfigMap. Watch sentinel5g_kill_switch_engaged.
+{{- end }}
+
 GTP-U tunnel-flood detector (pkg/detect): {{ if .Values.config.gtpuTunnelFlood.enabled }}on, {{ .Values.config.gtpuTunnelFlood.packetsPerSecond }} pkt/s per tunnel -- a reasoned default, not one measured on your N3; tune it from a detection-only pilot (docs/production-install.md){{ else }}off{{ end }}.
 {{- if .Values.nats.allowUnauthenticated }}
 

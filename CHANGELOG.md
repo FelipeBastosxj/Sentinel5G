@@ -17,6 +17,17 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **A global mitigation kill switch** (`pkg/controller.KillSwitch`), closing
+  ROADMAP.md Phase 4's "no stop-everything-now" item. While a ConfigMap
+  (`sentinel5g-killswitch`, default) exists in the operator's namespace with
+  `engaged=true`, every mitigation on every policy is withheld -- detection
+  continues, nothing is blocked or quarantined. Engaging it is one `kubectl
+  create configmap`, effective within a 2s poll TTL with no operator restart;
+  `sentinel5g_kill_switch_engaged` and `sentinel5g_mitigations_suppressed_total`
+  make it visible. Read via a tight get-by-name namespaced Role (not
+  cluster-wide ConfigMap access), cached for the TTL so a score storm can't
+  become an API storm, and fail-safe (a transient read error keeps the last
+  known value). See docs/production-install.md §8.
 - **eBPF map-occupancy metrics and a mitigation-refused signal**, closing
   ROADMAP.md Phase 4's fifth and sixth scale items. The per-tunnel rate map
   is an LRU that evicts silently when full -- a rate window resetting

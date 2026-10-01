@@ -59,6 +59,12 @@ type ThreatScoreWatcher struct {
 	// ScoringPipelineReady condition Reconciler writes onto every policy (see
 	// scoring_pipeline.go). Nil is fine -- the tracking is skipped.
 	Scoring *ScoringPipelineTracker
+
+	// KillSwitch is the global "stop all mitigation now" control. When it is
+	// engaged, a crossing still counts and the policy still moves to
+	// Alerting, but no action is taken. Nil disables the check (mitigation
+	// always armed), the same nil-is-fine convention as the fields above.
+	KillSwitch *KillSwitch
 }
 
 // Start implements manager.Runnable so the watcher's lifecycle is tied to
@@ -193,6 +199,23 @@ func (w *ThreatScoreWatcher) applyPolicy(ctx context.Context, policy *securityv1
 		return w.updateStatus(ctx, latest)
 	}
 
+	// The global kill switch sits here, after the crossing is counted and
+	// before any action: an operator who engages it still gets the full
+	// detection signal (crossings, scores, Alerting phase) but nothing is
+	// blocked or quarantined. It is checked per score rather than cached in
+	// this struct so that engaging it takes effect within the switch's own
+	// TTL without an operator restart.
+	if w.KillSwitch.Engaged(ctx) {
+		for _, action := range suppressedActions(policy) {
+			MitigationsSuppressed.WithLabelValues(action).Inc()
+		}
+		w.Log.V(1).Info("mitigation suppressed by the global kill switch; recording Alerting only",
+			"policy", policy.Name, "sourceIp", event.SourceIP)
+		ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "alerting").Inc()
+		latest.Status.Phase = securityv1alpha1.PolicyPhaseAlerting
+		return w.updateStatus(ctx, latest)
+	}
+
 	ThresholdCrossings.WithLabelValues(policy.Namespace, policy.Name, "mitigating").Inc()
 
 	// Per-tunnel first: it is the precise action, and a policy that enables
@@ -295,6 +318,23 @@ func appendUnique(ips []string, ip string) []string {
 		}
 	}
 	return append(ips, ip)
+}
+
+// suppressedActions lists the action labels a policy WOULD have taken, for
+// the MitigationsSuppressed counter -- so "the kill switch withheld N tunnel
+// blocks" is visible, not just "something was suppressed".
+func suppressedActions(policy *securityv1alpha1.TelecomSecurityPolicy) []string {
+	var out []string
+	if policy.Spec.Actions.EbpfBlockTunnel {
+		out = append(out, "ebpf_block_tunnel")
+	}
+	if policy.Spec.Actions.EbpfBlock {
+		out = append(out, "ebpf_block")
+	}
+	if policy.Spec.Actions.IsolatePod {
+		out = append(out, "mesh_quarantine")
+	}
+	return out
 }
 
 // formatTunnel / parseTunnel are the single definition of how a blocked

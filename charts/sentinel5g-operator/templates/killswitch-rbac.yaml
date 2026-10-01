@@ -1,0 +1,38 @@
+{{- if .Values.config.killSwitch.enabled }}
+# Namespaced Role (not added to the ClusterRole) for the ONE ConfigMap the
+# global mitigation kill switch reads. Scoped to get/list/watch in the
+# release namespace only, and by resource NAME: a security operator should
+# not get cluster-wide ConfigMap read just to poll a single switch, so this
+# is the least-privilege form rather than a line in clusterrole.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sentinel5g-operator.fullname" . }}-killswitch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sentinel5g-operator.labels" . | nindent 4 }}
+rules:
+  # get only, restricted by name: KillSwitch does a single-object read
+  # through the APIReader, so it needs neither list/watch nor access to any
+  # other ConfigMap. (resourceNames cannot restrict list/watch anyway.)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: ["{{ .Values.config.killSwitch.configMapName }}"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sentinel5g-operator.fullname" . }}-killswitch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sentinel5g-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sentinel5g-operator.fullname" . }}-killswitch
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sentinel5g-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

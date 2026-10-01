@@ -655,9 +655,19 @@ correctness holes in what is built.
 - [ ] **No rate limit on the action path.** A score storm becomes thousands
       of status patches and apiserver pressure; the cooldown in
       `pkg/detect` bounds the detector, nothing bounds the reactor.
-- [ ] **No global kill switch.** `autoMitigate` is per policy; there is no
-      "stop everything now" for an operator watching a mitigation go wrong
-      across many policies at once.
+- [x] **No global kill switch.** Closed. `pkg/controller.KillSwitch` is a
+      ConfigMap the operator polls: while `sentinel5g-killswitch` exists with
+      `engaged=true`, every mitigation on every policy is withheld —
+      detection continues (scores, crossings, `Alerting`), nothing is blocked
+      or quarantined. Engaging it is one `kubectl create configmap`, takes
+      effect within the poll TTL (2s) with no operator restart, and is
+      visible as `sentinel5g_kill_switch_engaged` plus a
+      `mitigations_suppressed_total` count of what was withheld. Read through
+      a direct get-by-name (a tight namespaced Role, not cluster-wide
+      ConfigMap access), cached for the TTL so a score storm can't turn it
+      into an API storm, and it fails safe: a transient read error keeps the
+      last known value rather than flipping the switch. See
+      `docs/production-install.md` §8.
 - [ ] **Leader failover with in-flight scores is untested.** Delivery is
       at-least-once and the mitigation path is written to be idempotent,
       but that idempotency has never been exercised *through an actual
