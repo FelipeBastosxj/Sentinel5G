@@ -304,3 +304,43 @@ func TestObservationOccupancyReadsTheRealRateMap(t *testing.T) {
 	}
 	t.Logf("tunnel_rate occupancy %d / %d", entries, capacity)
 }
+
+// Characterizes what happens when the per-tunnel RATE map (an LRU sized at
+// MAX_TUNNEL_ENTRIES = 65,536) fills — ROADMAP.md Phase 4's "a real UPF
+// serves far more bearers" item. Unlike the enforcement maps (which refuse,
+// loudly), the rate map is LRU: past capacity it silently evicts the coldest
+// entry, so a tracked tunnel's rate window is lost and the flood it was
+// about to flag is undercounted. This proves the eviction happens, and at
+// what point, so the occupancy metric's threshold is grounded in behaviour.
+func TestTunnelRateMapEvictsWhenFullAndLosesTrackedRate(t *testing.T) {
+	l := loadForBench(t)
+
+	const capacity = 65536 // MAX_RATE_ENTRIES, bpf/headers/common.h
+	first := tunnelRateKey{Saddr: 0x01010101, TEID: 1}
+	entry := signalRateEntry{WindowStartNs: 1, Count: 999}
+
+	// Seed one tracked tunnel with a high rate, then fill the map past
+	// capacity with distinct tunnels, touching nothing else so the seeded
+	// one is the coldest.
+	if err := l.tunnelRate.Put(&first, &entry); err != nil {
+		t.Fatalf("seed first tunnel: %v", err)
+	}
+	for i := 2; i <= capacity+2048; i++ {
+		k := tunnelRateKey{Saddr: 0x01010101, TEID: uint32(i)}
+		v := signalRateEntry{WindowStartNs: 1, Count: 1}
+		if err := l.tunnelRate.Put(&k, &v); err != nil {
+			// An LRU Put should never fail for capacity; if it does, that
+			// is itself the finding.
+			t.Fatalf("LRU Put failed at %d entries: %v", i, err)
+		}
+	}
+
+	// The seeded tunnel's rate should be gone — evicted to make room, its
+	// Count of 999 lost. That is the silent degradation the item names.
+	var got signalRateEntry
+	err := l.tunnelRate.Lookup(&first, &got)
+	if err == nil {
+		t.Fatalf("the coldest tunnel survived a full LRU (count=%d); expected it evicted", got.Count)
+	}
+	t.Logf("confirmed: at >%d distinct tunnels the rate map evicts the coldest, losing its rate window (err=%v)", capacity, err)
+}

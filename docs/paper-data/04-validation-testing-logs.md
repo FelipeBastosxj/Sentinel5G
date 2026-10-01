@@ -471,3 +471,28 @@ flow data — and the cluster's TCP/HTTP flows produced nothing, confirming
 the UDP-on-signaling-ports-only filter on real traffic, not just a fixture.
 Both throwaway environments (Falco containers, the Cilium `kind` cluster)
 were torn down after.
+
+## 4.12 Update, 2026-10-01 (production-readiness validation data)
+
+The remaining production blockers were not code gaps — they were
+measurements the committed data was too small for. Collected on the lab:
+
+| Measurement | Result | Where |
+|---|---|---|
+| FPR on **340,000** real benign packets (`real-dataset-v3/`) | **0 false positives**, 95% upper bound **1.23e-5** → ≈1 wrong mitigation/s at 100k pkt/s (was 5.3e-4 / 53/s on 6,889) | §2.10 |
+| NATS synchronous publish, one publisher | **~15,000 events/s**; batched ~694,000/s (batch 256) | §1.3 |
+| Per-tunnel rate map at >65,536 tunnels | LRU evicts the coldest, rate window lost (measured, `TestTunnelRateMapEvicts…`) | §1.8 |
+
+Reproduce: `docs/paper-data/real-dataset-v3/gen_benign.sh` (capture),
+`cmd/ai-engine/scripts/fpr_large_benign.py` (FPR),
+`go test ./pkg/events/ -bench Throughput` (NATS),
+`go test -tags privileged ./pkg/ebpf/ -run TestTunnelRateMapEvicts` (eviction).
+
+Honest residuals, each now a narrow named thing rather than a whole item:
+sustained **physical-NIC line rate** and its node CPU need a real NIC (the
+program's own per-packet cost and the ring's non-saturation are measured on
+veth, §1.7); the **exact per-UPF bearer count** to size `MAX_TUNNEL_ENTRIES`
+needs a real UPF (the eviction behaviour and the occupancy guardrail are
+measured, §1.8); and a **production traffic mix** (video/web/signaling, not
+lab ICMP) is the final FPR confirmation (the bound and the local-calibration
+rule are measured, §2.10).
