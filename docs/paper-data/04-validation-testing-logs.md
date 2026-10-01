@@ -402,3 +402,26 @@ The statistics carry unit tests (the bound is what the conclusion rests on,
 so it is checked against two independent references); the measurement
 pipeline is tested for shape and for the property that out-of-fold scoring
 never scores a capture with a model that trained on it.
+
+## 4.10 Update, 2026-10-01 (Phase 4 branch, IPv6 data path end to end)
+
+The IPv6 maps, ring buffer and tunnel key had full structural and unit-test
+parity since Phase 2, but no v6 packet had ever traversed the program
+(`ROADMAP.md` Phase 4). `TestIPv6DataPathEndToEnd` (`-tags privileged`, root)
+closes that by running a real v6 GTP-U frame through the real, loaded XDP
+program via `BPF_PROG_TEST_RUN`:
+
+| Step | Assertion | Result |
+|---|---|---|
+| A clean v6 GTP-U T-PDU (Ethernet + IPv6 + UDP/2152 + GTP-U, flags 0x34 with the extension-header block, as the real captures carry) | program returns **XDP_PASS** | PASS |
+| After that packet | `tunnel_rate_v6` holds an entry for the outer v6 `(source, TEID)` with a non-zero count | PASS — the v6 parse and v6 rate tracking actually ran |
+| Block that exact v6 tunnel, replay the identical frame | program returns **XDP_DROP** | PASS |
+
+This is real v6 traffic through the real program producing real map side
+effects and real verdicts — not a mock. The one caveat, stated rather than
+hidden: the frame is injected via `BPF_PROG_TEST_RUN` rather than arriving on
+a NIC, so the driver/attach-point delivery is not exercised; the XDP
+program's v6 logic (parse, rate, enforcement, drop) all is. The v6 block/
+unblock map operations were already covered by
+`TestInspectorRoundTripsBothAddressFamilies`; this adds the packet path
+between them.
