@@ -375,3 +375,30 @@ dataset training uses), that each leave-one-capture-out fold trains only on
 captures other than its holdout, and that the rule baseline scores a
 TEID-less row at 0 (the `has_teid` gate that makes it blind to the untunneled
 anomalies — the finding's whole basis).
+
+## 4.9 Update, 2026-10-01 (Phase 4 branch, FPR confidence interval)
+
+The fourth Phase 4 item (false-positive rate as a confidence interval) is
+Python-only: `scripts/fpr_confidence.py` and its tests. This completes the
+four-item correctness gate.
+
+| Check | Result |
+|---|---|
+| `pytest` (`cmd/ai-engine`) | **76 passed** (was 69: +7 in `test_fpr_confidence.py`) |
+| `black --check` / `flake8` / `bandit` | clean |
+| Clopper-Pearson bound vs closed form (k=0) | agrees to < 1e-9 relative |
+| Clopper-Pearson bound vs textbook (k=2, n=20 → 0.3170) | agrees to < 1e-3 |
+| `python scripts/fpr_confidence.py` | runs, numbers below |
+
+| Measurement | Value |
+|---|---|
+| Within-pool FPR point estimate (old method) | 0 / 1,378 |
+| 95% upper bound from that, at 100k pkt/s | ≤ 267 wrong mitigations/sec |
+| **Out-of-fold real FPR** (honest) | **~0.23** (≈1,570 / 6,889) |
+| Synthetic benign "FPR" (distribution shift, not FPR) | ~0.75 |
+| Real benign packets needed to bound ≤ 1 wrong mitig/sec @ 100k | ~368,887 (at zero FP) |
+
+The statistics carry unit tests (the bound is what the conclusion rests on,
+so it is checked against two independent references); the measurement
+pipeline is tested for shape and for the property that out-of-fold scoring
+never scores a capture with a model that trained on it.

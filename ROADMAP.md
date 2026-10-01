@@ -409,9 +409,16 @@ they move, automated mitigation on a real network is imprudent regardless
 of how good the detector is, and scaling in Phase 5 only multiplies each of
 them by the number of clusters.
 
-The first item is closed. The remaining three in that gate are the
-validation ones, and none of them is closed by writing code — they are
-closed by measurements this project does not yet have.
+**The four-item gate is closed.** The restart fail-open is fixed with bpffs
+pinning and a kernel-vs-status reconcile; the distributed-TEID evasion is
+caught by a second, per-peer detector; the accuracy numbers now have a
+capture-independent holdout and a measured baseline; and the false-positive
+rate is a confidence interval whose honest verdict is that `autoMitigate` is
+not yet authorizable on real traffic — the detection-only pilot remains the
+only defensible way to turn the system on, and is now also the instrument
+for making the measurement that would change that. What remains below is
+Scale and Robustness: real ceilings and untested failure modes, not
+correctness holes in what is built.
 
 ### Correctness — the system can currently be wrong and not know it
 
@@ -561,13 +568,35 @@ closed by measurements this project does not yet have.
       rule is still what catches it. The two are complementary, which is why
       both ship; the comparison shows the model is not a dressed-up version
       of the rule, and it shows where it is not the answer.
-- [ ] **False-positive rate measured on a universe too small to authorize
-      `autoMitigate`.** "Zero false positives" comes from 5,000 normal
-      packets and 192 bystander packets. At 100k pkt/s an FPR of 1e-4 —
-      invisible in that sample — is ten wrong mitigations per second. Needs
-      orders of magnitude more benign traffic and a confidence interval,
-      not a point estimate. Until then `docs/production-install.md`'s
-      detection-only pilot is the only defensible way to turn this on.
+- [x] **False-positive rate measured on a universe too small to authorize
+      `autoMitigate`.** Closed by making the FPR a confidence interval with
+      an operational translation (`cmd/ai-engine/scripts/fpr_confidence.py`,
+      Clopper-Pearson exact bound, no scipy — the stats are checked against
+      closed forms in `test_fpr_confidence.py`), and the finding is that the
+      answer is "not yet", stated as a number. Full write-up in §2.9.
+
+      Two things fell out, both worse than the item assumed. First, even
+      taking "zero false positives" at face value, the sample only bounds
+      the true FPR: 0 in 1,378 packets gives a 95% upper bound of 2.7e-3,
+      which at 100k pkt/s is **up to 267 wrong mitigations per second**. The
+      point estimate of zero is three orders of magnitude short of ruling
+      that out; the tool computes the concrete target (~370,000 benign
+      packets at zero FP to bound it at one wrong mitigation/sec). Second,
+      "zero" was itself a within-pool artifact: scored out of fold (the §2.8
+      capture-independence), the real FPR at the production thresholds is
+      **~23%**, because the normalization reference error is calibrated on
+      training reconstruction error and does not transfer to a capture the
+      model never saw. And the obvious shortcut is closed too — a model
+      trained on real GTP-U flags ~75% of synthetic benign traffic, so
+      synthetic volume measures distribution shift, not FPR; the benign
+      data has to be real.
+
+      The deliverable is the instrument and the honest verdict:
+      `autoMitigate: true` is authorized by nothing measured here, the
+      detection-only pilot remains the only defensible way to turn the
+      system on, and the pilot is now also how the missing measurement gets
+      made — count benign packets and false alarms, feed them to the bound,
+      decide per deployment. This is the last of the four gate items.
 
 ### Scale — the architectural ceilings, not the implementation's
 

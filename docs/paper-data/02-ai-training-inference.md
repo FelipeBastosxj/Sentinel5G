@@ -807,3 +807,87 @@ contradict:
 `evaluate_model.py` is left in place for the within-pool confusion matrices
 §2.1 references, with its docstring now pointing here for the
 capture-independent and baseline numbers.
+
+## 2.9 The false-positive rate is a confidence interval, and "zero" was an artifact
+
+Every "zero false positives" in this document is a point estimate on a few
+thousand packets, and `ROADMAP.md` Phase 4's fourth item is right that a
+point estimate of zero says almost nothing about the rate that matters.
+`scripts/fpr_confidence.py` replaces it with a Clopper-Pearson exact binomial
+upper bound and translates that bound into the number an operator actually
+has to accept — wrong mitigations per second at a given packet rate.
+Reproducible: `python scripts/fpr_confidence.py`.
+
+### 2.9.1 Even taking "zero" at face value, it does not authorize anything
+
+The strongest within-pool result this project has is zero false positives on
+its benign holdout. Take it at face value and ask only what the *sample size*
+permits. With k=0 false positives in n benign packets, the 95% upper bound on
+the true FPR is `1 − 0.025^(1/n)`:
+
+| Benign packets observed (k=0) | 95% upper bound on FPR | Wrong mitigations/sec at 100k pkt/s |
+|---|---|---|
+| 1,378 | 2.67 × 10⁻³ | **up to 267** |
+| 6,889 (all real normal) | 5.35 × 10⁻⁴ | up to 53 |
+| 368,887 | 1.0 × 10⁻⁵ | up to 1 |
+| 3,688,878 | 1.0 × 10⁻⁶ | up to 0.1 |
+
+"Zero false positives on the captures we have" is *consistent with* 267 wrong
+mitigations per second on a 100k-pkt/s link. The sample is three orders of
+magnitude too small to rule that out. The last two rows are the concrete
+collection target the script computes: **roughly 370,000 benign packets with
+zero false positives** to bound the damage at one wrong mitigation per second,
+and ten times that for a tenth of one.
+
+### 2.9.2 And "zero" was itself an artifact of within-pool testing
+
+Scored honestly — out of fold, every real normal packet scored by a model
+trained on the *other* real normal captures, the same capture-independence as
+§2.8 — the false-positive rate at the production thresholds is not zero:
+
+| Benign universe | n | FP | Point FPR | 95% upper bound |
+|---|---|---|---|---|
+| within-pool holdout (the old method) | 1,378 | 0 | 0.000 | 2.67 × 10⁻³ |
+| **out-of-fold real (honest)** | 6,889 | ~1,570 | **~0.228** | ~0.238 |
+
+About one benign packet in four crosses the threshold when the model is
+tested on a capture it did not train on. The cause is the same one §2.8
+found for AUC, surfacing here as calibration rather than ranking: the
+normalization reference error is the 99th percentile of *training*
+reconstruction error, and on a structurally different capture (single-UE
+training, four-UE test, or the reverse) the errors shift up as a body, so the
+fixed [0,1] threshold catches a quarter of them. The ranking is still good
+(§2.8's AUC 0.935); the absolute calibration does not transfer across
+captures.
+
+Two readings, and the honest answer needs both. The 23% is pessimistic:
+there are only two real normal captures and they are deliberately very unlike
+each other, so leave-one-capture-out here is the extreme case (train on one
+subscriber shape, test on a completely different one). A deployment calibrates
+its reference error on its *own* normal traffic, which a real install does at
+training time. But the within-pool 0% is the opposite artifact, and the truth
+sits between two numbers that are both produced by having **too few, and too
+similar, real captures**. That is precisely this item's point.
+
+### 2.9.3 You cannot generate your way out of this
+
+The obvious shortcut — generate a million synthetic benign packets and get a
+tight bound — does not work, and the script keeps the measurement to show
+why. A model trained on real GTP-U flags ~75% of the synthetic generator's
+benign traffic, because that generator mixes SIP/SMPP/HTTP2/unknown protocols
+into "normal" and the real-trained model has never seen them. That 75% is
+distribution shift, not a false-positive rate; synthetic volume measures how
+unlike real traffic the synthetic set is, nothing more. **The benign volume
+has to be real.**
+
+### 2.9.4 What this means operationally
+
+`autoMitigate: true` on real traffic is not authorized by anything measured
+here, and now there is a number that says so rather than an intuition.
+`docs/production-install.md`'s detection-only pilot is the only defensible way
+to turn the system on, and the pilot is also how the missing measurement gets
+made: run detection-only, count benign packets and false alarms, and feed the
+two into `fpr_confidence.py`'s bound to decide — per deployment, on its own
+traffic — whether the upper bound has come down far enough to act. The tool is
+the deliverable; the number it currently returns on the committed data is "not
+yet."
