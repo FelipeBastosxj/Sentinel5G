@@ -160,6 +160,17 @@ code closes.
   states that used to be invisible.
 
 ### Fixed (Phase 4)
+- **A transient apiserver error during a status write silently undid a
+  mitigation.** The watcher blocked in the kernel before writing status, so
+  a failed status write left the kernel blocking and status not recording it
+  -- and the BlocklistReconciler (status is desired state) then reconciled
+  that orphan away a pass or two later. Fixed with write-ahead ordering: the
+  intent is recorded in status and persisted before the kernel/mesh is
+  touched, so a failed write means nothing was blocked (clean retry) and an
+  action failing after the write leaves status claiming the block for the
+  reconciler to re-apply. Found by the new chaos/fault-injection tests
+  (pkg/controller/chaos_test.go), which close ROADMAP.md Phase 4's "no chaos
+  testing" item.
 - **`Unblock`/`UnblockTunnel` treated an already-absent entry as an
   error.** De-escalation and finalization both walk a policy's status
   unblocking every entry, and a single phantom -- a restart that lost the

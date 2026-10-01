@@ -648,10 +648,23 @@ correctness holes in what is built.
 
 ### Robustness — the failure modes nothing currently tests
 
-- [ ] **No chaos or fault-injection testing at all.** NATS dying mid-
-      mitigation, the apiserver unavailable when a status write is due, a
-      node rebooting with active blocks — none of it has a test. The
-      convergence story is written down in comments and unverified.
+- [x] **No chaos or fault-injection testing at all.** Closed, and it earned
+      its keep by finding a real defect. `pkg/controller/chaos_test.go` now
+      injects each named fault: the apiserver unavailable when the status
+      write is due, an action failing after status has recorded it, a node
+      rebooting with active blocks, and the bus dropping mid-mitigation.
+
+      The apiserver case surfaced a genuine bug: the watcher blocked in the
+      kernel *before* writing status, so a failed status write left the
+      kernel blocking and status not — and the `BlocklistReconciler` (status
+      is desired state) would then reconcile that orphan away, silently
+      undoing the mitigation a pass or two later. Fixed by **write-ahead
+      ordering**: the intent is recorded in status and persisted before the
+      kernel or mesh is touched. A failed status write now means nothing was
+      blocked (clean retry); an action failing after the write leaves status
+      claiming the block and the reconciler re-applies it. The tests tie the
+      watcher's write-ahead and the reconciler's re-apply into one
+      convergence proof rather than two comments.
 - [x] **No rate limit on the action path.** Closed. `pkg/controller`'s
       status writes are now change-aware (`writeStatus`): a write that
       changes the phase or a blocklist set is *meaningful* and always goes
