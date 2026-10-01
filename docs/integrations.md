@@ -54,24 +54,21 @@ have two options:
    configure mTLS to Hubble Relay, commonly deployed that way — see
    [Cilium's Hubble TLS docs](https://docs.cilium.io/en/stable/observability/hubble/configuration/#tls-configuration).
 
-   **Verification note**: this integration was NOT verified against a live
-   Hubble/Cilium deployment. Neither of this project's test environments
-   (`docs/paper-data/test-environment.md`) runs Cilium: the original WSL2
-   cluster ran flannel, and the native-Linux lab that replaced it runs the
-   5G core on loopback with no Kubernetes CNI in the path at all, so there
-   is still no Hubble Relay to test against without standing one up
-   specifically. What *was* verified instead: an in-process gRPC server
-   implementing the real `observer.ObserverServer` interface
-   (`google.golang.org/grpc/test/bufconn`, not a real network listener),
-   exercised end-to-end through the actual generated
-   `observer.ObserverClient` — dial, stream, `Recv` loop, the
-   `GetFlowsResponse` oneof, graceful stream shutdown — with hand-built but
-   schema-accurate `flow.Flow` messages (checked against
-   `github.com/cilium/cilium/api/v1/flow`'s actual generated Go types, not
-   assumed), publishing to a real NATS JetStream server and confirmed via a
-   direct subscription. This is the same class of explicit, honest caveat
-   this page already carries for the Falco bridge below and for
-   `LinkerdAdapter`'s real-traffic-enforcement gap further down.
+   **Verification note**: this integration is now verified against a **real
+   Hubble/Cilium deployment** (2026-10-01, `ROADMAP.md` Phase 4). A throwaway
+   `kind` cluster running Cilium 1.20 with Hubble Relay enabled carried real
+   pod-to-pod UDP traffic on port 2152; `pkg/hubble.Observer`, dialing the
+   real Hubble Relay's `GetFlows` API, streamed the real Cilium flows and
+   `pkg/hubble.FromFlow` converted each into a `NormalizedEvent` on NATS —
+   correctly tagged `protocol: GTP-U` with the real pod name, namespace,
+   node and five-tuple, while the cluster's TCP/HTTP flows were correctly
+   ignored (the filter is UDP-on-signaling-ports only). Reproduce with
+   `scripts/integration/hubble_observer_e2e.sh`; the recorded run is in
+   `docs/paper-data/04-validation-testing-logs.md` §4.11. This had stood
+   unverified because neither prior test environment ran Cilium — the
+   earlier coverage was a `bufconn` in-process gRPC server with schema-
+   accurate hand-built `flow.Flow` messages, which exercised the client
+   plumbing but not a real datapath; now both have run.
 
 **Falco bridging: `cmd/falco-bridge`.** Falco's syscall-level alerts are
 bridged into `events.NormalizedEvent` by a small, separate binary
@@ -122,21 +119,21 @@ unauthenticated ingress is a real risk" posture this page already documents
 for the NATS bus below — anything that can `POST /falco` can forge a
 `NormalizedEvent`.
 
-**Verification note**: this bridge was verified end to end against a real
-NATS JetStream server (a synthetic Falco-shaped JSON payload POSTed to a
-running `Bridge` produced a correctly-mapped `NormalizedEvent`, actually
-delivered on the real subject, confirmed by directly subscribing to it) and
-inside a real built `docker build`/`docker run` container (`HEALTHCHECK`
-reports `"Status":"healthy"` against a live NATS connection). What was
-*not* verified is a live Falco daemon's own alerts flowing through it —
-the WSL2 environment used at the time had a custom kernel that didn't
-reliably support Falco's own kernel-module/eBPF probe. The native-Linux lab
-that replaced it (`docs/paper-data/test-environment.md`, kernel 6.14) has
-no such limitation; running a real Falco daemon there is the obvious next
-verification and hasn't been done yet. The HTTP contract itself (Falco's long-stable,
-widely-integrated JSON output schema) is the part carrying the residual
-risk; this is the same kind of explicit, honest caveat this page already
-carries for `LinkerdAdapter`'s real-traffic-enforcement gap below.
+**Verification note**: this bridge is now verified end to end against a
+**real Falco daemon** (2026-10-01, `ROADMAP.md` Phase 4). A real
+`falcosecurity/falco:0.45.0` running its modern-eBPF probe on the
+native-Linux lab (`docs/paper-data/test-environment.md`, kernel 6.14)
+captured a host syscall (`cat /etc/shadow`), fired its stock
+"Read sensitive file untrusted" rule, and POSTed the alert through its own
+`http_output` to a running `Bridge`, which published a correctly-mapped
+`NormalizedEvent` on the real NATS subject (confirmed by subscribing; the
+event's `observedAt` matched the Falco alert's timestamp exactly). Reproduce
+with `scripts/integration/falco_bridge_e2e.sh`; the recorded run is in
+`docs/paper-data/04-validation-testing-logs.md` §4.11. One environment note
+carried forward: Falco's modern-eBPF probe needs Falco ≥ 0.40 on kernel 6.x
+(0.39.2 fails `scap_init` on 6.14 here), so the bridge is pinned to a
+contract a current Falco actually emits. The earlier WSL2 environment could
+not run Falco's probe at all, which is why this had stood unverified.
 
 ## Mesh isolation: Istio, Cilium, Linkerd
 

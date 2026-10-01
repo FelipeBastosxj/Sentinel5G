@@ -17,6 +17,17 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **The Falco and Hubble capture paths now run against real daemons**,
+  closing the last Phase 4 item and completing the phase. A real
+  falcosecurity/falco:0.45.0 modern-eBPF probe caught cat /etc/shadow, fired
+  its stock rule, and POSTed through its own http_output to cmd/falco-bridge,
+  which published a NormalizedEvent on NATS (observedAt matching the alert
+  exactly). A throwaway kind cluster running Cilium 1.20 + Hubble Relay
+  carried real pod-to-pod UDP/2152 flows that pkg/hubble.Observer streamed
+  from the real GetFlows API and converted to GTP-U NormalizedEvents, with
+  TCP/HTTP correctly ignored. Reproducible via scripts/integration/; recorded
+  in docs/paper-data/04-validation-testing-logs.md 4.11. Both environments
+  torn down after.
 - **CPU and ring-buffer saturation measured under a sustained real load**
   (`scripts/loadtest/cpu_saturation.sh` + `scripts/loadtest/xdp_saturation`),
   closing ROADMAP.md Phase 4's "<2% CPU/node never measured" item -- real
