@@ -17,6 +17,16 @@ and the remaining three in its gate are validation work that no amount of
 code closes.
 
 ### Added (Phase 4)
+- **A reactor rate limit** bounding apiserver pressure under a score storm,
+  closing ROADMAP.md Phase 4's "nothing bounds the reactor" item. Status
+  writes are now change-aware: a phase transition or a blocklist delta is
+  meaningful and always persisted (the finalizer and de-escalation read it),
+  but an ObservedThreatScore-only refresh -- the dominant churn when the AI
+  engine scores one event per packet under at-least-once delivery -- is gated
+  by a per-policy token bucket (REACTOR_STATUS_WRITES_PER_SECOND, default 10,
+  burst 20). Throttled refreshes are skipped and counted
+  (sentinel5g_reactor_status_writes_throttled_total); no mitigation decision
+  is ever dropped, and one noisy policy can't starve another's refreshes.
 - **A global mitigation kill switch** (`pkg/controller.KillSwitch`), closing
   ROADMAP.md Phase 4's "no stop-everything-now" item. While a ConfigMap
   (`sentinel5g-killswitch`, default) exists in the operator's namespace with

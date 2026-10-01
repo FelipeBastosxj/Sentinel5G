@@ -268,6 +268,7 @@ func main() {
 		BaseThreshold: cfg.ThreatScoreThreshold,
 		Scoring:       scoring,
 		KillSwitch:    killSwitch,
+		ActionLimiter: sentinelcontroller.NewReactorLimiter(cfg.ReactorStatusWritesPerSecond, cfg.ReactorStatusWriteBurst),
 	}
 	if err := mgr.Add(watcher); err != nil {
 		log.Error(err, "unable to register threat score watcher")

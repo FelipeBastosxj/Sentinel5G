@@ -159,6 +159,16 @@ type OperatorConfig struct {
 	// Negative disables the periodic pass and leaves only that startup one.
 	BlocklistReconcileInterval time.Duration
 
+	// ReactorStatusWritesPerSecond bounds non-meaningful status refreshes
+	// per policy (ObservedThreatScore-only writes under a score storm), so a
+	// busy source can't turn one policy's scores into apiserver pressure.
+	// Meaningful writes (phase transitions, blocklist changes) are never
+	// throttled. 0 disables the limit. See pkg/controller.ReactorLimiter.
+	ReactorStatusWritesPerSecond float64
+
+	// ReactorStatusWriteBurst is the token-bucket burst for the above.
+	ReactorStatusWriteBurst int
+
 	// KillSwitchConfigMapName is the ConfigMap whose presence with
 	// engaged=true suppresses ALL mitigation globally (detection continues).
 	// Empty disables the kill switch entirely. See
@@ -261,6 +271,16 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
+	reactorRate, err := parseFloatEnv("REACTOR_STATUS_WRITES_PER_SECOND", 10)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	reactorBurst, err := parseIntEnv("REACTOR_STATUS_WRITE_BURST", 20)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
 	cfg := OperatorConfig{
 		MetricsBindAddress:     getEnv("METRICS_BIND_ADDRESS", ":8080"),
 		HealthProbeBindAddress: getEnv("HEALTH_PROBE_BIND_ADDRESS", ":8081"),
@@ -298,6 +318,9 @@ func Load() (OperatorConfig, error) {
 		// BPF_PIN_PATH="" opts back out.
 		BPFPinPath:                 getEnvAllowEmpty("BPF_PIN_PATH", ebpf.DefaultPinPath),
 		BlocklistReconcileInterval: blocklistReconcileInterval,
+
+		ReactorStatusWritesPerSecond: reactorRate,
+		ReactorStatusWriteBurst:      reactorBurst,
 
 		KillSwitchConfigMapName: getEnvAllowEmpty("KILL_SWITCH_CONFIGMAP_NAME", "sentinel5g-killswitch"),
 		KillSwitchNamespace:     getEnv("KILL_SWITCH_NAMESPACE", os.Getenv("POD_NAMESPACE")),

@@ -652,9 +652,20 @@ correctness holes in what is built.
       mitigation, the apiserver unavailable when a status write is due, a
       node rebooting with active blocks — none of it has a test. The
       convergence story is written down in comments and unverified.
-- [ ] **No rate limit on the action path.** A score storm becomes thousands
-      of status patches and apiserver pressure; the cooldown in
-      `pkg/detect` bounds the detector, nothing bounds the reactor.
+- [x] **No rate limit on the action path.** Closed. `pkg/controller`'s
+      status writes are now change-aware (`writeStatus`): a write that
+      changes the phase or a blocklist set is *meaningful* and always goes
+      through — those are bounded by the number of distinct threats and the
+      finalizer/de-escalation read them — while a write that only refreshes
+      `ObservedThreatScore` (the dominant churn under a per-packet ML score
+      stream with at-least-once delivery) is gated by a per-policy token
+      bucket (`ReactorLimiter`, `REACTOR_STATUS_WRITES_PER_SECOND` default
+      10, burst 20). Throttled refreshes are skipped and counted
+      (`sentinel5g_reactor_status_writes_throttled_total`), so apiserver
+      pressure is bounded without ever dropping a mitigation decision. The
+      per-policy keying means one noisy policy can't starve another's
+      refreshes. The detector cooldown bounds the detector; this bounds the
+      reactor, as the item asked.
 - [x] **No global kill switch.** Closed. `pkg/controller.KillSwitch` is a
       ConfigMap the operator polls: while `sentinel5g-killswitch` exists with
       `engaged=true`, every mitigation on every policy is withheld —
