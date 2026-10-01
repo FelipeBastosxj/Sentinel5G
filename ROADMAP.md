@@ -708,9 +708,21 @@ correctness holes in what is built.
       end.** Every v6 map, the v6 ring buffer and the v6 tunnel blocklist
       are asserted structurally and by unit test; no real v6 traffic has
       ever gone through them.
-- [ ] **Upgrade and rollback with active blocklists is untested**, with a
-      CRD that is still `v1alpha1` and still changing shape. Related to the
-      restart item above: today an upgrade *is* a silent unblock.
+- [x] **Upgrade and rollback with active blocklists is untested.** Closed.
+      The "today an upgrade *is* a silent unblock" premise was already
+      retired by the pinning + reconcile of this phase's first item; this
+      adds the tests that prove the upgrade paths specifically.
+      `pkg/controller/upgrade_test.go`: an upgrade that changes a BPF map's
+      shape (so the pins can't be reused) is **loud and recovered** — an
+      `EBPFPinsReset` Event plus a reconcile that re-applies from status,
+      not a silent loss; the only cross-version mitigation state
+      (`BlockedSourceIPs`/`BlockedTunnels`, both `[]string`) round-trips
+      through its wire format and an unknown future entry is skipped rather
+      than wedging deletion; and a cluster mid-rolling-upgrade, with
+      old-style (IP-only) and new-style (tunnel) policies side by side,
+      unions into the desired enforcement set cleanly. The CRD staying
+      `v1alpha1` is noted, not blocking: the mitigation state is two string
+      slices, the most rollback-stable shape available.
 - [ ] **`cmd/falco-bridge` and `pkg/hubble` have still never run against
       real daemons** — the caveat that was carried from Phase 2 and that
       native Linux finally makes cheap to remove.
