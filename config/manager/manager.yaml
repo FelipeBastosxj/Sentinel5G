@@ -67,6 +67,14 @@ spec:
           # CAP_SYS_ADMIN on older kernels); add them here deliberately if
           # you need EbpfBlock enforcement rather than mesh-only isolation.
           # See docs/integrations.md.
+          #
+          # If you do add them, add a hostPath volume for /sys/fs/bpf and
+          # mount it here too -- BPF_PIN_PATH defaults to
+          # /sys/fs/bpf/sentinel5g, and without the mount the operator
+          # attaches UNPINNED (an EBPFPinUnavailable warning Event, and
+          # every active drop lost on restart until the next
+          # kernel-vs-status reconcile). The Helm chart does this for you
+          # via ebpf.pinPath; this raw manifest deliberately stays minimal.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

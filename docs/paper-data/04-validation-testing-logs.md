@@ -229,3 +229,80 @@ What this run does **not** cover: the e2e quickstart against kind was run
 separately during development (per-tunnel block applied, `status.blockedTunnels`
 populated, TEID-less score counted as `no_teid`, tunnel unblocked on policy
 deletion) and is not re-listed here as a CI result, because it is not one.
+
+## 4.6 Update, 2026-10-01 (Phase 4 branch, native Linux)
+
+Full local run of everything CI runs, plus the two suites CI cannot, on the
+host described in `test-environment.md` (Linux 6.14). Unlike §4.5 this run
+had a local NATS JetStream and `KUBEBUILDER_ASSETS` available, so the
+integration tests that skip without them actually ran — which is why the
+`pkg/events`/`pkg/hubble`/`pkg/falco` numbers below are comparable to §4.5
+rather than to a run where those suites skipped.
+
+| Check | Result |
+|---|---|
+| `go vet ./...` | clean |
+| `go vet -tags privileged ./pkg/ebpf/` | clean |
+| `golangci-lint run` (v2.13.2) | **0 issues** |
+| `go test ./pkg/... ./api/... -cover` | 9 packages ok (`api/v1alpha1` has no test files), **173 `func Test…`**, 3 fuzz targets, 8 benchmarks |
+| `go test ./pkg/... ./api/... -race` | clean |
+| `make -C bpf` | compiles |
+| `bpftool prog load` on Linux 6.14 | verifier accepts: **xlated 10120B, jited 6137B**, 14 maps |
+| `go test -tags privileged ./pkg/ebpf/` (root, real object) | **5 further test functions**, all pass — including the two restart cases below |
+| `pytest` (`cmd/ai-engine`) | **61 passed** |
+| `black --check` / `flake8` / `bandit` | clean |
+| `helm lint` (both charts) | 0 failed |
+| CRD drift check (chart copy vs `config/crd/bases`) | copies match |
+| `controller-gen` + `git diff --exit-code` | manifests clean |
+
+Per-package coverage: `pkg/detect` 100%, `pkg/falco` 91.2%, `pkg/controller`
+**87.1%** (was 85.0), `pkg/mesh` 84.5%, `pkg/config` **84.3%** (was 79.7),
+`pkg/hubble` 74.6%, `pkg/events` **68.3%** (was 64.6), `pkg/ingestion` 29.7%,
+`pkg/ebpf` **17.6%** (was 18.6).
+
+The test count is `func Test…` declarations outside the `privileged` build
+tag, counted by grep; §4.5's figure was arrived at differently, so the two
+are not a delta. On the same method this branch's base commit (`22f984f`)
+has 152, so the 21 added here are the 13 reconciler cases, the 5 pinning
+ones and 3 for the new config variables — plus the 5 privileged ones below,
+which no unprivileged run compiles.
+
+`pkg/ebpf` went *down* by a point, and that is the honest reading rather
+than a bad one: this branch added pinning, map enumeration and the key-size
+check, all of which are in the real attach path and so unreachable from an
+unprivileged unit test. The privileged suite covers them against a real
+kernel instead, and that suite is not counted in this number.
+
+### What the restart test actually measures
+
+The claim being closed is "an operator restart no longer silently drops
+every active mitigation" (`ROADMAP.md` Phase 4, item 1), and it is a claim
+about kernel object lifetime, so it is measured rather than argued:
+
+| Test (`-tags privileged`, root, real `packet_filter.o`) | What it does | Result |
+|---|---|---|
+| `TestPinnedEnforcementSurvivesALoaderRestart` | block an IP **and** a `(source, TEID)` tunnel → `Close()` → re-`Attach` → read both back out of the maps | PASS |
+| `TestUnpinnedEnforcementDoesNotSurviveALoaderRestart` | the control case: the same sequence with no pin path → the entry is gone | PASS |
+| `TestUnblockOnAMissingEntryIsNotAnError` | `Unblock`/`UnblockTunnel` on a key that was never there | PASS |
+| `TestInspectorRoundTripsBothAddressFamilies` | v4 and v6, IP and tunnel, written then read back through the inspector | PASS |
+
+The control case is the part that makes the first row mean anything: without
+it, "the entry was still there" is also consistent with a test that never
+restarted anything.
+
+What this does **not** show, stated so it isn't read in: continuity of
+*filtering*. Between `Close()` and the next `Attach` the XDP program is
+detached and no packet is being inspected at all. Pinning preserves the
+decisions, not the enforcement of them, and the window is exactly as long as
+a Pod restart. Measuring that window on a real cluster under traffic is not
+something this test does, and is not something Phase 4 claims.
+
+The userspace half — status as the desired state, the maps as the actual one
+— is covered unprivileged in `pkg/controller/blocklist_reconciler_test.go`
+(13 cases), including the two that matter most for safety: a failed `List`
+must abort the pass rather than be read as "nothing should be blocked"
+(which would make the safety net flush every active mitigation whenever the
+API server blinked), and a kernel entry seen unclaimed for the *first* time
+must be left alone — a drop placed seconds ago is claimed by nothing the
+reconciler can see yet, because the mitigation path writes the map before
+it writes the status and the status is read through a lagging cache.

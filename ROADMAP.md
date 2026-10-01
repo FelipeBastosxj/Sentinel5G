@@ -409,23 +409,76 @@ they move, automated mitigation on a real network is imprudent regardless
 of how good the detector is, and scaling in Phase 5 only multiplies each of
 them by the number of clusters.
 
+The first item is closed. The remaining three in that gate are the
+validation ones, and none of them is closed by writing code — they are
+closed by measurements this project does not yet have.
+
 ### Correctness — the system can currently be wrong and not know it
 
-- [ ] **An operator restart silently drops every active mitigation.** The
-      worst item here, and ironic: it is exactly the fail-open the
-      HASH-not-LRU decision exists to prevent, arriving through the back
-      door. `Loader.Close()` closes the link, the XDP program detaches and
-      the whole collection — `blocklist` and `tunnel_blocklist` included —
-      dies with it. Nothing pins the maps to bpffs, and nothing re-applies
-      the blocks on startup: `Reconcile` repopulates the in-memory phase
-      *gauge* after a restart (it says so, in a comment) but never the
-      kernel state. So after a rollout, an OOM or a crash,
-      `status.blockedTunnels` asserts blocks that no longer exist, traffic
-      flows again, the dashboard still reads `Mitigating`, and
-      de-escalation later calls `UnblockTunnel` on phantom entries. Needs
-      bpffs pinning **and** a periodic kernel-vs-status reconcile (status
-      is the desired state, the map is the actual one) with a drift metric.
-      Nothing else on this list matters if the control lies about being on.
+- [x] **An operator restart silently drops every active mitigation.**
+      Closed, with both halves this item asked for, and the pin half is
+      closed by measurement rather than by assertion.
+
+      The failure was the fail-open the HASH-not-LRU decision exists to
+      prevent, arriving through the back door: `Loader.Close()` closed the
+      link, the XDP program detached and the whole collection —
+      `blocklist` and `tunnel_blocklist` included — died with it, while
+      `status.blockedTunnels` went on asserting blocks that no longer
+      existed.
+
+      **Pinning.** The four *enforcement* maps (`blocklist`,
+      `blocklist_v6`, `tunnel_blocklist`, `tunnel_blocklist_v6`) are now
+      pinned to bpffs at `BPF_PIN_PATH` (default `/sys/fs/bpf/sentinel5g`,
+      `ebpf.pinPath` in the chart, which also adds the `hostPath` mount),
+      so the next attach reuses the same kernel objects with their contents
+      intact. The *observation* maps (`*_rate`, `port_scan`) deliberately
+      are not: carrying a 1-second rate window across a restart would hand
+      the new process a reading from a period nobody was watching. That is
+      the same enforcement-versus-observation split that decides HASH
+      versus LRU, applied to a second question, and it is asserted in both
+      directions by `TestPinnedMapsAreTheEnforcementMapsOnly`. Proven on
+      kernel 6.14 by `TestPinnedEnforcementSurvivesALoaderRestart` (block,
+      `Close()`, re-`Attach`, read the entry back) against its own control
+      case, `TestUnpinnedEnforcementDoesNotSurviveALoaderRestart`.
+
+      **Reconcile.** `pkg/controller.BlocklistReconciler` runs once at
+      startup — that is the replay — and then every
+      `BLOCKLIST_RECONCILE_INTERVAL` (default 1m). Status is the desired
+      state, the map is the actual one: an entry in status and not in the
+      kernel is re-applied, an entry in the kernel claimed by no policy is
+      removed. Two things guard it against becoming the outage it prevents:
+      a failed `List` aborts the pass rather than being read as "nothing
+      should be blocked", and a removal requires the entry to have been
+      unclaimed on *two* consecutive passes — because the mitigation path
+      writes the kernel before it writes the status claiming the write, so
+      a drop placed seconds ago is briefly claimed by nothing the
+      reconciler can see. Additions stay immediate. The asymmetry errs
+      toward enforcing, deliberately.
+
+      **Drift metric.** `sentinel5g_blocklist_drift_total{kind,direction}`,
+      plus `sentinel5g_blocklist_entries{kind,state}` for both sides of the
+      comparison, `sentinel5g_blocklist_capacity` for its denominator, and
+      `sentinel5g_ebpf_enforcement_pinned` — which answers "does a drop on
+      this node survive the process at all?" as a number rather than an
+      assumption. Queries in `docs/observability.md`.
+
+      Two things this surfaced and fixed on the way: `Unblock` /
+      `UnblockTunnel` returned an error on a key that was already gone, so
+      de-escalation and finalization aborted on the first phantom entry and
+      never reached the real ones behind it; and the map key sizes are now
+      checked against the loaded object at attach, so a change to
+      `struct tunnel_key` that was not mirrored in Go fails loudly instead
+      of dropping the wrong tunnels.
+
+      Two residual gaps, stated rather than smoothed over. Between
+      `Close()` and the next `Attach` the XDP program is detached, so
+      nothing is filtered during the restart itself — pinning preserves the
+      decisions, it does not keep the program running. And a pin set that a
+      rebuilt object cannot reuse (a changed `max_entries`, say) is
+      discarded rather than reconciled: enforcement continues from empty,
+      an `EBPFPinsReset` Event says so, and the next sync re-applies from
+      status. Upgrade and rollback with active blocklists is still its own
+      open item below.
 - [ ] **A one-line evasion: spread the flood across many TEIDs.**
       `features.py` zeroes `rate_norm` for *any* event carrying a TEID, and
       `GTPU_TUNNEL_FLOOD_PPS` is per tunnel. So 200 tunnels at 999 pkt/s —

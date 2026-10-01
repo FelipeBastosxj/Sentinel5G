@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -134,7 +135,8 @@ func main() {
 		}
 	}()
 
-	blocklist := attachBlocklist(log, mgr.GetEventRecorder("sentinel5g-operator"), operatorPodRef(), bpfObjectPath, bpfInterface)
+	podRef := operatorPodRef()
+	blocklist := attachBlocklist(log, mgr.GetEventRecorder("sentinel5g-operator"), podRef, bpfObjectPath, bpfInterface, cfg.BPFPinPath)
 	defer blocklist.Close()
 
 	podIndex := sentinelcontroller.NewPodIPIndex()
@@ -238,6 +240,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Closes the loop between what the policies' status claims is blocked
+	// and what the kernel is actually dropping. Only registered when eBPF
+	// is genuinely attached: the no-op fallback above enforces nothing, so
+	// it implements no BlocklistInspector and there is no actual state to
+	// compare against (same type-assertion convention as EventSource).
+	if inspector, ok := blocklist.(sentinelebpf.BlocklistInspector); ok {
+		drift := &sentinelcontroller.BlocklistReconciler{
+			Client:    mgr.GetClient(),
+			Log:       log.WithName("blocklist-reconciler"),
+			Blocklist: blocklist,
+			Inspector: inspector,
+			Interval:  cfg.BlocklistReconcileInterval,
+			Recorder:  mgr.GetEventRecorder("sentinel5g-operator"),
+			PodRef:    podRef,
+		}
+		if addErr := mgr.Add(drift); addErr != nil {
+			log.Error(addErr, "unable to register blocklist reconciler")
+			os.Exit(1)
+		}
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		log.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -282,18 +305,48 @@ func natsReadyzCheck(busConnector *events.Connector) healthz.Checker {
 // drive mesh-layer isolation. The Event is what makes this a "Pod condition
 // or event," not just a log line, per docs/integrations.md's eBPF preflight
 // section: `kubectl describe pod`/`kubectl get events` surface it directly.
-func attachBlocklist(log logr.Logger, recorder clientgoevents.EventRecorder, ref runtime.Object, objectPath, iface string) sentinelebpf.BlocklistUpdater {
-	loader, err := sentinelebpf.Attach(objectPath, iface)
-	if err != nil {
-		cause := sentinelebpf.ClassifyAttachError(err)
-		log.Info("eBPF blocklist not attached; EbpfBlock actions will be no-ops",
-			"cause", cause, "reason", err.Error())
-		if ref != nil {
-			recorder.Eventf(ref, nil, corev1.EventTypeWarning, "EBPFAttachFailed", "AttachXDP", "%s: %s", cause, err.Error())
-		}
-		return noopBlocklist{}
+//
+// pinPath is passed through to Options.PinPath. A pin path that is not on a
+// bpffs is the one failure retried rather than accepted -- see the comment
+// on that branch for why unpinned enforcement beats no enforcement.
+func attachBlocklist(log logr.Logger, recorder clientgoevents.EventRecorder, ref runtime.Object, objectPath, iface, pinPath string) sentinelebpf.BlocklistUpdater {
+	loader, err := sentinelebpf.AttachWithOptions(objectPath, iface, sentinelebpf.Options{PinPath: pinPath})
+	if err == nil {
+		return loader
 	}
-	return loader
+
+	// A pin path that is not on a bpffs -- the container missing the
+	// /sys/fs/bpf hostPath mount is the common cause -- is retried WITHOUT
+	// pinning rather than left as a failed attach. The trade is deliberate:
+	// unpinned enforcement still drops packets and is only lost across a
+	// restart (which pkg/controller.BlocklistReconciler then repairs from
+	// policy status), whereas refusing to attach at all would mean no
+	// enforcement whatsoever, at any moment, over a mount problem. It is
+	// reported, not swallowed: a warning Event, a log line, and
+	// sentinel5g_ebpf_enforcement_pinned going to 0.
+	if pinPath != "" && errors.Is(err, sentinelebpf.ErrPinPathNotBPFFS) {
+		log.Info("eBPF map pinning unavailable; attaching unpinned -- active drops will NOT survive an operator restart",
+			"pinPath", pinPath, "reason", err.Error())
+		if ref != nil {
+			recorder.Eventf(ref, nil, corev1.EventTypeWarning, "EBPFPinUnavailable", "AttachXDP",
+				"%s is not on a bpf filesystem, so enforcement maps were not pinned; "+
+					"mount the node's /sys/fs/bpf into this Pod (chart value ebpf.pinPath) "+
+					"or set BPF_PIN_PATH='' to make this expected. Detail: %s", pinPath, err.Error())
+		}
+		unpinned, retryErr := sentinelebpf.AttachWithOptions(objectPath, iface, sentinelebpf.Options{})
+		if retryErr == nil {
+			return unpinned
+		}
+		err = retryErr
+	}
+
+	cause := sentinelebpf.ClassifyAttachError(err)
+	log.Info("eBPF blocklist not attached; EbpfBlock actions will be no-ops",
+		"cause", cause, "reason", err.Error())
+	if ref != nil {
+		recorder.Eventf(ref, nil, corev1.EventTypeWarning, "EBPFAttachFailed", "AttachXDP", "%s: %s", cause, err.Error())
+	}
+	return noopBlocklist{}
 }
 
 // operatorPodRef builds an object reference to the operator's own Pod from

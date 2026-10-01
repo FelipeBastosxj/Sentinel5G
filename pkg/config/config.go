@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 )
 
 // OperatorConfig holds the operator's runtime configuration.
@@ -98,6 +100,30 @@ type OperatorConfig struct {
 	// publish thousands of identical scores per second.
 	GTPUTunnelFloodCooldown time.Duration
 
+	// BPFPinPath is the bpffs directory the eBPF ENFORCEMENT maps
+	// (blocklist, blocklist_v6, tunnel_blocklist, tunnel_blocklist_v6) are
+	// pinned into, so an active drop survives this process. Empty disables
+	// pinning, which is the pre-Phase-4 behaviour: a rollout, an OOM kill
+	// or a crash then un-blocks everything the policies' status still
+	// claims is blocked, until pkg/controller.BlocklistReconciler re-applies
+	// it. See pkg/ebpf/pin_linux.go for which maps are pinned and why the
+	// rate/observation maps deliberately are not.
+	//
+	// Needs /sys/fs/bpf mounted into the container (the Helm chart does this
+	// when ebpf.enabled and ebpf.pinPath are both set). A pin path that is
+	// not on a bpffs is NOT fatal -- cmd/operator/main.go falls back to an
+	// unpinned attach with a warning Event, because losing XDP entirely over
+	// a mount problem would be worse than losing restart survival.
+	BPFPinPath string
+
+	// BlocklistReconcileInterval is how often the operator compares the
+	// kernel's enforcement maps against what the TelecomSecurityPolicy
+	// status subresources say should be enforced, re-applying the
+	// difference (pkg/controller.BlocklistReconciler). A sync always runs
+	// once at startup regardless; this only sets the periodic cadence.
+	// Negative disables the periodic pass and leaves only that startup one.
+	BlocklistReconcileInterval time.Duration
+
 	// ScoringPipelineGrace is how long after startup the operator waits
 	// before reporting ScoringPipelineReady=False on every policy (see
 	// pkg/controller's scoring_pipeline.go). It only covers the window where
@@ -149,6 +175,11 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
+	blocklistReconcileInterval, err := parseDurationEnv("BLOCKLIST_RECONCILE_INTERVAL", time.Minute)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
 	cfg := OperatorConfig{
 		MetricsBindAddress:     getEnv("METRICS_BIND_ADDRESS", ":8080"),
 		HealthProbeBindAddress: getEnv("HEALTH_PROBE_BIND_ADDRESS", ":8081"),
@@ -179,6 +210,13 @@ func Load() (OperatorConfig, error) {
 
 		DeEscalationDwell:    deEscalationDwell,
 		ScoringPipelineGrace: scoringPipelineGrace,
+
+		// Defaults to pinning: the alternative is a restart that silently
+		// un-blocks every active mitigation, which is the exact fail-open
+		// the enforcement maps' HASH-not-LRU choice exists to prevent.
+		// BPF_PIN_PATH="" opts back out.
+		BPFPinPath:                 getEnvAllowEmpty("BPF_PIN_PATH", ebpf.DefaultPinPath),
+		BlocklistReconcileInterval: blocklistReconcileInterval,
 
 		GTPUTunnelFloodEnabled:  tunnelFloodEnabled,
 		GTPUTunnelFloodPPS:      tunnelFloodPPS,
@@ -218,6 +256,17 @@ func natsHasCredentials(cfg OperatorConfig) bool {
 
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+// getEnvAllowEmpty is getEnv for a setting where the EMPTY string is a
+// meaningful value rather than "unset". getEnv treats BPF_PIN_PATH="" as
+// unset and hands back the default, which would make the documented way to
+// turn pinning off silently turn it on.
+func getEnvAllowEmpty(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return fallback

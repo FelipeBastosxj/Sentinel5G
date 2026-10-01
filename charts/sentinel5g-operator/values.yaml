@@ -49,6 +49,21 @@ ebpf:
   # ebpf.enabled: true -- easy to flip the feature "on" and still get a
   # silent no-op from a missing capability.
   capabilities: ["BPF", "NET_ADMIN"]
+  # bpffs directory the ENFORCEMENT maps (blocklist, blocklist_v6,
+  # tunnel_blocklist, tunnel_blocklist_v6) are pinned into, so an active
+  # drop outlives the operator process. Without it, a `helm upgrade`, an
+  # OOM kill or a crash detaches the XDP program and takes every mitigation
+  # with it, while each policy's status goes on asserting blocks that are no
+  # longer in force -- the control reporting itself as on while being off
+  # (ROADMAP.md Phase 4). Its PARENT directory is mounted from the node as a
+  # hostPath (see templates/deployment.yaml), which is why this is a path
+  # and not a boolean.
+  #
+  # Set to "" to disable pinning and the hostPath mount. The periodic
+  # kernel-vs-status reconciliation below still repairs the maps after a
+  # restart; pinning is what makes the drops correct DURING the gap rather
+  # than from the next sync onwards.
+  pinPath: /sys/fs/bpf/sentinel5g
 
 securityContext:
   allowPrivilegeEscalation: false
@@ -79,6 +94,15 @@ config:
   # 10m to start scoring; it does not affect detection, only when the
   # operator starts saying it hasn't seen a score.
   scoringPipelineGrace: 10m
+
+  # How often the operator compares the eBPF enforcement maps against what
+  # the TelecomSecurityPolicy status subresources say should be enforced,
+  # re-applying the difference and exporting it as
+  # sentinel5g_blocklist_drift_total. A sync always runs once at startup
+  # regardless of this value -- that is the restart replay -- so this only
+  # sets the periodic cadence. Set to a negative duration (e.g. -1s) to keep
+  # only the startup sync.
+  blocklistReconcileInterval: 1m
 
   # Deterministic (non-ML) GTP-U tunnel-flood detector (pkg/detect). Closes
   # ROADMAP.md Phase 2.5's in-tunnel-flood gap, which the autoencoder

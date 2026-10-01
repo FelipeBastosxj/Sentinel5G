@@ -1,8 +1,11 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
+
+	"github.com/FelipeBastosxj/Sentinel5G/pkg/ebpf"
 )
 
 // clearNATSAuthEnv resets every env var natsHasCredentials/Load consult, so
@@ -133,5 +136,76 @@ func TestLoad_RejectsAnOutOfRangeTunnelFloodThreshold(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to reject a GTPU_TUNNEL_FLOOD_PPS above uint32")
+	}
+}
+
+// unsetEnv removes key for the duration of the test and restores whatever
+// the developer's shell had afterwards.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	if old, ok := os.LookupEnv(key); ok {
+		t.Cleanup(func() { _ = os.Setenv(key, old) })
+	}
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+}
+
+// Pinning is on by default, because the alternative is a restart that
+// silently un-blocks every active mitigation -- the same fail-open the
+// enforcement maps' HASH-not-LRU choice exists to prevent, arriving through
+// the back door (ROADMAP.md Phase 4).
+func TestLoad_PinsEnforcementMapsByDefault(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	// Unset, not set-to-empty: empty is a MEANING for this variable
+	// ("disable pinning"), so t.Setenv(key, "") would assert the opposite of
+	// what this test is about.
+	unsetEnv(t, "BPF_PIN_PATH")
+	unsetEnv(t, "BLOCKLIST_RECONCILE_INTERVAL")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BPFPinPath != ebpf.DefaultPinPath {
+		t.Errorf("BPFPinPath = %q, want %q", cfg.BPFPinPath, ebpf.DefaultPinPath)
+	}
+	if cfg.BlocklistReconcileInterval != time.Minute {
+		t.Errorf("BlocklistReconcileInterval = %v, want 1m", cfg.BlocklistReconcileInterval)
+	}
+}
+
+// The documented way to turn pinning off is BPF_PIN_PATH="". getEnv treats
+// an empty value as "unset" and would hand back the default, which would
+// make the documented opt-out silently an opt-in -- hence
+// getEnvAllowEmpty, and hence this test.
+func TestLoad_EmptyPinPathDisablesPinning(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("BPF_PIN_PATH", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BPFPinPath != "" {
+		t.Errorf("BPF_PIN_PATH=\"\" left BPFPinPath = %q; pinning would still be on", cfg.BPFPinPath)
+	}
+}
+
+// A negative interval is the documented way to keep only the startup
+// replay, so it must survive Load rather than being normalized away.
+func TestLoad_NegativeReconcileIntervalIsPreserved(t *testing.T) {
+	clearNATSAuthEnv(t)
+	t.Setenv("NATS_ALLOW_UNAUTHENTICATED", "true")
+	t.Setenv("BLOCKLIST_RECONCILE_INTERVAL", "-1s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BlocklistReconcileInterval != -time.Second {
+		t.Errorf("BlocklistReconcileInterval = %v, want -1s", cfg.BlocklistReconcileInterval)
 	}
 }

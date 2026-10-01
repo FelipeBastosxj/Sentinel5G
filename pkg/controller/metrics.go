@@ -94,6 +94,78 @@ var (
 		[]string{"action", "result"},
 	)
 
+	// BlocklistDrift counts entries the periodic kernel-versus-status
+	// comparison had to correct (pkg/controller.BlocklistReconciler).
+	//
+	// This is the metric ROADMAP.md Phase 4's first item asks for, and the
+	// two directions are not interchangeable. direction="missing" means a
+	// policy's status claimed a drop the kernel did not have: traffic an
+	// operator believed was being dropped was flowing. Any non-zero rate
+	// there outside of a restart is a defect, and a spike at startup is the
+	// restart replay itself. direction="extra" means the kernel held a drop
+	// no policy claimed: enforcement outliving its reason, which is a
+	// quieter problem but still a wrong answer to "what is blocked".
+	BlocklistDrift = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_blocklist_drift_total",
+			Help: "eBPF enforcement entries corrected by the kernel-vs-status reconciliation, by kind and direction.",
+		},
+		[]string{"kind", "direction"},
+	)
+
+	// BlocklistEntries is the size of each side of that comparison, taken
+	// before any correction. state="desired" is the union of every policy's
+	// status; state="kernel" is what the enforcement maps actually held.
+	// The two being equal is the healthy state; BlocklistDrift above is
+	// their difference over time.
+	BlocklistEntries = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_blocklist_entries",
+			Help: "Enforcement entries, by kind and by which side of the desired/actual comparison.",
+		},
+		[]string{"kind", "state"},
+	)
+
+	// BlocklistCapacity is max_entries for each enforcement map, so
+	// BlocklistEntries{state="kernel"} has a denominator. Both maps are
+	// plain HASH and refuse an insert when full rather than evicting one
+	// (the fail-loudly choice bpf/packet_filter.c documents), so approaching
+	// this ceiling means approaching the point where new mitigations start
+	// failing outright -- ROADMAP.md Phase 4 tracks the alerting and the
+	// operational response to that as its own open item.
+	BlocklistCapacity = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_blocklist_capacity",
+			Help: "max_entries of each eBPF enforcement map.",
+		},
+		[]string{"kind"},
+	)
+
+	// BlocklistReconciles counts reconciliation passes. An error here does
+	// not mean drift went uncorrected in general -- the pass applies every
+	// correction it can and reports the ones that failed -- but a sustained
+	// error rate means the comparison itself is not trustworthy.
+	BlocklistReconciles = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sentinel5g_blocklist_reconciles_total",
+			Help: "Kernel-vs-status enforcement reconciliation passes, by result.",
+		},
+		[]string{"result"},
+	)
+
+	// EnforcementPinned reports whether this node's enforcement maps are
+	// pinned to bpffs, i.e. whether a drop survives the operator process at
+	// all. 0 is not a failure -- it is the documented behaviour with
+	// BPF_PIN_PATH unset -- but it changes what a restart means, so it
+	// should be visible rather than assumed. Set once at startup; absent
+	// entirely when eBPF is not attached.
+	EnforcementPinned = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "sentinel5g_ebpf_enforcement_pinned",
+			Help: "1 when the eBPF enforcement maps are pinned to bpffs and survive an operator restart, 0 when not.",
+		},
+	)
+
 	// PolicyPhase exposes each policy's current phase as a 0/1 gauge per
 	// possible phase (the kube-state-metrics convention), so a dashboard can
 	// sum by phase without re-deriving it from logs. SetPolicyPhase keeps
@@ -128,6 +200,11 @@ func init() {
 		ThresholdCrossings,
 		Mitigations,
 		PolicyPhase,
+		BlocklistDrift,
+		BlocklistEntries,
+		BlocklistCapacity,
+		BlocklistReconciles,
+		EnforcementPinned,
 	)
 }
 
