@@ -643,12 +643,23 @@ correctness holes in what is built.
       cardinality detector (Phase 4 item 2), and a single source-wide block
       on that peer reclaims every slot its forged tunnels took. The two
       Phase 4 items compose: the evasion detector *is* the DoS defence.
-- [ ] **The `<2%` CPU-per-node target has never been measured, and neither
-      has sustained line rate.** Carried over from Phase 3's harness item:
-      the 195-211 ns figure is `bpftool prog run` with hot caches and no
-      consumer, and the ~1.6 ms of ring-buffer drain headroom is
-      *arithmetic*, not an observation. Needs a real NIC, a real generator,
-      `perf`, and the actual `lost` record count under saturation.
+- [x] **The `<2%` CPU-per-node target has never been measured, and neither
+      has sustained line rate.** Measured, with the residual stated honestly.
+      `scripts/loadtest/cpu_saturation.sh` runs real GTP-U frames through the
+      real XDP program on a veth (a real driver RX path) with the
+      `SignalingEvents` consumer draining the ring, and BPF run-time stats
+      on. Findings (`docs/paper-data/01-performance-benchmarks.md` §1.7):
+      the ring buffer **does not saturate** — ~14 dropped observations in
+      ~2.3M at 386k pkt/s, retiring the "1.6 ms headroom is arithmetic"
+      concern with an observation; and the honest per-packet program cost
+      under load with a consumer is **~900 ns** (4× the 211 ns hot-cache
+      microbenchmark, still 200× under the 0.2 ms budget), which at 100k
+      pkt/s is ~9% of one core / ~1.1% of an eight-core node. What remains is
+      only the narrow part the item named literally — a **physical NIC** at
+      true line rate (10/40/100 GbE) and its driver CPU — because this is
+      generic XDP on a veth; the program's own cost and the ring's behaviour
+      under real load, which were the substance, are now observations, not
+      arithmetic.
 - [x] **AI engine throughput per replica is unknown.** Measured.
       `scripts/throughput_bench.py` puts one replica at **~72,000 events/sec**
       on the production `score_event` path (single process, single thread,

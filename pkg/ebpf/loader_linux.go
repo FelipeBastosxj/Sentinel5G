@@ -258,6 +258,27 @@ func AttachWithOptions(objPath, iface string, opts Options) (*Loader, error) {
 	}, nil
 }
 
+// ProgramRunStats returns the XDP program's accumulated execution count and
+// total run time, as the kernel tracks them when BPF run-time statistics are
+// enabled (ebpf.EnableStats / `sysctl kernel.bpf_stats_enabled=1`). Zero
+// values mean stats were never enabled. The run time is the program's OWN
+// on-CPU time, independent of the attach mode (native vs generic XDP), so it
+// is a faithful per-packet CPU cost even on a veth — which is what
+// scripts/loadtest/xdp_saturation uses it for (ROADMAP.md Phase 4's
+// CPU-per-node item). Returns an error only if the program handle can't be
+// queried.
+func (l *Loader) ProgramRunStats() (runCount uint64, runTime time.Duration, err error) {
+	prog, ok := l.collection.Programs[xdpProgramName]
+	if !ok {
+		return 0, 0, fmt.Errorf("xdp program %q not in collection", xdpProgramName)
+	}
+	stats, err := prog.Stats()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read program stats: %w", err)
+	}
+	return stats.RunCount, stats.Runtime, nil
+}
+
 // monotonicToWallClockOffset returns wall-clock "now" minus CLOCK_MONOTONIC
 // "now", so that offset.Add(time.Duration(monotonicNs)) recovers the
 // wall-clock time a monotonic reading (like bpf_ktime_get_ns()) corresponds
