@@ -5,6 +5,25 @@ planned next.
 
 ## [Unreleased]
 
+### Production-readiness validation (Phase 4 follow-up, 2026-10-01)
+- **False-positive rate re-measured on 340,000 real benign packets**
+  (docs/paper-data/real-dataset-v3/, from the lab): zero false positives,
+  95% upper bound 1.23e-5 -- about one wrong mitigation/second at 100k pkt/s,
+  down ~60x from the 6,889-packet bound. This is the number that turns a
+  per-policy autoMitigate from an unquantified risk into a bounded decision,
+  conditioned on local calibration (2.8/2.10). See scripts/fpr_large_benign.py
+  and real-dataset-v3/gen_benign.sh.
+- **NATS publish throughput measured** (pkg/events/throughput_bench_test.go):
+  a synchronous publisher sustains ~15,000 events/s, batching lifts it ~46x
+  to ~694,000/s -- confirming the event-batching feature is necessary at
+  100k pkt/s/node, not optional (1.3).
+- **Per-tunnel rate-map cardinality behaviour measured**
+  (TestTunnelRateMapEvictsWhenFullAndLosesTrackedRate): past 65,536 distinct
+  tunnels the LRU silently evicts and loses a rate window; the occupancy
+  gauge is the guardrail, and MAX_TUNNEL_ENTRIES must be raised to the
+  deployment's real bearer ceiling (1.8).
+
+
 Phases 2.5 and 3 are complete. `ROADMAP.md` was restructured on the
 strength of a gap review rather than a plan: the production-readiness work
 that review turned up is now **Phase 4** (validation, scale, robustness --

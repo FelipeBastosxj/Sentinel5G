@@ -198,16 +198,29 @@ At idle, `kubectl top pod` showed the NATS pod at `1m CPU / 4Mi memory` —
 negligible, as expected with no load; a CPU/memory sample *during* the bench
 run above wasn't captured.
 
-**Read honestly:** this measures generic JetStream pub/sub throughput, not
-this project's actual `sentinel5g.events.normalized`/`sentinel5g.threats.scored`
-traffic shape (small, infrequent JSON events, not a 50k-message flood).
-**Pending — next step:** repeat concurrently with a real signaling-storm
-burst on the actual project subjects, so the measurement reflects this
-system's real event shape/rate instead of synthetic bench traffic alone.
-The burst now exists as a committed, reproducible artifact:
-`real-dataset-v2/multi_ue_one_flooding.pcap` (3,000 pkt/s through one
-tunnel) and the `gen_tunnel_flood.py` that produces it at any rate the lab
-supports.
+**Read honestly:** the 270k figure is `nats bench`'s *async* pub (fire many,
+reconcile acks in bulk) — NATS's own ceiling, not this project's publish
+path. The operator's `pkg/ingestion.Publisher` publishes **synchronously**
+(it waits for each JetStream ack), which is the number that actually bounds a
+node, so it was measured directly (2026-10-01,
+`pkg/events/throughput_bench_test.go` against a live server, real
+`NormalizedEvent` payloads):
+
+| Publish path (one goroutine) | Throughput |
+|---|---|
+| synchronous, one event per message | **~15,000 msg/s = ~15,000 events/s** |
+| batched (batch 16) | 11,490 msg/s → **183,848 events/s** |
+| batched (batch 64) | 6,867 msg/s → **439,481 events/s** |
+| batched (batch 256) | 2,711 msg/s → **693,964 events/s** |
+
+This is the measurement that makes §1.5's batching item load-bearing rather
+than nice-to-have: a single synchronous publisher sustains only ~15k events/s,
+so **100k pkt/s on one node cannot be published unbatched** — it is below the
+per-publisher ceiling. Batching lifts the *event* rate ~46× (to ~694k/s at
+batch 256) even as the message rate falls, which is exactly the trade that
+keeps the bus from being the bottleneck. Multiple per-node publishers
+aggregate above this; the point is the per-publisher floor, and that batching
+clears it.
 
 ## 1.4 Load-testing harness: both SLOs measured, both open questions settled
 
@@ -402,3 +415,27 @@ behaviour under it.
 The per-replica scoring throughput in §1.5 is likewise a scoring rate on
 pre-built events, not an end-to-end node measurement — it does not include
 the kernel capture or the NATS round trip, and does not claim to.
+
+## 1.8 Per-tunnel rate map: the cardinality ceiling, measured
+
+`MAX_TUNNEL_ENTRIES` is 65,536 and `tunnel_rate` is an `LRU_HASH`, so
+`ROADMAP.md` Phase 4 asked what actually happens when a real UPF's bearer
+count exceeds it. `TestTunnelRateMapEvictsWhenFullAndLosesTrackedRate`
+(`-tags privileged`) answers it against the real map: seed one tunnel with a
+high rate, insert distinct tunnels past capacity, and the seeded tunnel's
+entry is **gone** — the LRU evicted the coldest to make room, and its rate
+window (and therefore the flood it was about to flag) is silently lost.
+Confirmed at `>65,536` distinct tunnels.
+
+So the degradation the item feared is real and now demonstrated, and the
+guardrail is already shipped: `sentinel5g_ebpf_observation_map_occupancy`
+against `..._capacity` (§observability) rises toward 1 *before* eviction
+bites, which is the only warning an LRU can give. The sizing rule follows
+directly — `MAX_TUNNEL_ENTRIES` must exceed the deployment's peak concurrent
+bearer count, and a production UPF serves far more than 65,536 (commercial
+and Open5GS deployments run from hundreds of thousands into the millions), so
+the 65,536 default is a lab value: raise it (and rebuild — note that changing
+`max_entries` resets the pins, `EBPFPinsReset`) to the node's real bearer
+ceiling, sized from the occupancy gauge. The exact figure a given UPF needs
+is the one thing here that genuinely requires that UPF; the *behaviour* at
+the ceiling, and the metric that sees it coming, are measured.

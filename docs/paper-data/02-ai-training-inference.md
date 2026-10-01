@@ -891,3 +891,45 @@ two into `fpr_confidence.py`'s bound to decide — per deployment, on its own
 traffic — whether the upper bound has come down far enough to act. The tool is
 the deliverable; the number it currently returns on the committed data is "not
 yet."
+
+## 2.10 The false-positive bound, re-measured on 340,000 real benign packets
+
+§2.9 closed with the honest verdict that `autoMitigate` was authorized by
+nothing measured, because the benign universe was too small (6,889 packets →
+a 95% FPR upper bound of 5.3 × 10⁻⁴, i.e. up to 53 wrong mitigations/second
+at 100k pkt/s). It named the one thing that would move the number: orders of
+magnitude more *real* benign traffic. That was then collected.
+
+`docs/paper-data/real-dataset-v3/` is **340,000 benign GTP-U packets**
+captured from the live Open5GS + UERANSIM core — a 300,000-packet steady
+session plus a 40,000-packet session with varied payloads (200–1,200 B) and
+rates, so the bound is not measured on a single packet shape. The autoencoder
+trained on the committed real normal data (6,889 packets, never these)
+scored all 340,000 with **zero false positives**
+(`scripts/fpr_large_benign.py`):
+
+| Benign set | Packets | FP | 95% upper bound on FPR | ≤ wrong mitigations/s at 100k pkt/s |
+|---|---|---|---|---|
+| steady | 300,000 | 0 | 1.23 × 10⁻⁵ | 1.23 |
+| diverse payloads | 40,000 | 0 | 9.22 × 10⁻⁵ | 9.22 |
+| **combined** | **340,000** | **0** | **≈ 8.8 × 10⁻⁶** | **≈ 0.88** |
+
+The bound dropped **~60×**, from "up to 53 wrong mitigations/second at 100k
+pkt/s" to **about one** — the operating point that makes a per-policy
+`autoMitigate` a defensible decision rather than an unquantified risk.
+
+**What this changes, and what it does not.** It changes the verdict from
+"authorized by nothing measured" to "authorized on traffic that resembles a
+locally representative baseline, to a bounded ≈1 wrong mitigation/second at
+100k pkt/s." It does **not** repeal §2.8's calibration finding — the opposite,
+it depends on it. The tight bound holds *because* the scored traffic resembles
+the training baseline; §2.8 showed that when it does not (a structurally
+different capture), the fixed-threshold FPR climbs because the normalization
+reference error does not transfer. The operational rule is therefore
+unchanged and now quantified: **calibrate the model's reference error on the
+deployment's own normal traffic**, confirm the bound on a detection-only
+pilot with `scripts/fpr_large_benign.py` against that traffic, and only then
+enable `autoMitigate`. The residual is honest: this is lab user-plane (ICMP
+through the tunnels), not a production mix of video/web/signaling — a real
+pilot on real traffic is the last confirmation, and the tooling to make it a
+number rather than a hope now exists.

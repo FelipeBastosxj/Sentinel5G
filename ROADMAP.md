@@ -406,12 +406,14 @@ question.
 
 Phase 2.5 asked "can I install this?" and answered it. This phase asked the
 harder question — **"can I turn `autoMitigate: true` on, on a network that
-matters, and be right?"** The honest answer is still *not yet* — but it is
-now a *measured* not-yet, not an unknown one: the false-positive rate is a
-confidence interval (§2.9) whose bound the committed data cannot push low
-enough to authorize automated mitigation, the detection-only pilot is the
-documented path to turning the system on, and that pilot is now also the
-instrument that would move the number. The system is hardened; the decision
+matters, and be right?"** The answer is now a *measured* one: on 340,000 real
+benign packets the false-positive rate's 95% upper bound is **1.23e-5 — about
+one wrong mitigation per second at 100k pkt/s** (§2.10), the operating point
+that makes a per-policy `autoMitigate` a bounded decision rather than an
+unquantified risk. The condition is calibration on the deployment's own
+normal traffic (§2.8), confirmed on a detection-only pilot with the tooling
+this phase built; the last residual is that lab user-plane is not a
+production traffic mix, so a real pilot is the final confirmation. The system is hardened; the decision
 to automate is now gated on data an operator can gather, not on gaps in the
 code. Every item below was found by reading the code and the measurements
 that exist, not by imagining failures; each names the file or the number it
@@ -604,12 +606,22 @@ correctness holes in what is built.
       synthetic volume measures distribution shift, not FPR; the benign
       data has to be real.
 
-      The deliverable is the instrument and the honest verdict:
-      `autoMitigate: true` is authorized by nothing measured here, the
-      detection-only pilot remains the only defensible way to turn the
-      system on, and the pilot is now also how the missing measurement gets
-      made — count benign packets and false alarms, feed them to the bound,
-      decide per deployment. This is the last of the four gate items.
+      The deliverable is the instrument and the honest verdict. **Update
+      (2026-10-01):** the missing measurement was then made. 340,000 real
+      benign GTP-U packets from the lab (`real-dataset-v3/`, steady + diverse
+      payloads) scored with **zero false positives**, taking the 95% upper
+      bound from 5.3e-4 to **1.23e-5** — from "up to 53 wrong mitigations/
+      second at 100k pkt/s" to **about one** (§2.10). That is the operating
+      point that makes a per-policy `autoMitigate` a bounded decision rather
+      than an unquantified risk. The §2.8 calibration rule still governs and
+      is now quantified: calibrate on the deployment's own normal traffic,
+      confirm the bound on a detection-only pilot with
+      `scripts/fpr_large_benign.py`, then enable. The last residual is
+      honest — lab user-plane (ICMP through tunnels) is not a production mix
+      of video/web/signaling, so a real pilot is the final confirmation —
+      but the gate is no longer "authorized by nothing"; it is "authorized to
+      a measured ~1 wrong mitigation/second, pending local calibration." This
+      was the last of the four gate items.
 
 ### Scale — the architectural ceilings, not the implementation's
 
@@ -630,7 +642,12 @@ correctness holes in what is built.
       headroom. Off by default (a wire-behaviour change; enable once the AI
       engine is current), documented in `docs/event-model.md`. Sampling and
       aggregation were the alternatives; batching was chosen because it drops
-      nothing — a sampled-away packet could be the attack.
+      nothing — a sampled-away packet could be the attack. **Update
+      (2026-10-01):** the ceiling is now measured, and it confirms batching
+      is necessary, not optional — a synchronous publisher sustains only
+      ~15,000 events/s (the ack round-trip dominates), below the 100k
+      pkt/s/node concern, while batching lifts the event rate ~46× to
+      ~694k/s at batch 256 (§1.3).
 - [x] **`MAX_TUNNEL_ENTRIES` is 65,536; a real UPF serves far more
       bearers.** The metric half is closed; the sizing half is honestly
       still open and now *visible* rather than invisible. The per-tunnel
@@ -643,8 +660,14 @@ correctness holes in what is built.
       the fix (raise `MAX_TUNNEL_ENTRIES`, rebuild, expect an
       `EBPFPinsReset`) are in `docs/observability.md`. What remains is a
       *measured* right-size against a real UPF's bearer cardinality, which
-      needs a real UPF — folded into the line-rate measurement item below,
-      not a separate unknown.
+      needs a real UPF. **Update (2026-10-01):** the eviction *behaviour* is
+      now measured — `TestTunnelRateMapEvictsWhenFullAndLosesTrackedRate`
+      fills the real map past 65,536 and confirms the LRU silently evicts the
+      coldest entry, losing its rate window (§1.8). So the degradation is
+      demonstrated, not feared; the sizing rule is to raise
+      `MAX_TUNNEL_ENTRIES` above the deployment's peak bearers (a production
+      UPF serves far more than 65,536), read off the occupancy gauge. Only
+      the exact per-UPF number still needs that UPF.
 - [x] **A full `tunnel_blocklist` is a denial of service against the
       mitigation path.** Closed. A refused insert (the map is plain HASH and
       returns `E2BIG` rather than evicting, recognised by `ebpf.IsMapFull`)
