@@ -135,6 +135,20 @@ type OperatorConfig struct {
 	// source -- same cost control as GTPUTunnelFloodCooldown.
 	GTPUSourceFloodCooldown time.Duration
 
+	// NATSEventBatchSize coalesces up to this many NormalizedEvents into one
+	// JetStream message instead of one per packet. The bus is the design's
+	// first throughput ceiling (ROADMAP.md Phase 4), and a batch of N cuts
+	// the message rate by N. 0 or 1 publishes per event. Off by default: it
+	// is a wire-behaviour change the AI engine consumer must understand
+	// first (it does, for any value), so enable it after both sides are on a
+	// current build. The inline flood detectors are never batched -- they act
+	// per packet regardless.
+	NATSEventBatchSize int
+
+	// NATSEventFlushInterval bounds how long a partial batch waits before it
+	// is published anyway. Ignored when NATSEventBatchSize <= 1.
+	NATSEventFlushInterval time.Duration
+
 	// BPFPinPath is the bpffs directory the eBPF ENFORCEMENT maps
 	// (blocklist, blocklist_v6, tunnel_blocklist, tunnel_blocklist_v6) are
 	// pinned into, so an active drop survives this process. Empty disables
@@ -271,6 +285,16 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
+	eventBatchSize, err := parseIntEnv("NATS_EVENT_BATCH_SIZE", 1)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
+	eventFlushInterval, err := parseDurationEnv("NATS_EVENT_FLUSH_INTERVAL", 250*time.Millisecond)
+	if err != nil {
+		return OperatorConfig{}, err
+	}
+
 	reactorRate, err := parseFloatEnv("REACTOR_STATUS_WRITES_PER_SECOND", 10)
 	if err != nil {
 		return OperatorConfig{}, err
@@ -318,6 +342,9 @@ func Load() (OperatorConfig, error) {
 		// BPF_PIN_PATH="" opts back out.
 		BPFPinPath:                 getEnvAllowEmpty("BPF_PIN_PATH", ebpf.DefaultPinPath),
 		BlocklistReconcileInterval: blocklistReconcileInterval,
+
+		NATSEventBatchSize:     eventBatchSize,
+		NATSEventFlushInterval: eventFlushInterval,
 
 		ReactorStatusWritesPerSecond: reactorRate,
 		ReactorStatusWriteBurst:      reactorBurst,

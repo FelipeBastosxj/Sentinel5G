@@ -600,11 +600,24 @@ correctness holes in what is built.
 
 ### Scale — the architectural ceilings, not the implementation's
 
-- [ ] **NATS carries one event per signaling packet, with no sampling,
-      batching or aggregation in `pkg/ingestion.Publisher`.** The bench
-      says 270k msg/s; 100k pkt/s per node across N nodes exceeds that
-      before eBPF is anywhere near its limit. This is probably the hardest
-      ceiling in the whole design, and it is the one least examined.
+- [x] **NATS carries one event per signaling packet, with no sampling,
+      batching or aggregation in `pkg/ingestion.Publisher`.** Closed with
+      batching, the lossless answer. `pkg/ingestion.Publisher` now coalesces
+      up to `NATS_EVENT_BATCH_SIZE` events into one JetStream message (a JSON
+      array), flushed by size or `NATS_EVENT_FLUSH_INTERVAL`, cutting the
+      message rate by the batch factor — proven end to end: 100 events →
+      10 messages at batch 10 (`pkg/ingestion/batch_test.go` against live
+      JetStream). The inline flood detectors are **not** batched; they act
+      per packet, so only the ML telemetry is delayed, bounded by the flush
+      interval. The AI-engine consumer (`parse_event_batch`) accepts both the
+      array and the single-object form, so batching, non-batching and older
+      Publishers all interoperate with one consumer. It composes with §1.5's
+      finding that batched inference is ~300× faster per event — the same
+      batch that relieves the bus also unlocks the engine's batched-scoring
+      headroom. Off by default (a wire-behaviour change; enable once the AI
+      engine is current), documented in `docs/event-model.md`. Sampling and
+      aggregation were the alternatives; batching was chosen because it drops
+      nothing — a sampled-away packet could be the attack.
 - [x] **`MAX_TUNNEL_ENTRIES` is 65,536; a real UPF serves far more
       bearers.** The metric half is closed; the sizing half is honestly
       still open and now *visible* rather than invisible. The per-tunnel
