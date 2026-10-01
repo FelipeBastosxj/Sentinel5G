@@ -295,9 +295,41 @@ real constraint this establishes on anything added to
 `pkg/ingestion.Publisher`'s hot path, and why it drains the ring even while
 NATS is disconnected.
 
+## 1.5 AI-engine throughput per replica
+
+Score *latency* has been instrumented since Phase 2 (`SCORE_LATENCY_SECONDS`),
+but `ROADMAP.md` Phase 4 noted the engine scores one event per ONNX call with
+no batching and nothing had measured how many events per second a single
+replica sustains — the number that sizes a deployment. `scripts/throughput_bench.py`
+measures it (reproducible: `python scripts/throughput_bench.py`), on the host
+in `test-environment.md`, single process, single thread, `CPUExecutionProvider`:
+
+| Path | Events/sec (one replica) |
+|---|---|
+| Inference only (`score_features`) | ~106,000 |
+| **Production call (`score_event`: extract + infer + latency timer)** | **~72,000** |
+| Full wire path (`from_dict` → extract → infer) | ~84,000 |
+| Batched inference, batch 256 (one ONNX run) | ~32,800,000 |
+
+The sizing number is **~72,000 events/sec per replica** — the NATS worker
+calls `score_event`. That comfortably exceeds one node's plausible signaling
+rate, so the replica count is set by the aggregate across nodes and by the
+NATS ceiling (§1.3), not by the model: scoring is not the bottleneck this
+project worried it might be.
+
+The batched row is the striking one and it is the finding, not a flourish:
+the same vectors run **~300× faster** per event in one ONNX call than one at a
+time. The engine does not batch today (one call per NATS message), so that
+300× is headroom a batching consumer would unlock — which is exactly why the
+NATS-side batching item (Phase 4) is where the real throughput ceiling lives,
+not in the model. One replica is nowhere near its own inference limit; the
+message bus gets there first.
+
 ### Still not measured
 
 Sustained line-rate traffic through a real NIC, and the `< 2%` CPU per
 worker node at 100k req/s. Both need a load generator on real hardware
 rather than a synthetic replay; §1.4's methods deliberately do not claim
-to cover them.
+to cover them. The per-replica throughput above is a *scoring* rate on
+pre-built events, not an end-to-end node measurement — it does not include
+the kernel capture or the NATS round trip, and does not claim to.
