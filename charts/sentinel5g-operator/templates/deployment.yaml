@@ -98,6 +98,16 @@ spec:
               port: health
             initialDelaySeconds: 5
             periodSeconds: 10
+          {{- if and .Values.ebpf.enabled .Values.ebpf.pinPath }}
+          volumeMounts:
+            # The node's bpffs, so the enforcement maps can be pinned and an
+            # active drop survives this Pod. Without it the operator still
+            # attaches -- it falls back to an unpinned load and records an
+            # EBPFPinUnavailable warning Event -- but every mitigation is
+            # lost on restart until the drift reconciler re-applies it.
+            - name: bpffs
+              mountPath: {{ dir .Values.ebpf.pinPath | quote }}
+          {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
             capabilities:
@@ -107,6 +117,19 @@ spec:
               {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if and .Values.ebpf.enabled .Values.ebpf.pinPath }}
+      volumes:
+        - name: bpffs
+          hostPath:
+            # Directory, not DirectoryOrCreate: if the node has no bpffs
+            # mounted here, creating an empty directory on the host's root
+            # filesystem would make the pin fail with a confusing EINVAL
+            # instead of the Pod failing to schedule. pkg/ebpf checks the
+            # filesystem type anyway and says so; this keeps the simpler
+            # failure the simpler one.
+            path: {{ dir .Values.ebpf.pinPath | quote }}
+            type: Directory
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

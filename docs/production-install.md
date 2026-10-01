@@ -195,6 +195,27 @@ What is still blunter than the detection: `isolatePod` quarantines the
 whole workload, because the mesh layer cannot see a GTP-U tunnel
 (`ROADMAP.md` Phase 5).
 
+**Check that a drop survives a restart before you rely on it.** The
+enforcement maps are pinned to bpffs by default (`ebpf.pinPath`, which the
+chart turns into a `hostPath` mount of `/sys/fs/bpf`), and the operator
+re-applies every block from policy status at startup and then every
+`config.blocklistReconcileInterval`. Both are needed and they do different
+jobs: the pin keeps the drops in force across the gap, the reconciliation
+makes them correct afterwards and reports any disagreement as
+`sentinel5g_blocklist_drift_total`. Verify on a cluster, not on trust:
+
+```sh
+kubectl -n sentinel5g-system exec deploy/sentinel5g-operator -- \
+  wget -qO- localhost:8080/metrics | grep enforcement_pinned
+# sentinel5g_ebpf_enforcement_pinned 1
+```
+
+A `0` means that node's drops are lost on every restart until the next
+sync, almost always because `/sys/fs/bpf` is not a bpffs on the node or the
+mount did not reach the Pod. The operator attaches anyway — losing XDP
+entirely over a mount problem would be worse — and records an
+`EBPFPinUnavailable` warning Event. See `docs/troubleshooting.md`.
+
 ## 6. Wire up observability
 
 The metrics `Service` each chart renders is always there regardless of
@@ -203,10 +224,11 @@ charts — the AI engine's metrics port is `config.metricsAddr`, `:9090` in
 NATS mode) only if Prometheus Operator is actually installed on this
 cluster — if it isn't, the charts render no `ServiceMonitor` (with a warning
 in the post-install NOTES) instead of failing the install outright, but you
-still need a working scrape path either way. The one alert to wire before
+still need a working scrape path either way. The two alerts to wire before
 anything else: `sum(rate(sentinel5g_threat_scores_received_total[15m])) == 0`
 for longer than you'd tolerate, which is "the scoring half is dead" as a
-number. See `docs/observability.md` for the metrics exposed
+number; and `min(sentinel5g_ebpf_enforcement_pinned) == 0`, which is "this
+node's mitigations do not survive a restart" as a number. See `docs/observability.md` for the metrics exposed
 and the latency targets they're meant to validate against — two of the
 three are measured (`docs/paper-data/01-performance-benchmarks.md` §1.4,
 reproducible via `scripts/loadtest/`); the CPU-per-node target is not, and

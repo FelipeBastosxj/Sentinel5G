@@ -64,6 +64,18 @@ others behind the same gNB) — both populated exclusively
 by the operator (`pkg/ebpf`), giving Layer 4 a way to drop malicious traffic
 at the kernel/NIC level.
 
+Those two drop maps (and their `_v6` twins) are **pinned to bpffs**, so the
+drops in them outlive the operator process: closing the XDP link otherwise
+destroys the whole collection, and a rollout or a crash would un-block
+everything while each policy's status went on claiming the opposite. The
+rate and scan maps deliberately are *not* pinned — they are observation, and
+a 1-second rate window carried into a process that was not running when it
+started is a reading of a period nobody watched. The same
+enforcement-versus-observation line decides `HASH` versus `LRU_HASH`
+(`CLAUDE.md`). Layer 4 re-applies anything the kernel is still missing on
+startup and on a timer; see `pkg/controller.BlocklistReconciler` and
+`docs/observability.md`'s "Is enforcement actually on?".
+
 IPv6 traffic is inspected through a parallel set of maps (`blocklist_v6`,
 `tunnel_blocklist_v6`, `signal_rate_v6`, `scan_rate_v6`, `tunnel_rate_v6`,
 `port_scan_v6`) and a separate ring buffer

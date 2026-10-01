@@ -21,6 +21,11 @@ deployment side changes to scrape them):
 | `sentinel5g_threshold_crossings_total` | counter | `namespace`, `policy`, `outcome` | A score crossed this policy's effective threshold. `outcome="alerting"` = withheld by `autoMitigate: false`; `outcome="mitigating"` = acted on. |
 | `sentinel5g_mitigations_total` | counter | `action`, `result` | Individual mitigation actions attempted (`ebpf_block`/`mesh_quarantine` × `success`/`error`). |
 | `sentinel5g_policy_phase` | gauge | `namespace`, `policy`, `phase` | `1` for each policy's current phase, `0` for its other phases — so `sum by (phase) (sentinel5g_policy_phase)` counts policies. |
+| `sentinel5g_blocklist_drift_total` | counter | `kind`, `direction` | Enforcement entries the kernel-vs-status reconciliation had to correct. `direction="missing"` = status claimed a drop the kernel did not have (**traffic an operator believed was blocked was flowing**); `direction="extra"` = the kernel held a drop no policy claimed. |
+| `sentinel5g_blocklist_entries` | gauge | `kind`, `state` | Size of each side of that comparison before any correction: `state="desired"` is the union of every policy's status, `state="kernel"` is what the maps actually held. |
+| `sentinel5g_blocklist_capacity` | gauge | `kind` | `max_entries` of each enforcement map, so the gauge above has a denominator. |
+| `sentinel5g_blocklist_reconciles_total` | counter | `result` | Reconciliation passes, `success`/`error`. |
+| `sentinel5g_ebpf_enforcement_pinned` | gauge | — | `1` when this node's enforcement maps are pinned to bpffs and survive an operator restart, `0` when not. Absent entirely when eBPF isn't attached. |
 
 `source` on the first metric is a **closed set** (`model`, `rule`,
 `unknown`), not the raw `ThreatScoreEvent.model` string. That's deliberate:
@@ -49,6 +54,74 @@ validated detection rate — nothing here labels true positives. The
 `scripts/loadtest/` harness measures latency and throughput, not detection
 quality; for what the detector's recall actually is on real captures see
 `docs/paper-data/02-ai-training-inference.md` §2.6.
+
+### Is enforcement actually on?
+
+The question this section exists to answer is narrower than it sounds, and
+it is the one ROADMAP.md Phase 4 opens with: *is the kernel dropping what
+the policies say it is dropping?* Until Phase 4 nothing could answer it.
+The enforcement maps lived and died with the operator process, so a
+rollout, an OOM kill or a crash un-blocked every active mitigation while
+each policy's status went on asserting them — `Phase: Mitigating`,
+`status.blockedTunnels` populated, traffic flowing.
+
+Two mechanisms close that, and they do different jobs:
+
+```promql
+# 1. Do drops survive this process at all?
+min(sentinel5g_ebpf_enforcement_pinned)
+```
+
+`0` means the enforcement maps are **not** pinned to bpffs on at least one
+node, so everything that node is dropping is lost the moment the operator
+restarts. That is the documented behaviour with `BPF_PIN_PATH=""`, and it
+is also what you get when the Pod has no `/sys/fs/bpf` mount — in which
+case the operator attached anyway (losing XDP entirely over a mount problem
+would be worse) and recorded an `EBPFPinUnavailable` warning Event saying
+so. `kubectl describe pod` on the operator is where that lands.
+
+```promql
+# 2. Did the kernel and the policies' status ever disagree?
+sum by (direction) (rate(sentinel5g_blocklist_drift_total[15m]))
+```
+
+A burst of `direction="missing"` right after a restart *is* the replay
+working — the operator re-applying from status what the kernel lost. A
+sustained non-zero rate at any other time is a defect: something is
+removing drops that nothing asked to remove. `direction="extra"` is the
+quieter counterpart, enforcement outliving the policy that asked for it.
+
+Removals require an entry to be unclaimed on **two consecutive passes**,
+and additions do not. That asymmetry matters when reading the numbers: a
+drop placed in the kernel seconds ago is briefly claimed by nothing the
+reconciler can see — the mitigation path writes the map before it writes
+the status, and the status is then read through a cache that lags the API
+server again — so removing on sight would revert live mitigations. Erring
+toward enforcing is the deliberate direction. The practical consequence is
+that a genuinely stale entry disappears one interval later than you might
+expect.
+
+```promql
+# 3. How close is the mitigation path to refusing new drops?
+max by (kind) (
+  sentinel5g_blocklist_entries{state="kernel"} / on(kind) sentinel5g_blocklist_capacity
+)
+```
+
+Both enforcement maps are plain `HASH`, not `LRU_HASH`, so a full map
+**refuses** the next insert rather than evicting someone else's drop (see
+`CLAUDE.md`'s memory-footprint rule for why that is the security-correct
+choice). The cost of that choice is that approaching the ceiling means
+approaching the point where new mitigations start failing outright, which
+is an attacker-reachable state for anyone who can generate distinct TEIDs.
+The alerting threshold and the operational response to it are tracked as
+open work in ROADMAP.md Phase 4; this ratio is the input to them.
+
+The reconciliation itself runs once at startup — that is the replay — and
+then every `BLOCKLIST_RECONCILE_INTERVAL` (`config.blocklistReconcileInterval`,
+default `1m`). Status is treated as the desired state and the map as the
+actual one, so an entry in status and not in the kernel is re-applied, and
+an entry in the kernel claimed by no policy is removed.
 
 ### Is the scoring pipeline alive?
 

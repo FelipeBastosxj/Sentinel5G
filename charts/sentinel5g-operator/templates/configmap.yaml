@@ -13,6 +13,11 @@ data:
   THREAT_SCORE_THRESHOLD: {{ .Values.config.threatScoreThreshold | quote }}
   MESH_ADAPTER: {{ .Values.config.meshAdapter | quote }}
   SCORING_PIPELINE_GRACE: {{ .Values.config.scoringPipelineGrace | quote }}
+  BLOCKLIST_RECONCILE_INTERVAL: {{ .Values.config.blocklistReconcileInterval | quote }}
+  # Empty when ebpf.enabled is false or ebpf.pinPath is "" -- pkg/config
+  # reads an empty BPF_PIN_PATH as "do not pin", which is distinct from the
+  # variable being unset (that would use the built-in default).
+  BPF_PIN_PATH: {{ ternary .Values.ebpf.pinPath "" .Values.ebpf.enabled | quote }}
   GTPU_TUNNEL_FLOOD_ENABLED: {{ .Values.config.gtpuTunnelFlood.enabled | quote }}
   GTPU_TUNNEL_FLOOD_PPS: {{ .Values.config.gtpuTunnelFlood.packetsPerSecond | quote }}
   GTPU_TUNNEL_FLOOD_COOLDOWN: {{ .Values.config.gtpuTunnelFlood.cooldown | quote }}

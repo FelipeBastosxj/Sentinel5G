@@ -11,11 +11,88 @@ that review turned up is now **Phase 4** (validation, scale, robustness --
 17 items, each naming the file or measurement it came from), and the
 scale/multi-cluster items that used to sit in Phase 3 moved to **Phase 5**,
 deliberately gated behind it. The headline from that review, and the reason
-for the gating: an operator restart currently un-blocks everything it had
-blocked, silently, because the eBPF maps are not pinned and nothing replays
-`status.blockedTunnels` into the kernel on startup.
+for the gating, was that an operator restart un-blocked everything it had
+blocked, silently. **That one is now closed** -- the first Phase 4 item --
+and the remaining three in its gate are validation work that no amount of
+code closes.
 
-### Added
+### Added (Phase 4)
+- **The eBPF enforcement maps now survive the operator process**, closing
+  `ROADMAP.md` Phase 4's first item. Up to now `Loader.Close()` detached
+  the XDP program and the whole collection went with it, so a `helm
+  upgrade`, an OOM kill or a crash un-blocked every active mitigation while
+  each policy's status went on asserting `Phase: Mitigating` and a
+  populated `status.blockedTunnels`. That is the same fail-open the
+  HASH-not-LRU map choice exists to prevent, reached through the back door:
+  a control reporting itself as on while being off.
+
+  Two mechanisms, doing different jobs. **Pinning** (`BPF_PIN_PATH`,
+  default `/sys/fs/bpf/sentinel5g`; `ebpf.pinPath` in the chart, which also
+  adds the `hostPath` mount for it) keeps the drops in force across the
+  gap: the next attach reuses the same kernel maps with their contents
+  intact. **`pkg/controller.BlocklistReconciler`** makes them correct
+  afterwards -- once at startup, then every `BLOCKLIST_RECONCILE_INTERVAL`
+  (default `1m`) -- treating policy status as the desired state and the map
+  as the actual one, re-applying what is missing and removing what no
+  policy claims. A removal needs the entry to be unclaimed on two
+  consecutive passes; an addition is immediate. That asymmetry is load
+  bearing — the mitigation path writes the kernel *before* the status that
+  claims the write, and the reconciler reads that status through a lagging
+  cache, so removing on sight would revert mitigations placed seconds
+  earlier. A failed `List` aborts the pass outright rather than being read
+  as "nothing should be blocked".
+
+  Only the *enforcement* maps are pinned. The `*_rate`/`port_scan`
+  observation maps deliberately are not: carrying a 1-second rate window
+  across a restart hands the new process a reading from a period nobody was
+  watching. The split is asserted in both directions by a test, so adding a
+  map to the pinned list by reflex fails rather than quietly changing what
+  the system means.
+
+  Proven on kernel 6.14 rather than argued: block, `Close()`, re-`Attach`,
+  read the entry back (`TestPinnedEnforcementSurvivesALoaderRestart`),
+  against its own control case showing an unpinned load does *not* survive.
+
+  One consequence worth knowing before upgrading: in DaemonSet mode every
+  node reconciles against the same cluster-wide policy status, so a source
+  blocked because one node observed it ends up blocked on every node. That
+  is the reading `status.blockedSourceIPs` is built on -- a record of what
+  should not be allowed, not a note about where it was seen.
+- **Enforcement-integrity metrics** (`docs/observability.md`'s new "Is
+  enforcement actually on?" section):
+  `sentinel5g_blocklist_drift_total{kind,direction}` -- `missing` means
+  status claimed a drop the kernel did not have, i.e. traffic an operator
+  believed was blocked was flowing; `extra` means enforcement outliving the
+  policy that asked for it. Plus `sentinel5g_blocklist_entries{kind,state}`
+  for both sides of the comparison, `sentinel5g_blocklist_capacity` so that
+  gauge has a denominator, and `sentinel5g_ebpf_enforcement_pinned`, which
+  answers "does a drop on this node survive a restart at all?" as a number.
+- Two new warning Events against the operator's own Pod, alongside the
+  existing `EBPFAttachFailed`: `EBPFPinUnavailable` (the pin path is not on
+  a bpffs -- almost always a missing `/sys/fs/bpf` mount) and
+  `EBPFPinsReset` (a rebuilt object changed a map's shape, so the existing
+  pins could not be reused and the drops were lost). Both are recoverable
+  states that used to be invisible.
+
+### Fixed (Phase 4)
+- **`Unblock`/`UnblockTunnel` treated an already-absent entry as an
+  error.** De-escalation and finalization both walk a policy's status
+  unblocking every entry, and a single phantom -- a restart that lost the
+  maps, a reconcile that already pruned it -- aborted the loop and left
+  every real entry behind it in the kernel. Already-gone is the outcome
+  being asked for, so it is now success. Found by writing the restart
+  test, not in production.
+- **A changed BPF map key would have gone undetected.** The ring buffer's
+  record size has been pinned by test since Phase 2.5, but nothing checked
+  the enforcement maps' *key* sizes against the loaded object. A change to
+  `struct tunnel_key` that was not mirrored in `pkg/ebpf` would have
+  marshalled silently and dropped the wrong tunnels; `Attach` now refuses
+  the object instead.
+- `BPF_PIN_PATH=""` -- the documented way to turn pinning off -- would have
+  been read as "unset" by the config loader's `getEnv` and silently turned
+  pinning *on*. Empty is now a meaningful value for that one variable.
+
+### Added (Phase 3)
 - **A per-tunnel (TEID-keyed) eBPF drop path**, closing `ROADMAP.md`
   Phase 3's largest gap: detection has been per subscriber since Phase 2.5
   while mitigation was still per peer address. `bpf/packet_filter.c` gained

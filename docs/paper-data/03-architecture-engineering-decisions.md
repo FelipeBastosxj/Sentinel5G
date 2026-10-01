@@ -16,8 +16,8 @@ flowchart TD
         B -->|"malformed UDP, or<br/>invalid GTP-U framing"| C
         A --> D["signal_rate LRU map<br/>(per-source rate)"]
         A --> D2["tunnel_rate LRU map<br/>(per source+TEID rate, carried in-band)"]
-        A --> E["blocklist map<br/>(per source IP, XDP_DROP on match)"]
-        A --> E2["tunnel_blocklist map<br/>(per source+TEID, XDP_DROP on match)"]
+        A --> E["blocklist map<br/>(per source IP, XDP_DROP on match)<br/>pinned to bpffs: survives the operator"]
+        A --> E2["tunnel_blocklist map<br/>(per source+TEID, XDP_DROP on match)<br/>pinned to bpffs: survives the operator"]
     end
 
     subgraph L2["Layer 2 — Ingestion (pkg/ingestion, pkg/events)"]
@@ -244,3 +244,105 @@ the alternative lost. Commit messages carry the full reasoning.
   script now prints the round-trip cost first so the resolution floor is
   visible next to the 2 ms result. None of it is CI-gated — it needs root,
   a kernel and a cluster.
+
+### Phase 4 decisions (`feat/phase-4-pinned-blocklists`, 2026-10-01)
+
+Phase 4's first item is the one the phase is gated on: until the system can
+be trusted to still be enforcing what it says it is enforcing, nothing else
+on that list is worth measuring. These are the choices made closing it.
+
+- **Pin the enforcement maps; deliberately do not pin the observation
+  ones.** The same distinction that decides `HASH` versus `LRU_HASH`, asked
+  of a second question: *should this survive the process?* A blocklist
+  entry is a decision whose lifetime the operator owns, so losing it on a
+  restart is a silent un-block — the fail-open the map-type choice exists
+  to prevent, reached through the back door. A `*_rate` entry is a counter
+  inside a 1-second window, so carrying it across a restart hands the new
+  process a reading from a period nobody was watching: wrong in a way that
+  is harder to notice than simply missing. Re-deriving a rate costs one
+  window and is always correct. The ring buffers are not pinned either,
+  for a plainer reason — a ring buffer's value is its consumer, and the
+  consumer is the process that just died.
+  `TestPinnedMapsAreTheEnforcementMapsOnly` asserts the split in *both*
+  directions, so adding a map to the list by reflex fails rather than
+  quietly changing what the system means.
+- **Pinning and the reconcile are both needed, and they do different
+  jobs.** It was tempting to do only the reconcile: it is pure Go, needs no
+  bpffs and no `hostPath` mount, and it converges. But converging is not
+  the same as being correct in the meantime. The pin keeps the drops in
+  force from the instant the XDP program re-attaches; the reconcile makes
+  them correct afterwards and is the only thing that can notice a
+  disagreement at all. Neither subsumes the other, and the drift metric
+  only means anything because the map is genuinely the actual state rather
+  than a cache of the status.
+- **Status is the desired state; the kernel map is the actual one.** The
+  direction had to be chosen explicitly because the opposite reading is
+  defensible-sounding — the kernel is, after all, where enforcement really
+  happens. It is wrong here: status is what survives in etcd, what the
+  finalizer and the de-escalation timer read, and what an operator sees;
+  the map is a kernel object this process can lose. So a drop in status
+  and not in the kernel is re-applied, and a drop in the kernel claimed by
+  no policy is removed — the second half being what keeps a surviving pin
+  from enforcing forever after the policy that asked for it was deleted.
+- **A failed `List` aborts the pass rather than being read as "nothing
+  should be blocked".** This is the one place where the safety net could
+  have become the outage it prevents: an unreachable API server returns an
+  empty list, which under the rule above means every kernel entry is
+  unclaimed and should be removed.
+  `TestBlocklistReconciler_ListFailureNeverFlushesTheKernel` exists for
+  precisely that line.
+- **Removals take two passes; additions take one.** The reconciler races
+  the mitigation path it is meant to protect: `ThreatScoreWatcher` writes
+  the kernel *before* it writes the status claiming that write, and the
+  reconciler reads that status through a cache that lags the API server
+  again. A drop placed moments ago is therefore briefly claimed by nothing
+  the comparison can see, and removing it on sight would silently revert a
+  live mitigation — the exact failure this mechanism exists to prevent,
+  reintroduced by its own repair. Requiring an entry to be unclaimed on two
+  consecutive passes puts an entire interval between the two, which is
+  orders of magnitude more than a status write plus a cache update. The
+  reverse race (de-escalation unblocks, then clears status; the reconciler
+  re-applies from the stale claim) is left immediate on purpose: its cost
+  is traffic staying blocked a pass longer, it self-corrects, and
+  two-passing it would also delay the startup replay by a full interval —
+  the one correction that must not wait. The asymmetry is the design, and
+  its direction is "err toward enforcing".
+- **A pin path that is not on a bpffs is a warning, not a failed attach.**
+  The strict reading — refuse to start if the operator asked for pinning
+  and cannot have it — was rejected. A missing `/sys/fs/bpf` mount is a
+  deployment mistake, and answering it by dropping XDP enforcement
+  *entirely* trades a bounded problem (drops lost across restarts) for an
+  unbounded one (no drops at all, right now). It is reported rather than
+  swallowed: an `EBPFPinUnavailable` Event, a log line, and
+  `sentinel5g_ebpf_enforcement_pinned` at 0.
+- **Incompatible pins are discarded, loudly, rather than reconciled.** When
+  a rebuilt object changes a map's key, value or `max_entries`, the kernel
+  cannot reuse the pin and there is no outcome that preserves the drops.
+  Removing the pins and recreating empty at least keeps enforcement
+  running, and an `EBPFPinsReset` Event plus a drift spike makes the window
+  visible instead of inferable from a gap in a graph.
+- **The reconciler is not leader-gated.** The enforcement maps are
+  node-local — in DaemonSet mode each Pod attaches to its own node's
+  interface — so every replica has to reconcile its own kernel, not just
+  the leader's. Same reasoning as `pkg/ingestion.Publisher`, and the
+  opposite of `ThreatScoreWatcher`, which is single-active precisely
+  because it *writes* to the API server. The consequence is deliberate and
+  worth stating: every node converges to the same cluster-wide status, so a
+  source blocked because one node observed it ends up blocked on all of
+  them.
+- **Default to pinning, with an explicit opt-out.** `BPF_PIN_PATH` defaults
+  to `/sys/fs/bpf/sentinel5g` rather than to empty, because the safe
+  default here is the one that does not silently un-block. The opt-out is
+  the empty string — which required the config loader to stop treating an
+  empty value as "unset", since the documented way to turn the feature off
+  would otherwise have turned it on.
+
+What the measurement actually shows, and what it does not: a drop applied
+by one `Loader` is still in force after that `Loader` is closed and a new
+one attaches (kernel 6.14,
+`TestPinnedEnforcementSurvivesALoaderRestart`), against a control case
+proving the unpinned path does not. What it does not show is uninterrupted
+filtering: between `Close()` and the next `Attach` the XDP program is
+detached and nothing is filtered at all. Pinning preserves the decisions,
+not the enforcement of them, and the restart window remains exactly as long
+as a Pod restart.
