@@ -28,6 +28,11 @@ Full detail below.
 - GitHub Actions moved to their current major versions (Node 24 runtime).
 - Dependabot removed; base-image digests are bumped by hand (see the root
   `Dockerfile`'s top comment).
+- `scripts/train.py` is now seeded (`--seed`, default 42). It never was,
+  despite release.yml saying so: every training run -- the published model
+  and the e2e job's alike -- drew a different weight initialization, and the
+  quickstart's attack event scored anywhere from 0.46 to 1.0, which is what
+  made the e2e job fail intermittently.
 
 ### Production-readiness validation (Phase 4 follow-up, 2026-10-01)
 - **False-positive rate re-measured on 340,000 real benign packets**

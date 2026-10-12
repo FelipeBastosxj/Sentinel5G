@@ -25,7 +25,15 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--output", type=Path, default=Path("models/autoencoder.pt"))
+    # Weight initialization is the only randomness in this full-batch
+    # training loop. Unseeded, every run -- including release.yml's
+    # publish-model and the e2e job -- produced a different model, and the
+    # quickstart's attack event scored anywhere from 0.46 to 1.0 depending
+    # on the draw. Same seed as the evaluation scripts.
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    torch.manual_seed(args.seed)
 
     dataset = np.load(args.dataset)
     normal = torch.from_numpy(dataset["normal"])
