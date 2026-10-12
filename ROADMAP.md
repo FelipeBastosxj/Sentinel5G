@@ -161,7 +161,8 @@ alongside `docs/getting-started.md`, `docs/integrations.md`, and
       PRs). A `changes` job (`dorny/paths-filter`) gates `ci.yml`'s four
       jobs; editing the workflow file itself always runs all of them.
 - [x] Dockerfile hardening: base images pinned to their multi-arch
-      manifest-list digest (`.github/dependabot.yml` keeps them current).
+      manifest-list digest (re-resolved and bumped by hand; see the
+      root `Dockerfile`'s top comment).
       `HEALTHCHECK` added to both images — the operator's distroless final
       stage has no shell, so `manager healthcheck` is a real subcommand
       hitting its own `/healthz` over HTTP; the AI engine's

@@ -3,8 +3,8 @@
 # Same digest-pinning rationale as the top-level Dockerfile: the tag stays
 # for human/tooling context, the digest is what `docker build` actually
 # resolves, so a same-tag upstream rebuild can't silently change what gets
-# built. .github/dependabot.yml's "docker" ecosystem keeps this current.
-FROM golang:1.27-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS builder
+# built. Bumped the same way, too.
+FROM golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS builder
 WORKDIR /workspace
 
 COPY go.mod go.sum ./
@@ -16,7 +16,7 @@ COPY pkg/falco/ pkg/falco/
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o falco-bridge ./cmd/falco-bridge
 
-FROM gcr.io/distroless/static:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 WORKDIR /
 COPY --from=builder /workspace/falco-bridge .
 USER 65532:65532

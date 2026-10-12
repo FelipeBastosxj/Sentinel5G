@@ -1,7 +1,7 @@
 # Pinned to the multi-arch manifest-list digest (linux/amd64 + linux/arm64,
 # see the root Dockerfile's matching comment for the digest-vs-tag rationale
-# and .github/dependabot.yml for how this stays current).
-FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS base
+# and how it is kept current).
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS base
 
 WORKDIR /app
 
