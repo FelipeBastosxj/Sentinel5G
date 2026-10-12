@@ -26,20 +26,19 @@ DEMO_NAMESPACE="telecom-core"
 # release, and load them into the kind cluster instead of pulling from a
 # registry -- everything defaults to the normal, documented published-image
 # behavior when unset, so plain `./scripts/quickstart.sh` is unaffected.
-OPERATOR_IMAGE="${SENTINEL5G_OPERATOR_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-operator:v0.2.2}"
+OPERATOR_IMAGE="${SENTINEL5G_OPERATOR_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-operator:v0.3.0}"
 KIND_LOAD_IMAGES="${SENTINEL5G_KIND_LOAD_IMAGES:-}"
 
 # Deploy the real AI engine (charts/sentinel5g-ai-engine) and drive the
 # mitigation from a real score, instead of forging a ThreatScoreEvent onto
-# NATS. Off by default until the first release that publishes the model
-# artifact the chart pulls (ghcr.io/.../sentinel5g-model) -- with the
-# published-image defaults below, enabling it before then would just
-# ImagePullBackOff. CI enables it against images built from the PR
-# (.github/workflows/e2e.yml), so the end-to-end test exercises Layer 3 for
-# real either way. Flip the default to true when that release lands.
+# NATS. Opt-in: the model artifact the chart pulls
+# (ghcr.io/.../sentinel5g-model) is published from v0.3.0 on, so the
+# published-image defaults below work with it enabled. CI enables it against
+# images built from the PR (.github/workflows/e2e.yml), so the end-to-end
+# test exercises Layer 3 for real either way.
 WITH_AI_ENGINE="${SENTINEL5G_AI_ENGINE:-false}"
-AI_ENGINE_IMAGE="${SENTINEL5G_AI_ENGINE_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-ai-engine:v0.2.2}"
-MODEL_IMAGE="${SENTINEL5G_MODEL_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-model:v0.2.2}"
+AI_ENGINE_IMAGE="${SENTINEL5G_AI_ENGINE_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-ai-engine:v0.3.0}"
+MODEL_IMAGE="${SENTINEL5G_MODEL_IMAGE:-ghcr.io/felipebastosxj/sentinel5g-model:v0.3.0}"
 
 # ANSI colors, disabled automatically when not writing to a real terminal
 # (CI logs, piping to a file) so output stays readable either way.

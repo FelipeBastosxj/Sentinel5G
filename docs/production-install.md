@@ -46,7 +46,7 @@ straight from the published OCI artifact:
 
 ```sh
 helm install sentinel5g oci://ghcr.io/felipebastosxj/charts/sentinel5g-operator \
-  --version 0.2.2 \
+  --version 0.3.0 \
   --namespace sentinel5g-system --create-namespace \
   --set nats.url=nats://<your-nats-service>:4222 \
   --set nats.credentialsFile=/etc/nats/creds/sentinel5g.creds   # or username/existingPasswordSecret/tls*
@@ -69,7 +69,7 @@ separate deployment with its own scaling and its own model:
 
 ```sh
 helm install sentinel5g-ai-engine oci://ghcr.io/felipebastosxj/charts/sentinel5g-ai-engine \
-  --version 0.2.2 -n sentinel5g-system \
+  --version 0.3.0 -n sentinel5g-system \
   --set nats.url=nats://your-nats:4222 \
   --set nats.username=sentinel5g --set nats.existingPasswordSecret=nats-creds
 ```
@@ -86,8 +86,8 @@ healthy and silently never scoring. Two ways to supply it:
   (`docs/paper-data/real-dataset/`, `real-dataset-v2/`,
   `test-environment.md` state the limits). It is a reproducible starting
   point that has been shown not to flag traffic from a different day; it
-  is not a model of your network. The first release to publish it is the
-  one after `v0.2.2`; `model.image.tag` must name a tag that exists.
+  is not a model of your network. It is published from `v0.3.0` on;
+  `model.image.tag` must name a tag that exists.
 - **`model.existingSecret`.** Your own model, trained against your own
   traffic — the right answer before relying on `autoMitigate: true`
   anywhere. See `docs/getting-started.md`'s "Training against real captures

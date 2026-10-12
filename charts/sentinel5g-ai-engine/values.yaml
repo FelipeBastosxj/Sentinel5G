@@ -1,9 +1,9 @@
 image:
   repository: ghcr.io/felipebastosxj/sentinel5g-ai-engine
   # Must match an actual published tag (release.yml tags images with the
-  # full ref name, "v0.2.2", not "0.2.2") -- same convention as the operator
+  # full ref name, "v0.3.0", not "0.3.0") -- same convention as the operator
   # chart, and the same ImagePullBackOff if you get it wrong.
-  tag: "v0.2.2"
+  tag: "v0.3.0"
   pullPolicy: IfNotPresent
 
 # Scoring is stateless and the NATS worker subscribes as part of a queue
@@ -33,7 +33,7 @@ model:
   # against your own traffic.
   image:
     repository: ghcr.io/felipebastosxj/sentinel5g-model
-    tag: "v0.2.2"
+    tag: "v0.3.0"
     pullPolicy: IfNotPresent
 
   # Bring your own model instead: the name of an existing Secret with keys

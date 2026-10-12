@@ -5,6 +5,30 @@ planned next.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-12
+
+Closes ROADMAP Phases 2.5, 3 and 4. Highlights: per-TEID GTP-U detection
+and a TEID-keyed XDP drop path, the AI engine Helm chart plus a published,
+reproducibly trained model artifact (`sentinel5g-model`), blocklists that
+survive an operator restart (pinned BPF maps), the IPv6 data path running
+end to end, NATS event batching, and the production-readiness numbers
+measured in the lab: zero false positives on 340,000 real benign
+packets, ~900 ns per packet under sustained load (200x under the 0.2 ms
+budget), and the Falco/Hubble capture paths run against real daemons.
+Full detail below.
+
+### Security / CI (release preparation)
+- Go toolchain 1.26.8 -> 1.26.9 and `golang.org/x/net` v0.58.0 -> v0.60.0,
+  clearing 11 standard-library vulnerabilities `govulncheck` found
+  reachable (net/http, net/textproto, crypto/tls, html/template); grpc-go
+  bumped to v1.84.0 for GO-2026-6348.
+- Every pinned base image re-resolved to its current digest
+  (golang:1.27-bookworm is now 1.27.2, debian:bookworm-slim,
+  distroless/static, python:3.14-slim, busybox:1.38-uclibc).
+- GitHub Actions moved to their current major versions (Node 24 runtime).
+- Dependabot removed; base-image digests are bumped by hand (see the root
+  `Dockerfile`'s top comment).
+
 ### Production-readiness validation (Phase 4 follow-up, 2026-10-01)
 - **False-positive rate re-measured on 340,000 real benign packets**
   (docs/paper-data/real-dataset-v3/, from the lab): zero false positives,

@@ -4,8 +4,8 @@ description: >-
   Sentinel5G AI engine (Layer 3): unsupervised autoencoder inference over
   ONNX, scoring normalized telecom signaling events off the NATS bus.
 type: application
-version: 0.2.2
-appVersion: "0.2.2"
+version: 0.3.0
+appVersion: "0.3.0"
 kubeVersion: ">=1.26.0-0"
 home: https://github.com/FelipeBastosxj/Sentinel5G
 sources:

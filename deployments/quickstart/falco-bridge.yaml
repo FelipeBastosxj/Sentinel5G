@@ -40,7 +40,7 @@ spec:
     spec:
       containers:
         - name: falco-bridge
-          image: ghcr.io/felipebastosxj/sentinel5g-falco-bridge:v0.2.2
+          image: ghcr.io/felipebastosxj/sentinel5g-falco-bridge:v0.3.0
           env:
             - name: NATS_URL
               value: "nats://nats.default.svc.cluster.local:4222"

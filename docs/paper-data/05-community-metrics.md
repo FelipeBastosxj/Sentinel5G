@@ -43,8 +43,8 @@ was true at the 2026-09-06 snapshot and is not now: `v0.1.0`, `v0.2.0`,
 `01-performance-benchmarks.md` §1.2 ran the `v0.1.0` images in-cluster.
 The packages whose pull counts can be captured are:
 `sentinel5g-operator`, `sentinel5g-ai-engine`, `sentinel5g-falco-bridge`,
-the two OCI charts under `charts/`, and — from the first release after
-`v0.2.2` — the trained model artifact `sentinel5g-model`.
+the two OCI charts under `charts/`, and — from `v0.3.0` on — the trained model
+artifact `sentinel5g-model`.
 
 **Pending — next step:** GHCR exposes pull counts under each package's own
 page (`github.com/FelipeBastosxj/Sentinel5G/pkgs/container/<name>`, or via

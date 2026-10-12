@@ -39,13 +39,13 @@
 ## 🚀 Quick Start
 
 Go from zero to watching a real automated mitigation fire, using only the
-already-published `ghcr.io/felipebastosxj/*:v0.2.2` images — no local Go/Python
+already-published `ghcr.io/felipebastosxj/*:v0.3.0` images — no local Go/Python
 build required. Verified end to end against a real k3s cluster; see
 [`docs/getting-started.md`](docs/getting-started.md) for the deeper walkthrough
 that runs every layer (real eBPF capture + the AI engine) instead of hand-
 publishing the AI engine's output like step 3 below does. `scripts/quickstart.sh`
 can do the real thing too (`SENTINEL5G_AI_ENGINE=true`, which CI's e2e runs)
-from the first release that publishes the model artifact.
+with the published `v0.3.0` model artifact.
 
 Images are published to [GHCR](https://github.com/FelipeBastosxj?tab=packages)
 and, from the next tagged release on, also to [Docker
@@ -82,7 +82,7 @@ kind/network/RBAC friction, not code.
   Mitigating`, it just won't produce a real 403.
 
 Both charts are published as OCI artifacts (`helm install sentinel5g
-oci://ghcr.io/felipebastosxj/charts/sentinel5g-operator --version 0.2.2`,
+oci://ghcr.io/felipebastosxj/charts/sentinel5g-operator --version 0.3.0`,
 likewise `.../charts/sentinel5g-ai-engine`; no `helm repo add` needed) but this walkthrough also uses other files from
 the repo (the demo NATS/workload manifests, the sample policy) — clone it
 first; every command below is run from its root:
@@ -156,8 +156,8 @@ the real scoring half instead of publishing its output by hand, install
 the AI engine chart (it pulls a published model artifact by default and
 refuses to install without a model source) and publish a
 `NormalizedEvent` for it to score — `docs/getting-started.md` step 3, or
-`SENTINEL5G_AI_ENGINE=true ./scripts/quickstart.sh` once a release has
-published `sentinel5g-model`:
+`SENTINEL5G_AI_ENGINE=true ./scripts/quickstart.sh` (the model artifact
+`sentinel5g-model` is published from `v0.3.0` on):
 
 ```sh
 helm install sentinel5g-ai-engine charts/sentinel5g-ai-engine --namespace sentinel5g-system \
