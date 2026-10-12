@@ -24,7 +24,7 @@ jobs:
     name: quickstart.sh against a real kind cluster
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the operator image from this ref's code
         run: docker build -t sentinel5g-operator:e2e .
@@ -32,7 +32,7 @@ jobs:
       - name: Build the AI engine image from this ref's code
         run: docker build -t sentinel5g-ai-engine:e2e cmd/ai-engine
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload kind logs (only runs if a prior step failed)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kind-logs
           path: /tmp/kind-logs
