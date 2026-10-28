@@ -273,7 +273,7 @@ jobs:
           echo "dockerhub_manifest_digest=$dockerhub_manifest_digest" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v3
 
       - name: Sign both multi-arch manifests (keyless)
         # Signs the manifest list itself, which covers the platform-specific
@@ -346,7 +346,7 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v3
 
       - name: Sign the chart (keyless)
         run: |
@@ -434,7 +434,7 @@ jobs:
           tags: ghcr.io/${{ steps.vars.outputs.owner }}/sentinel5g-model:${{ github.ref_name }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v3
 
       - name: Sign the model artifact (keyless)
         run: |
