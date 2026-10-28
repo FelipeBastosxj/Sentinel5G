@@ -1055,7 +1055,7 @@ per tunnel, the flood is 244-byte UDP at 3,000. That is a limit of the
 feature set, not of training, and it is the next detection problem to solve
 (ROADMAP).
 
-### 2.11.5 The rules at their chart defaults
+### 2.11.5 The rules at their (then) chart defaults
 
 Mirrored packet by packet (`scripts/fpr_app_mix.py`, tested against the Go
 semantics in `tests/test_fpr_app_mix.py`):
@@ -1091,7 +1091,55 @@ look like.
 4. **Raise the source-flood rate threshold above the peer's real aggregate
    peak** before enabling it; 20,000 pkt/s is exceeded by four lab UEs.
 
+§2.11.7 records what was changed because of points 1–4.
+
 The residual is stated: a lab host, four UEs, a local server — so per-tunnel
 and per-peer rates are lower than a real 5G network's. Every rule finding
 above therefore errs on the side of the rules firing *less* than they would
 in production.
+
+### 2.11.7 Decisions taken from this measurement (2026-10-28)
+
+**Rule defaults moved above the measured benign peaks.** A default that
+fires on ordinary downloads is the most dangerous kind once someone turns
+`autoMitigate` on, and a fixed number below a real network's traffic cannot
+be made right by documentation alone. New defaults (`pkg/config`,
+`values.yaml`, `.env.example`):
+
+| Rule | Measured benign peak (A / B) | Previous | New | Margin / what it still catches |
+|---|---|---|---|---|
+| tunnel flood, pkt/s per tunnel | 20,975 / 19,934 uplink; 43,850 / 43,149 downlink | 1,000 | **100,000** | >2× the highest peak in either direction; still catches a single-tunnel volumetric flood (the lab generator sustains ~125,000) |
+| source flood, pkt/s per peer | 21,026 / 20,588 uplink (4 UEs) | 20,000 | **500,000** | room for a real gNB's hundreds of UEs (~10 Gbit/s of downlink's ACKs) |
+| source flood, distinct TEIDs | 4 | 256 | **2,048** | above a busy cell's active bearers; half the detector's 4,096 tracking cap; still catches rotation through thousands of TEIDs |
+
+Re-measured on both sessions (`real-dataset-v4/measurement.json`): **zero
+rule alerts on 2,964,012 benign packets**, against 217 per-tunnel alerts
+(146 in A, 71 in B, both directions; 43 + 20 on uplink alone) and 4 per-peer
+alerts at the previous defaults
+(`measurement-old-rule-defaults.json`, reproducible with
+`--tunnel-flood-pps 1000 --source-flood-pps 20000
+--source-flood-distinct-tunnels 256`). The cost is stated, not hidden: a
+3,000 pkt/s in-tunnel flood and a 200 × 999 pkt/s distributed one now pass
+both rules by default. That is the honest consequence of §2.11.4 — no rate
+quiet on real traffic catches them — so the lower numbers are now a
+per-network decision made on a detection-only pilot, with the measured
+peaks to make it from, rather than a default that is wrong for every real
+network.
+
+**Local calibration became one command.** `scripts/calibrate.py` trains on
+the earlier part of an operator's capture(s), scores the later part, writes
+a model only if the held-out 95% upper bound is ≤ `--max-fpr-upper-bound`
+(default 1 × 10⁻⁵), and reports the calibrated model's detection on the
+committed attack captures. On sessions A + B it held out 1,482,006 packets
+with **zero false positives (upper bound 2.49 × 10⁻⁶ ≈ 0.25 wrong
+mitigations/s at 100k pkt/s)** and warned, correctly, that
+`multi_ue_one_flooding` and `real_storm_pingflood` are no longer detected.
+
+**Deferred, with reasons.** Separating an in-tunnel flood from a download
+needs features the probe does not emit today — the inner L4 protocol and
+TCP flags, the per-tunnel uplink/downlink ratio — which changes
+`bpf/packet_filter.c`'s event layout, `pkg/events`, `FEATURE_VECTOR_SIZE`
+and with it every published model; and an AMBR-derived per-subscriber
+threshold needs the session AMBR from the SMF/PCF, an integration the
+operator does not have. Both are ROADMAP Phase 4.1 items with this design
+attached, not silent gaps.

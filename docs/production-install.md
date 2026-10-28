@@ -99,17 +99,36 @@ healthy and silently never scoring. Two ways to supply it:
   an independent session it never saw (95% upper bound 3.7 × 10⁻⁶, §2.11.3).
   Capture whole packets (`tcpdump -s 0`) or a recent `scripts/pcap_gtpu.py`
   that reads the original length; before 2026-10-28 a truncated capture
-  silently gave the model the wrong payload sizes (§2.11.1). See `docs/getting-started.md`'s "Training against real captures
-  instead" section, then:
+  silently gave the model the wrong payload sizes (§2.11.1).
+
+  `scripts/calibrate.py` does the whole procedure in one command: it trains
+  on the earlier part of your capture(s), scores the later part it never
+  saw, and **writes a model only if** the 95% upper bound on that held-out
+  false-positive rate is at or below `--max-fpr-upper-bound` (default
+  1 × 10⁻⁵, ~1 wrong mitigation/s at 100k pkt/s); otherwise it exits 3 with
+  a report and no model. It also reports what the calibrated model still
+  detects on the committed real attack captures, so the in-tunnel-flood
+  trade-off (§2.11.4) is visible before you deploy. On the lab's two
+  application-mix sessions it held out 1,482,006 packets with zero false
+  positives (bound 2.5 × 10⁻⁶):
 
   ```sh
+  # A few hours of benign N3, from the node the probe will run on:
+  sudo tcpdump -i <n3-interface> -s 0 -G 3600 -W 1 -w n3.pcap 'udp port 2152'
+  cd cmd/ai-engine
+  python scripts/calibrate.py --capture n3.pcap --out-dir models/calibrated
   kubectl create secret generic ai-engine-model -n sentinel5g-system \
-    --from-file=autoencoder.onnx=cmd/ai-engine/models/autoencoder.onnx \
-    --from-file=autoencoder.onnx.data=cmd/ai-engine/models/autoencoder.onnx.data \
-    --from-file=autoencoder.norm.json=cmd/ai-engine/models/autoencoder.norm.json
+    --from-file=autoencoder.onnx=models/calibrated/autoencoder.onnx \
+    --from-file=autoencoder.onnx.data=models/calibrated/autoencoder.onnx.data \
+    --from-file=autoencoder.norm.json=models/calibrated/autoencoder.norm.json
   helm install ... --set model.image.repository=null \
     --set model.existingSecret=ai-engine-model
   ```
+
+  Recalibrate when the traffic mix changes (a new service, a new slice):
+  the bound only holds for traffic that resembles what the model was
+  calibrated on. `docs/getting-started.md`'s "Training against real
+  captures instead" covers the underlying scripts.
 
 The two are mutually exclusive; setting both fails the render with a message
 saying so.
@@ -159,27 +178,31 @@ Two sources feed that counter, and the pilot is the place to tune both:
   your traffic — `docs/paper-data/02-ai-training-inference.md` is explicit
   about what those captures do and don't cover.
 - The deterministic GTP-U tunnel-flood rule (`config.gtpuTunnelFlood`, on
-  by default, `docs/integrations.md`). Its `packetsPerSecond` default of
-  1,000 per *tunnel* fires on ordinary traffic: on real application
-  traffic it alerted on web, video, bulk download and a photo upload alike
-  — 43 times in 30 minutes from four subscribers — because a single
-  download's ACK stream reaches ~21,000 pkt/s uplink (§2.11.5). Set it from
-  what a subscriber may legitimately send (its session AMBR) rather than
-  from what a flood looks like, and keep it detection-only: a rate quiet on
-  real traffic no longer separates a few-thousand-pkt/s flood from a
-  download (§2.11.4). `sentinel5g_threat_scores_received_total{source="rule"}`
-  tells you how often it is the one firing, and the alerting counter tells
-  you whether that would have been right.
+  by default, `docs/integrations.md`). Its `packetsPerSecond` default is
+  **100,000 per tunnel**, chosen from a measurement: real web, video, bulk
+  and voice traffic peaked at ~21,000 pkt/s uplink / ~44,000 downlink per
+  tunnel, and the previous default of 1,000 alerted 43 times in 30 minutes
+  from four subscribers (§2.11.5). At 100,000 it stayed silent on ~3
+  million benign packets and still catches a single-tunnel volumetric
+  flood. It does not catch a flood of a few thousand pkt/s — no rate
+  threshold quiet on real traffic can (§2.11.4). Lower it toward what a
+  subscriber may legitimately send (its session AMBR) if your traffic
+  allows, watching `sentinel5g_threat_scores_received_total{source="rule"}`
+  and the alerting counter while you do.
 - The deterministic GTP-U **source**-flood rule
   (`config.gtpuSourceFlood`, on by default), the per-peer counterpart that
   catches a flood spread across many tunnels. Tune its two thresholds here
   with particular care: unlike the per-tunnel rule, its verdict is
   source-wide and the action that fits it (`actions.ebpfBlock`) drops every
-  subscriber behind the peer. Its `packetsPerSecond` default of 20,000
-  aggregate is **not** above a busy legitimate gNB: four lab UEs reached
-  21,026 pkt/s uplink (§2.11.5). Set it above your peers' measured
-  aggregate peak, and `distinctTunnels` (256) from your real bearer
-  cardinality. Both share the `source="rule"` counter above.
+  subscriber behind the peer. Its defaults are **500,000 pkt/s**
+  aggregate and **2,048 distinct TEIDs** per second: four lab UEs already
+  reached 21,026 pkt/s, past the previous default of 20,000, and a busy
+  cell carries hundreds of active bearers, within reach of the previous
+  256 (§2.11.5). The price is stated: a flood spread as 200 tunnels ×
+  999 pkt/s now passes both thresholds, so lower `packetsPerSecond` to just
+  above your peers' measured aggregate peak and `distinctTunnels` to just
+  above their real active-bearer count. Both share the `source="rule"`
+  counter above.
 
 ## 5. Opt into eBPF enforcement only after its preflight passes
 

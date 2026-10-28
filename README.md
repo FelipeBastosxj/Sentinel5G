@@ -205,12 +205,14 @@ checklist for a real cluster. In summary:
 1. **Bring your own NATS JetStream** with authentication or TLS. Both
    services refuse to start against an unauthenticated bus.
 2. **Install the operator and the AI engine** from the OCI charts, with a
-   model calibrated on your own network's normal traffic.
+   model calibrated on your own network's traffic:
+   `scripts/calibrate.py --capture n3.pcap` trains, validates on held-out
+   traffic and refuses to write a model that fails its false-positive bound.
 3. **Run detection-only first.** Keep `autoMitigate: false` and measure the
    false-positive rate on your traffic with `scripts/fpr_app_mix.py` and the
-   metrics in [`docs/observability.md`](docs/observability.md). Raise the
-   GTP-U flood-rule thresholds above your measured benign peaks: the chart
-   defaults fire on ordinary application traffic.
+   metrics in [`docs/observability.md`](docs/observability.md). The GTP-U
+   flood-rule defaults sit above the benign peaks measured on real
+   application traffic; tune them down to your network from there.
 4. **Enable eBPF enforcement** only after its preflight passes, and size
    the tunnel maps (`MAX_TUNNEL_ENTRIES` in `bpf/packet_filter.c`, 65,536 by
    default) to the real bearer count of each UPF.

@@ -864,6 +864,23 @@ which is the point of making it. Full write-up:
       across two sessions; 95% upper bound 1.9e-6 ≈ 0.19 wrong
       mitigations/s at 100k pkt/s). Docs now say so wherever the model is
       offered (`docs/production-install.md` step 3, README).
+- [x] **The GTP-U rule defaults fired on ordinary traffic.** Per-tunnel
+      1,000 pkt/s alerted on every application (43 times in 30 min from
+      four UEs); per-peer 20,000 pkt/s was crossed by four UEs. Closed by
+      new defaults chosen from the measurement — 100,000 pkt/s per tunnel,
+      500,000 pkt/s and 2,048 distinct TEIDs per peer — which raised **zero
+      alerts on 2,964,012 benign packets** (§2.11.7). The price is stated in
+      `values.yaml`, `.env.example` and `production-install.md` step 4: a
+      few-thousand-pkt/s in-tunnel flood and a 200 × 999 pkt/s distributed
+      one now pass both rules by default, which is what the next item is
+      for.
+- [x] **Local calibration was a manual procedure.** Now one command:
+      `cmd/ai-engine/scripts/calibrate.py --capture n3.pcap` trains on the
+      earlier traffic, validates on the later, writes the model only under
+      its false-positive bound, reports what it still detects, and prints
+      the `Secret` + Helm commands (`production-install.md` step 3). On the
+      lab sessions: 1,482,006 held-out packets, zero false positives, bound
+      2.49e-6.
 - [ ] **In-tunnel floods are not detected after local calibration.** The
       calibrated model flags 0% of `multi_ue_one_flooding` (95% before): a
       tunnel at tens of thousands of pkt/s is normal once downloads are in
@@ -872,16 +889,15 @@ which is the point of making it. Full write-up:
       TCP ACK stream. Needs features that can — the inner L4 protocol and
       TCP flags, the per-tunnel uplink/downlink ratio — parsed in
       `bpf/packet_filter.c` and mirrored in `sentinel_ai/features.py`.
-- [ ] **The GTP-U rule defaults fire on ordinary traffic.** Per-tunnel
-      1,000 pkt/s alerted on every application (43 times in 30 min from
-      four UEs); per-peer 20,000 pkt/s was crossed by four UEs. Documented
-      in `values.yaml`, `.env.example` and `production-install.md` step 4;
-      the fix is a threshold derived from the subscriber's session AMBR
-      rather than a fixed number, and new defaults chosen from a
-      measurement rather than reasoning.
-- [ ] **Local calibration is a manual procedure.** It works (above) but is
-      a sequence of scripts; it needs to be one command from an operator's
-      own capture to a model `Secret` the AI engine chart consumes.
+      Deliberately its own change: it alters the kernel event layout,
+      `pkg/events`, `FEATURE_VECTOR_SIZE` and so every published model, and
+      needs a re-run of §2.6–§2.11 to show it separates the flood without
+      bringing the false positives back.
+- [ ] **Per-subscriber thresholds from the session AMBR.** The right
+      per-tunnel limit is what the subscriber is allowed to send, not a
+      network-wide number. Needs the AMBR per PDU session from the SMF/PCF
+      (N7/N4), an integration the operator does not have; until then the
+      measured defaults above plus per-network tuning are the stand-in.
 
 ## Phase 5 — Scale & multi-cluster
 

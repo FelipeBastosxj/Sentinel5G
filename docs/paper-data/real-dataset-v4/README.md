@@ -42,7 +42,8 @@ sudo ./lab_netns.sh down
 |---|---|
 | `app_mix_sample.pcap` | 36,716 packets: a contiguous 20 s slice of session A (t = 167–187 s) in which all four applications are active, including a voice call |
 | `app_mix_sample.roles.json` | UE address → application, as written by the generator |
-| `measurement.json` | the full output of `scripts/fpr_app_mix.py --capture app_mix_a.pcap --holdout app_mix_b.pcap` |
+| `measurement.json` | the full output of `scripts/fpr_app_mix.py --capture app_mix_a.pcap --holdout app_mix_b.pcap`, rules at the current defaults |
+| `measurement-old-rule-defaults.json` | the same, with the rules at the pre-2026-10-28 defaults (`--tunnel-flood-pps 1000 --source-flood-pps 20000 --source-flood-distinct-tunnels 256`) |
 | `gen_app_mix.py`, `lab_netns.sh` | the generator and the lab topology |
 
 Captured with `tcpdump -s 160`: headers are complete, payloads are truncated,
@@ -61,8 +62,9 @@ feature is read from (§2.11.1).
 | Autoencoder **calibrated on A's first half**, scored on A's second half | 987,294 | **0** | 3.74 × 10⁻⁶ |
 | Autoencoder **calibrated on A**, scored on independent session **B** | 989,424 | **0** | 3.73 × 10⁻⁶ (≈ 0.37 wrong mitigations/s at 100k pkt/s) |
 | … uplink only | 321,344 | 0 | 1.15 × 10⁻⁵ |
-| Tunnel-flood rule at its default (1,000 pkt/s per tunnel) | A, uplink | **43 alerts in 30 min**, on all four applications | — |
-| Source-flood rule at its default (20,000 pkt/s per peer) | A, uplink | **fires** (peak 21,026 pkt/s from 4 UEs) | — |
+| Tunnel-flood rule at its previous default (1,000 pkt/s per tunnel) | A, uplink | **43 alerts in 30 min**, on all four applications | — |
+| Source-flood rule at its previous default (20,000 pkt/s per peer) | A, uplink | **fires** (peak 21,026 pkt/s from 4 UEs) | — |
+| Both rules at the current defaults (100,000 / 500,000 pkt/s, 2,048 TEIDs) — chosen from this measurement, §2.11.7 | A + B, 2,964,012 | **0 alerts** | — |
 
 And the price of local calibration, on the committed **real attack** captures:
 

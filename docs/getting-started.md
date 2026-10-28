@@ -59,6 +59,12 @@ than one lab core's — see `docs/production-install.md` step 3.
 
 ### Training against real captures instead
 
+> To calibrate on **your own** network's traffic for a real deployment, use
+> `python scripts/calibrate.py --capture n3.pcap` instead: one command,
+> validated on held-out traffic, refusing to write a model that fails its
+> own false-positive bound (`docs/production-install.md` step 3). What
+> follows trains on the committed lab captures.
+
 `docs/paper-data/real-dataset/` and `docs/paper-data/real-dataset-v2/`
 bundle real GTP-U packet captures from live Open5GS+UERANSIM 5G cores (see
 each directory's README for exactly how they were produced and their

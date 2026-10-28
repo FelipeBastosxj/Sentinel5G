@@ -365,7 +365,7 @@ reconstructed *better* than normal traffic under the autoencoder — no
 threshold on the model's score separates them
 (`docs/paper-data/02-ai-training-inference.md` §2.4–§2.5). The rule fires
 when one GTP-U tunnel's own rate crosses `config.gtpuTunnelFlood.
-packetsPerSecond` (`GTPU_TUNNEL_FLOOD_PPS`, default 1,000), at most once
+packetsPerSecond` (`GTPU_TUNNEL_FLOOD_PPS`, default 100,000), at most once
 per tunnel per `cooldown` (default 30s).
 
 Three things worth knowing before tuning it:
@@ -381,16 +381,18 @@ Three things worth knowing before tuning it:
   Measured on four subscribers sharing one gNB
   (`docs/paper-data/real-dataset-v2/`): keyed per TEID it names the one
   flooding tunnel; keyed per source it names the gNB.
-- The default threshold is too low for a real user plane, and that is
-  measured, not assumed: on real web, video, bulk-download and voice
-  traffic through the lab core it fired on all four applications — 43
-  alerts in 30 minutes from four subscribers — because a single
-  download's TCP ACK stream reaches ~21,000 pkt/s uplink
-  (`docs/paper-data/02-ai-training-inference.md` §2.11.5). A threshold
-  quiet on that traffic no longer separates a few-thousand-pkt/s flood from
-  a download, so derive it from what a subscriber is allowed to send (its
-  session AMBR), keep the policies it feeds detection-only, and confirm the
-  number with `sentinel5g_threshold_crossings_total` during a pilot.
+- The default threshold comes from a measurement. On real web, video,
+  bulk-download and voice traffic through the lab core, a single
+  download's TCP ACK stream reached ~21,000 pkt/s uplink (~44,000
+  downlink), and the previous default of 1,000 fired on all four
+  applications — 43 alerts in 30 minutes from four subscribers
+  (`docs/paper-data/02-ai-training-inference.md` §2.11.5). 100,000 was
+  silent on ~3 million benign packets and still catches a single-tunnel
+  volumetric flood. What no threshold quiet on that traffic can do is
+  separate a few-thousand-pkt/s flood from a download (§2.11.4); lower it
+  toward what a subscriber is allowed to send (its session AMBR) where your
+  traffic allows, and confirm the number with
+  `sentinel5g_threshold_crossings_total` during a pilot.
 
 The mitigation it triggers can now be as precise as the detection: set
 `actions.ebpfBlockTunnel` on the policy and the drop is keyed by

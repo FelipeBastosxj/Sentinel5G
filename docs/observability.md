@@ -66,9 +66,12 @@ the same traffic tells you *which* detector and how confidently.
 `cmd/ai-engine/scripts/fpr_app_mix.py --capture n3.pcap --gnb-ip <peer>`
 scores a `tcpdump` of your N3 with the shipped model, a model calibrated on
 the capture's own first half, and both GTP-U rules at the chart defaults,
-and reports a 95% upper bound for each (§2.11). Expect the
-`source="rule"` share of the counter above to dominate at the default rule
-thresholds — on real application traffic they fire on ordinary downloads.
+and reports a 95% upper bound for each (§2.11). If the
+`source="rule"` share of the counter above dominates, the rule thresholds
+are below your benign peaks: the report's `peak_tunnel_pps` and `peak_pps`
+per application say by how much. To replace the shipped model with one
+calibrated on that traffic, see `scripts/calibrate.py`
+(`docs/production-install.md` step 3).
 
 ### Is enforcement actually on?
 

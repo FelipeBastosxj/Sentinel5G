@@ -22,7 +22,28 @@ planned next.
   flood; the tunnel-flood (1,000 pkt/s) and source-flood (20,000 pkt/s)
   rule defaults both fire on ordinary traffic. Documented in
   `production-install.md`, `integrations.md`, `observability.md`,
-  `values.yaml`, `.env.example` and the README; defaults are unchanged.
+  `values.yaml`, `.env.example` and the README.
+
+### Changed
+- **GTP-U rule defaults moved above the measured benign peaks**
+  (`02-ai-training-inference.md` §2.11.7): tunnel flood 1,000 → 100,000
+  pkt/s per tunnel; source flood 20,000 → 500,000 pkt/s and 256 → 2,048
+  distinct TEIDs per peer. Zero rule alerts on 2,964,012 benign packets,
+  where the previous defaults raised 217 per-tunnel and 4 per-peer. In exchange, a few-thousand-pkt/s
+  in-tunnel flood and a 200 × 999 pkt/s distributed one pass both rules by
+  default; lower the thresholds per network on a detection-only pilot
+  (`production-install.md` step 4). An upgrade that relied on the old
+  defaults should set `config.gtpuTunnelFlood.packetsPerSecond` and
+  `config.gtpuSourceFlood.*` explicitly.
+
+### Added
+- **`cmd/ai-engine/scripts/calibrate.py`**: local calibration in one
+  command. Trains on the earlier part of an operator's N3 capture, validates
+  on the later part, writes `autoencoder.onnx` + `.norm.json` only when the
+  held-out 95% upper bound on the false-positive rate is within
+  `--max-fpr-upper-bound` (default 1e-5; exit 3 otherwise), reports what the
+  calibrated model still detects, and prints the `Secret`/Helm commands.
+  `fpr_app_mix.py` gains `--tunnel-flood-pps` and friends.
 
 ### Fixed
 - `scripts/pcap_gtpu.read_udp_packets` read the payload size from the
