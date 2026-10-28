@@ -429,10 +429,11 @@ them by the number of clusters.
 pinning and a kernel-vs-status reconcile; the distributed-TEID evasion is
 caught by a second, per-peer detector; the accuracy numbers now have a
 capture-independent holdout and a measured baseline; and the false-positive
-rate is a confidence interval whose honest verdict is that `autoMitigate` is
-not yet authorizable on real traffic — the detection-only pilot remains the
-only defensible way to turn the system on, and is now also the instrument
-for making the measurement that would change that. What remains below is
+rate is a confidence interval — 1.23e-5 at 95% on 340,000 real benign
+packets (§2.10), which makes `autoMitigate` a bounded decision once it is
+calibrated on the deployment's own traffic. The detection-only pilot remains
+the way to turn the system on, and is the instrument that confirms that
+bound locally before automation is enabled. What remains below is
 Scale and Robustness: real ceilings and untested failure modes, not
 correctness holes in what is built.
 
@@ -500,8 +501,8 @@ correctness holes in what is built.
       rebuilt object cannot reuse (a changed `max_entries`, say) is
       discarded rather than reconciled: enforcement continues from empty,
       an `EBPFPinsReset` Event says so, and the next sync re-applies from
-      status. Upgrade and rollback with active blocklists is still its own
-      open item below.
+      status. Upgrade and rollback with active blocklists is covered by its
+      own item below.
 - [x] **A one-line evasion: spread the flood across many TEIDs.** Closed
       with a second detector, `pkg/detect.GTPUSourceFloodDetector`, rather
       than by touching the model.
