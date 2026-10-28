@@ -9,7 +9,7 @@
 # `docker buildx imagetools inspect <image>:<tag>` and bump it in a commit
 # (the release Trivy gate fails once a stale base ships a fixed CVE); don't
 # just drop the digest and fall back to the bare tag.
-FROM golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS builder
+FROM golang:1.27-bookworm@sha256:05237276236793ebedaf0b87dab86add9ec9adc66ebef2dbc3107c18254cde1c AS builder
 WORKDIR /workspace
 
 COPY go.mod go.sum ./

@@ -4,7 +4,7 @@
 # for human/tooling context, the digest is what `docker build` actually
 # resolves, so a same-tag upstream rebuild can't silently change what gets
 # built. Bumped the same way, too.
-FROM golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS builder
+FROM golang:1.27-bookworm@sha256:05237276236793ebedaf0b87dab86add9ec9adc66ebef2dbc3107c18254cde1c AS builder
 WORKDIR /workspace
 
 COPY go.mod go.sum ./

@@ -2,7 +2,7 @@ module github.com/FelipeBastosxj/Sentinel5G
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/cilium/cilium v1.20.1
