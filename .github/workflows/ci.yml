@@ -112,10 +112,17 @@ jobs:
         run: go test ./pkg/... ./api/... -v -cover
 
   python:
-    name: AI engine lint/test
+    name: AI engine lint/test (Python ${{ matrix.python }})
     needs: changes
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
+    # 3.11 is what release.yml trains the published model on; 3.14 is what
+    # the serving image (cmd/ai-engine/Dockerfile) actually runs. Testing only
+    # one of them leaves the other untested.
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
     defaults:
       run:
         working-directory: cmd/ai-engine
@@ -123,7 +130,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: cmd/ai-engine/pyproject.toml
       - name: Install dependencies
