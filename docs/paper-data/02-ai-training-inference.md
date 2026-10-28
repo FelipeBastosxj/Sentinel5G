@@ -894,6 +894,16 @@ yet."
 
 ## 2.10 The false-positive bound, re-measured on 340,000 real benign packets
 
+> **Correction (2026-10-28, §2.11.1).** The payload-size feature of every
+> `tcpdump -s N` capture was read from the *truncated* bytes, not the
+> original length, so the "diverse payloads" below never reached the model:
+> every one of them looked 214 bytes long. Re-scored with real sizes, the
+> committed diverse sample is flagged at **90%** (13,539 of 15,000), not 0.
+> The steady session (124-byte pings) is unaffected — 0 of 15,000 on its
+> sample — so the 1.23 × 10⁻⁵ bound below holds, but only for that single
+> packet shape. §2.11 replaces this section's conclusion with a measurement
+> on real application traffic.
+
 §2.9 closed with the honest verdict that `autoMitigate` was authorized by
 nothing measured, because the benign universe was too small (6,889 packets →
 a 95% FPR upper bound of 5.3 × 10⁻⁴, i.e. up to 53 wrong mitigations/second
@@ -933,3 +943,155 @@ enable `autoMitigate`. The residual is honest: this is lab user-plane (ICMP
 through the tunnels), not a production mix of video/web/signaling — a real
 pilot on real traffic is the last confirmation, and the tooling to make it a
 number rather than a hope now exists.
+
+## 2.11 Real application traffic: what it does to every detector
+
+§2.10's residual was that its benign traffic was ping. `real-dataset-v4/`
+removes it: four UEs running web browsing, DASH-style video, full-speed bulk
+downloads and voice + chat — real kernel TCP/TLS and UDP through the live
+core's user plane in both directions, ~3 million packets over two
+independent sessions (30 min, seed 42; 15 min, seed 7), every TEID
+attributed to one application through the inner IP header
+(`real-dataset-v4/README.md`; analysis `scripts/fpr_app_mix.py`, full output
+`real-dataset-v4/measurement.json`). Building it took a lab fix first — with
+the UEs in the host namespace no TCP handshake completes
+(`test-environment.md`) — and surfaced a parser bug that §2.11.1 corrects
+before anything else is read.
+
+### 2.11.1 Erratum: payload size was read from the snaplen
+
+`scripts/pcap_gtpu.read_udp_packets` set `payload_size` to the number of
+bytes *captured*. The kernel reports the real UDP payload
+(`data_end - (udph + 1)`; XDP always sees the whole frame), so the mirror
+was exact only for un-truncated captures. `real-dataset/` was captured
+whole; `real-dataset-v2/` and `-v3/` were not (`-s 128` / `-s 256`), and
+there every packet longer than the snaplen looked exactly snaplen-sized:
+
+| Capture | Payload the model saw | Real payload |
+|---|---|---|
+| `v2/multi_ue_normal` | 86 B | 100 B |
+| `v2/multi_ue_one_flooding` (the flooding tunnel) | 86 B | **244 B** |
+| `v3/benign_steady_sample` | 86 B | 124 B |
+| `v3/benign_diverse_sample` | 214 B | 244–1,244 B |
+
+Fixed: the size now comes from each record's original length, which pcap
+keeps even when the bytes are truncated (regression test
+`tests/test_fpr_app_mix.py::test_payload_size_survives_a_truncating_snaplen`).
+Every committed capture was re-scored, so the impact is measured, not
+estimated:
+
+| Result | Before | After |
+|---|---|---|
+| §2.6 within-pool AUC / recall (high) | 0.983 / 0.915 | 0.984 / 0.918 |
+| §2.8 leave-one-capture-out AUC | 0.936 / 0.935 | 0.936 / 0.936 |
+| §2.8 15-run mean AUC (std) | 0.9353 (0.00033) | 0.9356 (0.00026) |
+| §2.8 model vs. rule AUC | 0.935 vs. 0.696 | 0.936 vs. 0.696 |
+| §2.9 out-of-fold real FPR | ~0.228 | 0.229 |
+| §2.10 steady sample (15,000) | 0 FP | 0 FP |
+| §2.10 **diverse sample** (15,000) | **0 FP** | **13,539 FP (90%)** |
+
+Ranking and accuracy barely move — the flood was separable by its rate
+alone, so the model never needed the size it could not see. The one
+conclusion that falls is §2.10's: zero false positives on "varied payloads"
+was an artifact of every payload looking the same.
+
+### 2.11.2 The shipped model flags most real application traffic
+
+The model as an install receives it — trained on the committed real normal
+data, i.e. ping-shaped GTP-U — scoring session A:
+
+| Application | Uplink packets | Flagged (high) |
+|---|---|---|
+| bulk download | 285,441 | 98.5% |
+| web browsing | 113,971 | 72.8% |
+| video streaming | 188,290 | 65.6% |
+| voice + chat | 75,211 | 10.7% |
+| **all, uplink** | **662,913** | **74.8%** |
+| all, both directions | 1,974,588 | 87.9% |
+
+This is §2.8's calibration finding at full scale: the reference error does
+not transfer to traffic structurally unlike the training captures, and real
+applications are very unlike ping. The published `sentinel5g-model`
+artifact is a reproducible starting point for the pipeline; on a real user
+plane, even in detection-only mode, it is noise.
+
+### 2.11.3 Calibrated locally, zero false positives — across sessions
+
+The procedure §2.10 prescribed, measured: train and calibrate on the
+deployment's own traffic (20,000 rows sampled from it), then score traffic
+the model never saw.
+
+| Calibrated on | Scored | Packets | FP | 95% upper bound | ≤ wrong mitigations/s at 100k pkt/s |
+|---|---|---|---|---|---|
+| A, first half | A, second half | 987,294 | 0 | 3.74 × 10⁻⁶ | 0.37 |
+| A | **B** (independent session) | 989,424 | 0 | 3.73 × 10⁻⁶ | 0.37 |
+| A | B, uplink only | 321,344 | 0 | 1.15 × 10⁻⁵ | 1.15 |
+| both scored sets | — | 1,976,718 | 0 | 1.87 × 10⁻⁶ | 0.19 |
+
+Zero at every sensitivity tier, on every application, in both directions,
+including a session with a different seed taken after the calibration one.
+The local-calibration rule is no longer a recommendation; it is the
+difference between 88% and 0.
+
+### 2.11.4 What local calibration costs: the in-tunnel flood
+
+A model that flags nothing benign is only worth something if it still flags
+attacks. The same models, on the committed real attack captures:
+
+| Attack | Shipped model | Calibrated locally |
+|---|---|---|
+| `real_storm_udpflood` (untunneled) | 100% | 100% |
+| `real_malformed` | 100% | 100% |
+| `real_scan` | 100% | 100% |
+| `multi_ue_one_flooding` (one tunnel, ~3,000 pkt/s, 244 B) | 95% | **0%** |
+| `real_storm_pingflood` (in-tunnel, ~63 pkt/s, WSL2-era) | 0% | 0% — below any rate either the model or a rule acts on |
+
+Calibrated on real applications, the model has learned that a tunnel
+carrying tens of thousands of packets per second is normal — because a
+download is — and an in-tunnel flood at a few thousand is inside that. The
+per-packet features (payload size, tunnel rate, time of day) cannot separate
+the two: bulk uplink is a stream of ~68-byte TCP ACKs at up to 21,000 pkt/s
+per tunnel, the flood is 244-byte UDP at 3,000. That is a limit of the
+feature set, not of training, and it is the next detection problem to solve
+(ROADMAP).
+
+### 2.11.5 The rules at their chart defaults
+
+Mirrored packet by packet (`scripts/fpr_app_mix.py`, tested against the Go
+semantics in `tests/test_fpr_app_mix.py`):
+
+| Rule (default) | Benign peak observed | Fires? |
+|---|---|---|
+| tunnel flood, 1,000 pkt/s per tunnel | uplink: bulk 20,975 · video 1,891 · voice 2,268 · web 1,629 | **yes — on all four applications**: 43 alerts in 30 min uplink (A), 20 in 15 min (B) |
+| source flood, 20,000 pkt/s per peer | uplink 21,026 from 4 UEs | **yes** |
+| source flood, 256 distinct TEIDs | 4 | no |
+
+The voice UE's alerts are its photo uploads, not its calls (calls are
+50 pkt/s). At the defaults, a pilot on a real N3 sees roughly one wrong
+per-tunnel mitigation every 40 seconds from four subscribers, and the
+per-peer rule would drop a whole gNB. Quiet on this mix needs the
+per-tunnel threshold above ~21,000 pkt/s uplink (~44,000 downlink) — at
+which point it no longer sees a 3,000 pkt/s flood either. Rate alone cannot
+tell a flood from a download; a usable threshold has to come from what a
+subscriber is *allowed* to send (its session AMBR), not from what floods
+look like.
+
+### 2.11.6 What this means operationally
+
+1. **Never run the shipped model against a real user plane, not even
+   detection-only, without local calibration.** It flags ~75–88% of real
+   application traffic.
+2. **Calibrated locally, the model is safe to automate on** the classes it
+   still detects — untunneled storms, malformed GTP-U, scans — at a measured
+   ≤ 0.37 wrong mitigations/s at 100k pkt/s (≤ 1.15 on uplink alone).
+3. **In-tunnel floods are not covered after calibration**, by the model or
+   by a rate rule that is quiet on real traffic. Until the feature set can
+   separate them, set the tunnel-flood rule from the subscriber's AMBR and
+   keep it detection-only.
+4. **Raise the source-flood rate threshold above the peer's real aggregate
+   peak** before enabling it; 20,000 pkt/s is exceeded by four lab UEs.
+
+The residual is stated: a lab host, four UEs, a local server — so per-tunnel
+and per-peer rates are lower than a real 5G network's. Every rule finding
+above therefore errs on the side of the rules firing *less* than they would
+in production.

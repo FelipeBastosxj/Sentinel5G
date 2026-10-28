@@ -61,6 +61,15 @@ validated detection rate — nothing here labels true positives. The
 quality; for what the detector's recall actually is on real captures see
 `docs/paper-data/02-ai-training-inference.md` §2.6.
 
+The live counter tells you *that* the pilot crossed; an offline capture of
+the same traffic tells you *which* detector and how confidently.
+`cmd/ai-engine/scripts/fpr_app_mix.py --capture n3.pcap --gnb-ip <peer>`
+scores a `tcpdump` of your N3 with the shipped model, a model calibrated on
+the capture's own first half, and both GTP-U rules at the chart defaults,
+and reports a 95% upper bound for each (§2.11). Expect the
+`source="rule"` share of the counter above to dominate at the default rule
+thresholds — on real application traffic they fire on ordinary downloads.
+
 ### Is enforcement actually on?
 
 The question this section exists to answer is narrower than it sounds, and

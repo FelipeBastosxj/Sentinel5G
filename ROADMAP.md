@@ -405,6 +405,13 @@ a measurement on real infrastructure, never by assertion. The one thing this
 phase deliberately did *not* manufacture is a different answer to its own
 question.
 
+> **Superseded in part (2026-10-28) — see "Phase 4.1" below.** The 1.23e-5
+> bound quoted here holds only for ping-shaped traffic: a parser bug hid
+> real payload sizes from the "diverse" set, and on real application
+> traffic the shipped model flags ~88% of packets. Locally calibrated it
+> flags none of ~2 million (bound 1.9e-6), at the cost of the in-tunnel
+> flood. Read Phase 4.1 before acting on this paragraph.
+
 Phase 2.5 asked "can I install this?" and answered it. This phase asked the
 harder question — **"can I turn `autoMitigate: true` on, on a network that
 matters, and be right?"** The answer is now a *measured* one: on 340,000 real
@@ -624,6 +631,9 @@ correctness holes in what is built.
       but the gate is no longer "authorized by nothing"; it is "authorized to
       a measured ~1 wrong mitigation/second, pending local calibration." This
       was the last of the four gate items.
+      **Superseded in part (2026-10-28):** on real application traffic the
+      bound only holds after local calibration, and calibration costs the
+      in-tunnel flood — see Phase 4.1.
 
 ### Scale — the architectural ceilings, not the implementation's
 
@@ -827,9 +837,55 @@ correctness holes in what is built.
       `docs/paper-data/04-validation-testing-logs.md` §4.11 and the
       `docs/integrations.md` verification notes.
 
+## Phase 4.1 — Real application traffic (2026-10-28)
+
+Phase 4's last residual was "lab user-plane is not a production traffic
+mix". It was closed by measurement, and the measurement changed the answer —
+which is the point of making it. Full write-up:
+`docs/paper-data/02-ai-training-inference.md` §2.11; data:
+`docs/paper-data/real-dataset-v4/`.
+
+- [x] **Real application traffic through the lab core.** Web browsing,
+      DASH-style video, full-speed bulk downloads and voice + chat, one UE
+      each, ~3 million GTP-U packets over two independent sessions
+      (`real-dataset-v4/gen_app_mix.py`), every tunnel attributed to its
+      application; analysed by `cmd/ai-engine/scripts/fpr_app_mix.py`
+      per application and direction. It needed a lab fix first: with the
+      UEs in the host namespace no TCP handshake completes
+      (`real-dataset-v4/lab_netns.sh`, `test-environment.md`).
+- [x] **The payload-size feature was read from the snaplen.** Fixed in
+      `scripts/pcap_gtpu.py` (original record length, as the kernel sees
+      it), with a regression test. Every committed capture was re-scored:
+      AUC/recall/out-of-fold FPR barely move (§2.11.1), but §2.10's
+      "diverse payloads, zero false positives" falls to 90% flagged.
+- [x] **Measured: the shipped model is unusable on a real user plane
+      without local calibration** (~75% of uplink, ~88% of all packets
+      flagged), and **calibrated locally it is not** (0 of 1,976,718
+      across two sessions; 95% upper bound 1.9e-6 ≈ 0.19 wrong
+      mitigations/s at 100k pkt/s). Docs now say so wherever the model is
+      offered (`docs/production-install.md` step 3, README).
+- [ ] **In-tunnel floods are not detected after local calibration.** The
+      calibrated model flags 0% of `multi_ue_one_flooding` (95% before): a
+      tunnel at tens of thousands of pkt/s is normal once downloads are in
+      the baseline, and the per-packet features (payload size, tunnel rate,
+      time of day) cannot tell a 3,000 pkt/s UDP flood from a 21,000 pkt/s
+      TCP ACK stream. Needs features that can — the inner L4 protocol and
+      TCP flags, the per-tunnel uplink/downlink ratio — parsed in
+      `bpf/packet_filter.c` and mirrored in `sentinel_ai/features.py`.
+- [ ] **The GTP-U rule defaults fire on ordinary traffic.** Per-tunnel
+      1,000 pkt/s alerted on every application (43 times in 30 min from
+      four UEs); per-peer 20,000 pkt/s was crossed by four UEs. Documented
+      in `values.yaml`, `.env.example` and `production-install.md` step 4;
+      the fix is a threshold derived from the subscriber's session AMBR
+      rather than a fixed number, and new defaults chosen from a
+      measurement rather than reasoning.
+- [ ] **Local calibration is a manual procedure.** It works (above) but is
+      a sequence of scripts; it needs to be one command from an operator's
+      own capture to a model `Secret` the AI engine chart consumes.
+
 ## Phase 5 — Scale & multi-cluster
 
-Deliberately gated behind Phase 4. Every unmeasured ceiling and every
+Deliberately gated behind Phase 4 (and now 4.1's open items). Every unmeasured ceiling and every
 silent failure above gets multiplied by the number of clusters here, so
 moving these first would mean scaling something that cannot yet say
 whether it is working.

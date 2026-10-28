@@ -37,7 +37,7 @@ declarative `TelecomSecurityPolicy` resource.
 | Capability | What it does |
 |---|---|
 | **In-kernel inspection** | An XDP program parses Ethernet/VLAN/IPv4/IPv6/UDP and the GTP-U header itself (3GPP TS 29.281), rating traffic per source and **per tunnel (TEID)** — the difference between one flooding subscriber and the gNB every subscriber shares. No sidecars. |
-| **Unsupervised detection** | An autoencoder served by ONNX Runtime learns the normal signaling baseline and flags deviations. The published model is trained on real GTP-U captured from a live Open5GS + UERANSIM core. |
+| **Unsupervised detection** | An autoencoder served by ONNX Runtime learns the normal signaling baseline and flags deviations. The published model is trained on real GTP-U from a live Open5GS + UERANSIM core and is a starting point only: it must be calibrated on each network's own traffic before its score is trusted. |
 | **Deterministic detectors** | Rule-based tunnel-flood and per-peer source-flood detectors run beside the model, covering the anomaly classes an autoencoder provably cannot separate, including floods spread across many TEIDs. |
 | **Closed-loop mitigation** | Per-source or per-tunnel drops in XDP, plus optional workload isolation via Istio, Cilium or Linkerd. Mitigations de-escalate automatically. |
 | **Restart-safe enforcement** | Blocklists are pinned to bpffs and reconciled against policy status, so an operator restart, upgrade or leader failover does not silently un-block traffic. |
@@ -119,7 +119,7 @@ method and limits documented in
 | Score → mitigation, end to end | single-digit ms | **~2 ms** |
 | AI engine throughput | — | **~72,000 events/s** per replica |
 | Event bus with batching | 100k pkt/s per node | **~694,000 events/s** |
-| False-positive rate (340k real benign packets) | — | **0 observed**, 95% upper bound **1.23 × 10⁻⁵** |
+| False positives on real application traffic (web, video, bulk, voice; ~2M packets) | — | **0** with a locally calibrated model (95% upper bound **1.9 × 10⁻⁶**); **~88%** with the shipped, uncalibrated model |
 
 The CPU and line-rate figures were measured with native XDP on a veth pair;
 physical-NIC line-rate numbers depend on the target hardware and driver.
@@ -207,17 +207,23 @@ checklist for a real cluster. In summary:
 2. **Install the operator and the AI engine** from the OCI charts, with a
    model calibrated on your own network's normal traffic.
 3. **Run detection-only first.** Keep `autoMitigate: false` and measure the
-   false-positive rate on your traffic with `scripts/fpr_large_benign.py`
-   and the metrics in [`docs/observability.md`](docs/observability.md).
+   false-positive rate on your traffic with `scripts/fpr_app_mix.py` and the
+   metrics in [`docs/observability.md`](docs/observability.md). Raise the
+   GTP-U flood-rule thresholds above your measured benign peaks: the chart
+   defaults fire on ordinary application traffic.
 4. **Enable eBPF enforcement** only after its preflight passes, and size
    the tunnel maps (`MAX_TUNNEL_ENTRIES` in `bpf/packet_filter.c`, 65,536 by
    default) to the real bearer count of each UPF.
 5. **Turn on `autoMitigate` per policy**, with the kill switch in reach.
 
-> **Why detection-only first.** The 1.23 × 10⁻⁵ false-positive bound was
-> measured on lab traffic. It holds for a model calibrated on traffic that
-> resembles the deployment's own; a pilot on your network is what confirms
-> it before automated mitigation is enabled.
+> **Why detection-only first.** On real application traffic through a 5G
+> core, the shipped model flags ~88% of packets; calibrated on that same
+> network's traffic, it flags none of ~2 million, including an independent
+> session it never saw. Calibration also costs it the in-tunnel flood, which
+> no detector here separates from a download at a rate quiet on real
+> traffic. The measurements and their limits are in
+> [`docs/paper-data/02-ai-training-inference.md`](docs/paper-data/02-ai-training-inference.md)
+> §2.11.
 
 Current limitations and planned work are tracked in [`ROADMAP.md`](ROADMAP.md).
 

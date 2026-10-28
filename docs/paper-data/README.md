@@ -45,6 +45,8 @@ both directions: a measurement is not softened into a target either.
 | [`test-environment.md`](test-environment.md) | The two lab environments every measurement here was taken on: the original WSL2 core (single UE) and the native-Linux core (four UEs) that replaced it, with build steps and the generator traps found on the way |
 | [`real-dataset/`](real-dataset/README.md) | Single-UE real GTP-U captures (2026-09-07), the training set for §2.4–§2.5 |
 | [`real-dataset-v2/`](real-dataset-v2/README.md) | Multi-UE captures (2026-09-11): four tunnels behind one gNB, one flooding — the data behind §2.6 |
+| [`real-dataset-v3/`](real-dataset-v3/README.md) | 340,000 benign ICMP-through-tunnel packets (2026-10-01) — the false-positive bound of §2.10 |
+| [`real-dataset-v4/`](real-dataset-v4/README.md) | Application-mix benign traffic (2026-10-28): web, video, bulk download and voice/chat through four tunnels, ~2.9M packets over two sessions — the false-positive measurement of §2.11 |
 
 ## Resolved: the WSL2 live-validation background session
 

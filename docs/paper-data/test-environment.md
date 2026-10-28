@@ -8,7 +8,8 @@ never existed as a committed file. Those references now point here.
 
 ## Current: native Linux (2026-09-11 onwards)
 
-Used for `real-dataset-v2/` and §2.6 of
+Used for `real-dataset-v2/`, `real-dataset-v3/` and `real-dataset-v4/`, and
+§2.6, §2.10 and §2.11 of
 [`02-ai-training-inference.md`](02-ai-training-inference.md).
 
 | | |
@@ -73,6 +74,27 @@ perfectly successful transfer while not a single packet enters the tunnel:
 binds the socket to the TUN device itself and cannot be short-circuited.
 `ping -I <tun>` is also reliable, which is why the well-behaved UEs use it.
 
+A third trap only shows up with **application** traffic (found building
+`real-dataset-v4/`, 2026-10-28), and `SO_BINDTODEVICE` does not fix it: with
+the UEs in the host namespace the host *owns* `10.45.0.x`, so a server on
+`ogstun` answers a UE through loopback and the reply never re-enters the
+tunnel. The uplink still appears on N3 — which is why ping-based captures
+looked fine — but a TCP handshake never completes. A one-minute smoke test
+produced 45 KB of N3 traffic instead of the ~14 MB the same workload makes
+once fixed. The fix is the standard UERANSIM test topology: each UE in its
+own network namespace, joined to the gNB by a veth.
+[`real-dataset-v4/lab_netns.sh`](real-dataset-v4/lab_netns.sh) builds and
+tears it down without editing the stock `gnb.yaml`/`ueN.yaml`, and without
+any firewall or NAT change (each namespace reaches the gNB's link address as
+a local host address; nothing is forwarded):
+
+| | Stock lab | `lab_netns.sh up` |
+|---|---|---|
+| UE `uesimtun0` | host namespace, `10.45.0.2`–`.5` | namespace `s5g-ueN`, one each |
+| gNB ↔ UE (radio link sim.) | `127.0.0.1` | gNB `10.201.1.1`, UE `10.201.N.2` over veth `s5g-vN` |
+| N2 / N3 | loopback | loopback, unchanged — the capture is still `tcpdump -i lo 'udp port 2152'` |
+| TCP/TLS through the tunnel | handshake never completes | works both ways |
+
 ### Measured throughput ceilings
 
 Worth recording because an earlier caveat attributed a low ceiling to WSL2,
@@ -83,6 +105,7 @@ and that turned out to be wrong:
 | `ping -f -I uesimtun0` | ~89 pkt/s |
 | `iperf3 -u` over loopback (not the tunnel) | ~125,000 pkt/s |
 | `gen_tunnel_flood.py --pps 3000` | 2,989 pkt/s, as requested |
+| TCP bulk download, UE in a namespace (`real-dataset-v4/`) | ~41 Mbit/s peak, ~44,000 pkt/s downlink + ~21,000 pkt/s of ACKs uplink |
 
 `ping -f`'s ~89 pkt/s on native Linux is barely above the ~63 pkt/s measured
 inside WSL2 — so **that ceiling was a property of flood-ping as a generator,

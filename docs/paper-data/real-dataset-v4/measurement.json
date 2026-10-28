@@ -1,0 +1,936 @@
+{
+  "detection_on_committed_attacks": {
+    "A_shipped_model": {
+      "real_storm_pingflood": {
+        "packets": 3348,
+        "flagged_high": 0.0,
+        "flagged_medium": 0.0,
+        "flagged_low": 0.0
+      },
+      "real_storm_udpflood": {
+        "packets": 25944,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "real_malformed": {
+        "packets": 700,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "real_scan": {
+        "packets": 708,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "multi_ue_one_flooding": {
+        "packets": 19808,
+        "flagged_high": 0.9495,
+        "flagged_medium": 0.9424,
+        "flagged_low": 0.9371
+      }
+    },
+    "B_locally_calibrated": {
+      "real_storm_pingflood": {
+        "packets": 3348,
+        "flagged_high": 0.0,
+        "flagged_medium": 0.0,
+        "flagged_low": 0.0
+      },
+      "real_storm_udpflood": {
+        "packets": 25944,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "real_malformed": {
+        "packets": 700,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "real_scan": {
+        "packets": 708,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "multi_ue_one_flooding": {
+        "packets": 19808,
+        "flagged_high": 0.0,
+        "flagged_medium": 0.0,
+        "flagged_low": 0.0
+      }
+    },
+    "B_cross_session_model": {
+      "real_storm_pingflood": {
+        "packets": 3348,
+        "flagged_high": 0.0,
+        "flagged_medium": 0.0,
+        "flagged_low": 0.0
+      },
+      "real_storm_udpflood": {
+        "packets": 25944,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "real_malformed": {
+        "packets": 700,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "real_scan": {
+        "packets": 708,
+        "flagged_high": 1.0,
+        "flagged_medium": 1.0,
+        "flagged_low": 1.0
+      },
+      "multi_ue_one_flooding": {
+        "packets": 19808,
+        "flagged_high": 0.0,
+        "flagged_medium": 0.0,
+        "flagged_low": 0.0
+      }
+    }
+  },
+  "capture": "app_mix_a.pcap",
+  "packets": 1974588,
+  "duration_s": 1796.6,
+  "packets_by_group": {
+    "bulk/downlink": 609688,
+    "bulk/uplink": 285441,
+    "video/downlink": 404305,
+    "video/uplink": 188290,
+    "voice_chat/downlink": 70822,
+    "voice_chat/uplink": 75211,
+    "web/downlink": 226860,
+    "web/uplink": 113971
+  },
+  "alpha": 0.05,
+  "A_shipped_model": {
+    "trained_on_rows": 6889,
+    "all": {
+      "high": {
+        "packets": 1974588,
+        "false_positives": 1735757,
+        "point_fpr": 0.8790476798197903,
+        "upper_bound_95": 0.8795021797849738,
+        "wrong_mitigations_per_s_at_100000": 87950.22,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 609688,
+            "false_positives": 609411,
+            "upper_bound_95": 0.9995975923754223
+          },
+          "bulk/uplink": {
+            "packets": 285441,
+            "false_positives": 281100,
+            "upper_bound_95": 0.9852377291518175
+          },
+          "video/downlink": {
+            "packets": 404305,
+            "false_positives": 403850,
+            "upper_bound_95": 0.9989756050049519
+          },
+          "video/uplink": {
+            "packets": 188290,
+            "false_positives": 123539,
+            "upper_bound_95": 0.6582560139381204
+          },
+          "voice_chat/downlink": {
+            "packets": 70822,
+            "false_positives": 3007,
+            "upper_bound_95": 0.04396947464679307
+          },
+          "voice_chat/uplink": {
+            "packets": 75211,
+            "false_positives": 8069,
+            "upper_bound_95": 0.10951838880589854
+          },
+          "web/downlink": {
+            "packets": 226860,
+            "false_positives": 223755,
+            "upper_bound_95": 0.9867872383979921
+          },
+          "web/uplink": {
+            "packets": 113971,
+            "false_positives": 83026,
+            "upper_bound_95": 0.731064125225033
+          }
+        }
+      },
+      "medium": {
+        "packets": 1974588,
+        "false_positives": 1723998,
+        "point_fpr": 0.873092513476229,
+        "upper_bound_95": 0.8735565032070172,
+        "wrong_mitigations_per_s_at_100000": 87355.65,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 609688,
+            "false_positives": 609410,
+            "upper_bound_95": 0.9995960486522137
+          },
+          "bulk/uplink": {
+            "packets": 285441,
+            "false_positives": 280740,
+            "upper_bound_95": 0.9839944816632031
+          },
+          "video/downlink": {
+            "packets": 404305,
+            "false_positives": 403848,
+            "upper_bound_95": 0.9989708849530377
+          },
+          "video/uplink": {
+            "packets": 188290,
+            "false_positives": 116068,
+            "upper_bound_95": 0.6186292817141656
+          },
+          "voice_chat/downlink": {
+            "packets": 70822,
+            "false_positives": 2917,
+            "upper_bound_95": 0.04267731715893103
+          },
+          "voice_chat/uplink": {
+            "packets": 75211,
+            "false_positives": 8068,
+            "upper_bound_95": 0.10950497281505417
+          },
+          "web/downlink": {
+            "packets": 226860,
+            "false_positives": 223485,
+            "upper_bound_95": 0.9856171459989258
+          },
+          "web/uplink": {
+            "packets": 113971,
+            "false_positives": 79462,
+            "upper_bound_95": 0.6998792792000932
+          }
+        }
+      },
+      "low": {
+        "packets": 1974588,
+        "false_positives": 1714295,
+        "point_fpr": 0.8681785769993537,
+        "upper_bound_95": 0.8686501437701235,
+        "wrong_mitigations_per_s_at_100000": 86865.01,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 609688,
+            "false_positives": 609409,
+            "upper_bound_95": 0.9995945047553367
+          },
+          "bulk/uplink": {
+            "packets": 285441,
+            "false_positives": 280440,
+            "upper_bound_95": 0.9829578972628321
+          },
+          "video/downlink": {
+            "packets": 404305,
+            "false_positives": 403848,
+            "upper_bound_95": 0.9989708849530377
+          },
+          "video/uplink": {
+            "packets": 188290,
+            "false_positives": 109843,
+            "upper_bound_95": 0.5855995548029593
+          },
+          "voice_chat/downlink": {
+            "packets": 70822,
+            "false_positives": 2842,
+            "upper_bound_95": 0.041600230596384014
+          },
+          "voice_chat/uplink": {
+            "packets": 75211,
+            "false_positives": 8068,
+            "upper_bound_95": 0.10950497281505417
+          },
+          "web/downlink": {
+            "packets": 226860,
+            "false_positives": 223291,
+            "upper_bound_95": 0.9847758993858537
+          },
+          "web/uplink": {
+            "packets": 113971,
+            "false_positives": 76554,
+            "upper_bound_95": 0.6744234850809858
+          }
+        }
+      }
+    },
+    "uplink": {
+      "high": {
+        "packets": 662913,
+        "false_positives": 495734,
+        "point_fpr": 0.7478115529488787,
+        "upper_bound_95": 0.7488566130144185,
+        "wrong_mitigations_per_s_at_100000": 74885.66,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 285441,
+            "false_positives": 281100,
+            "upper_bound_95": 0.9852377291518175
+          },
+          "video/uplink": {
+            "packets": 188290,
+            "false_positives": 123539,
+            "upper_bound_95": 0.6582560139381204
+          },
+          "voice_chat/uplink": {
+            "packets": 75211,
+            "false_positives": 8069,
+            "upper_bound_95": 0.10951838880589854
+          },
+          "web/uplink": {
+            "packets": 113971,
+            "false_positives": 83026,
+            "upper_bound_95": 0.731064125225033
+          }
+        }
+      },
+      "medium": {
+        "packets": 662913,
+        "false_positives": 484338,
+        "point_fpr": 0.7306207601902512,
+        "upper_bound_95": 0.7316884474710068,
+        "wrong_mitigations_per_s_at_100000": 73168.84,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 285441,
+            "false_positives": 280740,
+            "upper_bound_95": 0.9839944816632031
+          },
+          "video/uplink": {
+            "packets": 188290,
+            "false_positives": 116068,
+            "upper_bound_95": 0.6186292817141656
+          },
+          "voice_chat/uplink": {
+            "packets": 75211,
+            "false_positives": 8068,
+            "upper_bound_95": 0.10950497281505417
+          },
+          "web/uplink": {
+            "packets": 113971,
+            "false_positives": 79462,
+            "upper_bound_95": 0.6998792792000932
+          }
+        }
+      },
+      "low": {
+        "packets": 662913,
+        "false_positives": 474905,
+        "point_fpr": 0.7163911403155467,
+        "upper_bound_95": 0.7174760098521342,
+        "wrong_mitigations_per_s_at_100000": 71747.6,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 285441,
+            "false_positives": 280440,
+            "upper_bound_95": 0.9829578972628321
+          },
+          "video/uplink": {
+            "packets": 188290,
+            "false_positives": 109843,
+            "upper_bound_95": 0.5855995548029593
+          },
+          "voice_chat/uplink": {
+            "packets": 75211,
+            "false_positives": 8068,
+            "upper_bound_95": 0.10950497281505417
+          },
+          "web/uplink": {
+            "packets": 113971,
+            "false_positives": 76554,
+            "upper_bound_95": 0.6744234850809858
+          }
+        }
+      }
+    }
+  },
+  "B_locally_calibrated": {
+    "trained_on_rows": 20000,
+    "scored_second_half_packets": 987294,
+    "all": {
+      "high": {
+        "packets": 987294,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 3.7363465809625573e-06,
+        "wrong_mitigations_per_s_at_100000": 0.37,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 308363,
+            "false_positives": 0,
+            "upper_bound_95": 1.196271079578759e-05
+          },
+          "bulk/uplink": {
+            "packets": 146981,
+            "false_positives": 0,
+            "upper_bound_95": 2.509734702799138e-05
+          },
+          "video/downlink": {
+            "packets": 196003,
+            "false_positives": 0,
+            "upper_bound_95": 1.8820348366255235e-05
+          },
+          "video/uplink": {
+            "packets": 92365,
+            "false_positives": 0,
+            "upper_bound_95": 3.993726835743727e-05
+          },
+          "voice_chat/downlink": {
+            "packets": 35365,
+            "false_positives": 0,
+            "upper_bound_95": 0.00010430332446093038
+          },
+          "voice_chat/uplink": {
+            "packets": 37076,
+            "false_positives": 0,
+            "upper_bound_95": 9.949012697002546e-05
+          },
+          "web/downlink": {
+            "packets": 113897,
+            "false_positives": 0,
+            "upper_bound_95": 3.2387329931438114e-05
+          },
+          "web/uplink": {
+            "packets": 57244,
+            "false_positives": 0,
+            "upper_bound_95": 6.443925299820519e-05
+          }
+        }
+      },
+      "medium": {
+        "packets": 987294,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 3.7363465809625573e-06,
+        "wrong_mitigations_per_s_at_100000": 0.37,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 308363,
+            "false_positives": 0,
+            "upper_bound_95": 1.196271079578759e-05
+          },
+          "bulk/uplink": {
+            "packets": 146981,
+            "false_positives": 0,
+            "upper_bound_95": 2.509734702799138e-05
+          },
+          "video/downlink": {
+            "packets": 196003,
+            "false_positives": 0,
+            "upper_bound_95": 1.8820348366255235e-05
+          },
+          "video/uplink": {
+            "packets": 92365,
+            "false_positives": 0,
+            "upper_bound_95": 3.993726835743727e-05
+          },
+          "voice_chat/downlink": {
+            "packets": 35365,
+            "false_positives": 0,
+            "upper_bound_95": 0.00010430332446093038
+          },
+          "voice_chat/uplink": {
+            "packets": 37076,
+            "false_positives": 0,
+            "upper_bound_95": 9.949012697002546e-05
+          },
+          "web/downlink": {
+            "packets": 113897,
+            "false_positives": 0,
+            "upper_bound_95": 3.2387329931438114e-05
+          },
+          "web/uplink": {
+            "packets": 57244,
+            "false_positives": 0,
+            "upper_bound_95": 6.443925299820519e-05
+          }
+        }
+      },
+      "low": {
+        "packets": 987294,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 3.7363465809625573e-06,
+        "wrong_mitigations_per_s_at_100000": 0.37,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 308363,
+            "false_positives": 0,
+            "upper_bound_95": 1.196271079578759e-05
+          },
+          "bulk/uplink": {
+            "packets": 146981,
+            "false_positives": 0,
+            "upper_bound_95": 2.509734702799138e-05
+          },
+          "video/downlink": {
+            "packets": 196003,
+            "false_positives": 0,
+            "upper_bound_95": 1.8820348366255235e-05
+          },
+          "video/uplink": {
+            "packets": 92365,
+            "false_positives": 0,
+            "upper_bound_95": 3.993726835743727e-05
+          },
+          "voice_chat/downlink": {
+            "packets": 35365,
+            "false_positives": 0,
+            "upper_bound_95": 0.00010430332446093038
+          },
+          "voice_chat/uplink": {
+            "packets": 37076,
+            "false_positives": 0,
+            "upper_bound_95": 9.949012697002546e-05
+          },
+          "web/downlink": {
+            "packets": 113897,
+            "false_positives": 0,
+            "upper_bound_95": 3.2387329931438114e-05
+          },
+          "web/uplink": {
+            "packets": 57244,
+            "false_positives": 0,
+            "upper_bound_95": 6.443925299820519e-05
+          }
+        }
+      }
+    },
+    "uplink": {
+      "high": {
+        "packets": 333666,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 1.1055543753524244e-05,
+        "wrong_mitigations_per_s_at_100000": 1.11,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 146981,
+            "false_positives": 0,
+            "upper_bound_95": 2.509734702799138e-05
+          },
+          "video/uplink": {
+            "packets": 92365,
+            "false_positives": 0,
+            "upper_bound_95": 3.993726835743727e-05
+          },
+          "voice_chat/uplink": {
+            "packets": 37076,
+            "false_positives": 0,
+            "upper_bound_95": 9.949012697002546e-05
+          },
+          "web/uplink": {
+            "packets": 57244,
+            "false_positives": 0,
+            "upper_bound_95": 6.443925299820519e-05
+          }
+        }
+      },
+      "medium": {
+        "packets": 333666,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 1.1055543753524244e-05,
+        "wrong_mitigations_per_s_at_100000": 1.11,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 146981,
+            "false_positives": 0,
+            "upper_bound_95": 2.509734702799138e-05
+          },
+          "video/uplink": {
+            "packets": 92365,
+            "false_positives": 0,
+            "upper_bound_95": 3.993726835743727e-05
+          },
+          "voice_chat/uplink": {
+            "packets": 37076,
+            "false_positives": 0,
+            "upper_bound_95": 9.949012697002546e-05
+          },
+          "web/uplink": {
+            "packets": 57244,
+            "false_positives": 0,
+            "upper_bound_95": 6.443925299820519e-05
+          }
+        }
+      },
+      "low": {
+        "packets": 333666,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 1.1055543753524244e-05,
+        "wrong_mitigations_per_s_at_100000": 1.11,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 146981,
+            "false_positives": 0,
+            "upper_bound_95": 2.509734702799138e-05
+          },
+          "video/uplink": {
+            "packets": 92365,
+            "false_positives": 0,
+            "upper_bound_95": 3.993726835743727e-05
+          },
+          "voice_chat/uplink": {
+            "packets": 37076,
+            "false_positives": 0,
+            "upper_bound_95": 9.949012697002546e-05
+          },
+          "web/uplink": {
+            "packets": 57244,
+            "false_positives": 0,
+            "upper_bound_95": 6.443925299820519e-05
+          }
+        }
+      }
+    }
+  },
+  "C_rules_at_chart_defaults": {
+    "tunnel_flood": {
+      "threshold_pps": 1000,
+      "cooldown_s": 30.0,
+      "alerts": {
+        "bulk/downlink": 20,
+        "bulk/uplink": 20,
+        "video/downlink": 43,
+        "video/uplink": 7,
+        "voice_chat/downlink": 2,
+        "voice_chat/uplink": 4,
+        "web/downlink": 38,
+        "web/uplink": 12
+      },
+      "tunnels_alerted": {
+        "bulk/downlink": 1,
+        "bulk/uplink": 1,
+        "video/downlink": 1,
+        "video/uplink": 1,
+        "voice_chat/downlink": 1,
+        "voice_chat/uplink": 1,
+        "web/downlink": 1,
+        "web/uplink": 1
+      },
+      "peak_tunnel_pps": {
+        "bulk/downlink": 43850,
+        "bulk/uplink": 20975,
+        "video/downlink": 3961,
+        "video/uplink": 1891,
+        "voice_chat/downlink": 1077,
+        "voice_chat/uplink": 2268,
+        "web/downlink": 3394,
+        "web/uplink": 1629
+      }
+    },
+    "source_flood": {
+      "threshold_pps": 20000,
+      "threshold_distinct_tunnels": 256,
+      "peak_pps": {
+        "127.0.0.1": 21026,
+        "127.0.0.7": 43901
+      },
+      "peak_distinct_tunnels": {
+        "127.0.0.1": 4,
+        "127.0.0.7": 4
+      },
+      "alerts": 2
+    }
+  },
+  "B_cross_session": {
+    "calibrated_on": "app_mix_a.pcap",
+    "trained_on_rows": 20000,
+    "scored": "app_mix_b.pcap",
+    "scored_packets": 989424,
+    "duration_s": 896.8,
+    "all": {
+      "high": {
+        "packets": 989424,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 3.7283031132928635e-06,
+        "wrong_mitigations_per_s_at_100000": 0.37,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 312707,
+            "false_positives": 0,
+            "upper_bound_95": 1.1796530606955624e-05
+          },
+          "bulk/uplink": {
+            "packets": 139247,
+            "false_positives": 0,
+            "upper_bound_95": 2.649127516268779e-05
+          },
+          "video/downlink": {
+            "packets": 203970,
+            "false_positives": 0,
+            "upper_bound_95": 1.8085238499609968e-05
+          },
+          "video/uplink": {
+            "packets": 89078,
+            "false_positives": 0,
+            "upper_bound_95": 4.141093281911923e-05
+          },
+          "voice_chat/downlink": {
+            "packets": 34137,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001080551937563956
+          },
+          "voice_chat/uplink": {
+            "packets": 34567,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001067111010028543
+          },
+          "web/downlink": {
+            "packets": 117266,
+            "false_positives": 0,
+            "upper_bound_95": 3.145687099165295e-05
+          },
+          "web/uplink": {
+            "packets": 58452,
+            "false_positives": 0,
+            "upper_bound_95": 6.31075592771313e-05
+          }
+        }
+      },
+      "medium": {
+        "packets": 989424,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 3.7283031132928635e-06,
+        "wrong_mitigations_per_s_at_100000": 0.37,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 312707,
+            "false_positives": 0,
+            "upper_bound_95": 1.1796530606955624e-05
+          },
+          "bulk/uplink": {
+            "packets": 139247,
+            "false_positives": 0,
+            "upper_bound_95": 2.649127516268779e-05
+          },
+          "video/downlink": {
+            "packets": 203970,
+            "false_positives": 0,
+            "upper_bound_95": 1.8085238499609968e-05
+          },
+          "video/uplink": {
+            "packets": 89078,
+            "false_positives": 0,
+            "upper_bound_95": 4.141093281911923e-05
+          },
+          "voice_chat/downlink": {
+            "packets": 34137,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001080551937563956
+          },
+          "voice_chat/uplink": {
+            "packets": 34567,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001067111010028543
+          },
+          "web/downlink": {
+            "packets": 117266,
+            "false_positives": 0,
+            "upper_bound_95": 3.145687099165295e-05
+          },
+          "web/uplink": {
+            "packets": 58452,
+            "false_positives": 0,
+            "upper_bound_95": 6.31075592771313e-05
+          }
+        }
+      },
+      "low": {
+        "packets": 989424,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 3.7283031132928635e-06,
+        "wrong_mitigations_per_s_at_100000": 0.37,
+        "by_group": {
+          "bulk/downlink": {
+            "packets": 312707,
+            "false_positives": 0,
+            "upper_bound_95": 1.1796530606955624e-05
+          },
+          "bulk/uplink": {
+            "packets": 139247,
+            "false_positives": 0,
+            "upper_bound_95": 2.649127516268779e-05
+          },
+          "video/downlink": {
+            "packets": 203970,
+            "false_positives": 0,
+            "upper_bound_95": 1.8085238499609968e-05
+          },
+          "video/uplink": {
+            "packets": 89078,
+            "false_positives": 0,
+            "upper_bound_95": 4.141093281911923e-05
+          },
+          "voice_chat/downlink": {
+            "packets": 34137,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001080551937563956
+          },
+          "voice_chat/uplink": {
+            "packets": 34567,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001067111010028543
+          },
+          "web/downlink": {
+            "packets": 117266,
+            "false_positives": 0,
+            "upper_bound_95": 3.145687099165295e-05
+          },
+          "web/uplink": {
+            "packets": 58452,
+            "false_positives": 0,
+            "upper_bound_95": 6.31075592771313e-05
+          }
+        }
+      }
+    },
+    "uplink": {
+      "high": {
+        "packets": 321344,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 1.1479468361719203e-05,
+        "wrong_mitigations_per_s_at_100000": 1.15,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 139247,
+            "false_positives": 0,
+            "upper_bound_95": 2.649127516268779e-05
+          },
+          "video/uplink": {
+            "packets": 89078,
+            "false_positives": 0,
+            "upper_bound_95": 4.141093281911923e-05
+          },
+          "voice_chat/uplink": {
+            "packets": 34567,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001067111010028543
+          },
+          "web/uplink": {
+            "packets": 58452,
+            "false_positives": 0,
+            "upper_bound_95": 6.31075592771313e-05
+          }
+        }
+      },
+      "medium": {
+        "packets": 321344,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 1.1479468361719203e-05,
+        "wrong_mitigations_per_s_at_100000": 1.15,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 139247,
+            "false_positives": 0,
+            "upper_bound_95": 2.649127516268779e-05
+          },
+          "video/uplink": {
+            "packets": 89078,
+            "false_positives": 0,
+            "upper_bound_95": 4.141093281911923e-05
+          },
+          "voice_chat/uplink": {
+            "packets": 34567,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001067111010028543
+          },
+          "web/uplink": {
+            "packets": 58452,
+            "false_positives": 0,
+            "upper_bound_95": 6.31075592771313e-05
+          }
+        }
+      },
+      "low": {
+        "packets": 321344,
+        "false_positives": 0,
+        "point_fpr": 0.0,
+        "upper_bound_95": 1.1479468361719203e-05,
+        "wrong_mitigations_per_s_at_100000": 1.15,
+        "by_group": {
+          "bulk/uplink": {
+            "packets": 139247,
+            "false_positives": 0,
+            "upper_bound_95": 2.649127516268779e-05
+          },
+          "video/uplink": {
+            "packets": 89078,
+            "false_positives": 0,
+            "upper_bound_95": 4.141093281911923e-05
+          },
+          "voice_chat/uplink": {
+            "packets": 34567,
+            "false_positives": 0,
+            "upper_bound_95": 0.0001067111010028543
+          },
+          "web/uplink": {
+            "packets": 58452,
+            "false_positives": 0,
+            "upper_bound_95": 6.31075592771313e-05
+          }
+        }
+      }
+    }
+  },
+  "C_rules_on_holdout": {
+    "tunnel_flood": {
+      "threshold_pps": 1000,
+      "cooldown_s": 30.0,
+      "alerts": {
+        "bulk/downlink": 10,
+        "bulk/uplink": 10,
+        "video/downlink": 23,
+        "video/uplink": 4,
+        "web/downlink": 18,
+        "web/uplink": 6
+      },
+      "tunnels_alerted": {
+        "bulk/downlink": 1,
+        "bulk/uplink": 1,
+        "video/downlink": 1,
+        "video/uplink": 1,
+        "web/downlink": 1,
+        "web/uplink": 1
+      },
+      "peak_tunnel_pps": {
+        "bulk/downlink": 43149,
+        "bulk/uplink": 19934,
+        "video/downlink": 3986,
+        "video/uplink": 1891,
+        "voice_chat/downlink": 413,
+        "voice_chat/uplink": 799,
+        "web/downlink": 3406,
+        "web/uplink": 1700
+      }
+    },
+    "source_flood": {
+      "threshold_pps": 20000,
+      "threshold_distinct_tunnels": 256,
+      "peak_pps": {
+        "127.0.0.1": 20588,
+        "127.0.0.7": 44444
+      },
+      "peak_distinct_tunnels": {
+        "127.0.0.1": 4,
+        "127.0.0.7": 4
+      },
+      "alerts": 2
+    }
+  }
+}

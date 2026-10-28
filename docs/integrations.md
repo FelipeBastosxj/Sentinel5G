@@ -381,11 +381,16 @@ Three things worth knowing before tuning it:
   Measured on four subscribers sharing one gNB
   (`docs/paper-data/real-dataset-v2/`): keyed per TEID it names the one
   flooding tunnel; keyed per source it names the gNB.
-- The default threshold is reasoned, not tuned to a production N3. The
-  same lab tunnel sustains ~125,000 pkt/s, so 1,000 is reachable by an
-  attacker by orders of magnitude and is conservative, not unreachable;
-  the honest number for your network comes from watching
-  `sentinel5g_threshold_crossings_total` during a detection-only pilot.
+- The default threshold is too low for a real user plane, and that is
+  measured, not assumed: on real web, video, bulk-download and voice
+  traffic through the lab core it fired on all four applications — 43
+  alerts in 30 minutes from four subscribers — because a single
+  download's TCP ACK stream reaches ~21,000 pkt/s uplink
+  (`docs/paper-data/02-ai-training-inference.md` §2.11.5). A threshold
+  quiet on that traffic no longer separates a few-thousand-pkt/s flood from
+  a download, so derive it from what a subscriber is allowed to send (its
+  session AMBR), keep the policies it feeds detection-only, and confirm the
+  number with `sentinel5g_threshold_crossings_total` during a pilot.
 
 The mitigation it triggers can now be as precise as the detection: set
 `actions.ebpfBlockTunnel` on the policy and the drop is keyed by

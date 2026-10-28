@@ -157,9 +157,14 @@ config:
   # pilot stays detection-only.
   gtpuTunnelFlood:
     enabled: true
-    # Packets/second on a SINGLE tunnel (one TEID), not per source IP. NOT
-    # empirically validated against a production N3 interface -- see
-    # docs/paper-data/02-ai-training-inference.md and .env.example.
+    # Packets/second on a SINGLE tunnel (one TEID), not per source IP.
+    # MEASURED TOO LOW for a real user plane: on real web, video, bulk and
+    # voice traffic through a 5G core it fired on all four applications, 43
+    # times in 30 min from four subscribers, because one download's ACK
+    # stream alone reaches ~21,000 pkt/s uplink
+    # (docs/paper-data/02-ai-training-inference.md §2.11.5). Set it from the
+    # subscriber's session AMBR and keep the policies detection-only; see
+    # docs/production-install.md step 4.
     packetsPerSecond: 1000
     # Minimum interval between events for one (source IP, TEID).
     cooldown: 30s
@@ -180,11 +185,13 @@ config:
   # tunnel whose removal fixes an aggregate flood.
   gtpuSourceFlood:
     enabled: true
-    # AGGREGATE packets/second from one source across every tunnel. NOT
-    # validated against a production N3, and more consequential than the
-    # per-tunnel number because the matching action drops every subscriber
-    # behind the peer -- pilot in detection-only mode first (see
-    # docs/production-install.md). Set to 0 to use cardinality alone.
+    # AGGREGATE packets/second from one source across every tunnel. More
+    # consequential than the per-tunnel number because the matching action
+    # drops every subscriber behind the peer -- and MEASURED TOO LOW: four
+    # lab UEs reached 21,026 pkt/s uplink on ordinary application traffic
+    # (docs/paper-data/02-ai-training-inference.md §2.11.5). Set it above
+    # your peers' measured aggregate peak, and pilot in detection-only mode
+    # first (docs/production-install.md). Set to 0 to use cardinality alone.
     packetsPerSecond: 20000
     # Distinct TEIDs one source may use within the window before being
     # reported regardless of rate -- the shape of TEID rotation/spoofing,

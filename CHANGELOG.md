@@ -5,6 +5,33 @@ planned next.
 
 ## [Unreleased]
 
+### Validation: real application traffic (ROADMAP Phase 4.1)
+- **`docs/paper-data/real-dataset-v4/`**: web browsing, DASH-style video,
+  bulk downloads and voice + chat through the lab 5G core, ~3 million GTP-U
+  packets over two independent sessions, every tunnel attributed to its
+  application. Generator `gen_app_mix.py`; `lab_netns.sh` puts each UE in
+  its own network namespace, without which no TCP handshake completes.
+- **`cmd/ai-engine/scripts/fpr_app_mix.py`**: false positives per
+  application and direction for the shipped model, a locally calibrated
+  model (same-session and cross-session) and both GTP-U rules at their
+  chart defaults, plus each model's detection rate on the committed attack
+  captures. Works on an operator's own capture (`--gnb-ip`).
+- Findings (`02-ai-training-inference.md` §2.11): the shipped model flags
+  ~88% of real application packets; calibrated locally it flags 0 of
+  1,976,718 (95% upper bound 1.9e-6) but no longer detects the in-tunnel
+  flood; the tunnel-flood (1,000 pkt/s) and source-flood (20,000 pkt/s)
+  rule defaults both fire on ordinary traffic. Documented in
+  `production-install.md`, `integrations.md`, `observability.md`,
+  `values.yaml`, `.env.example` and the README; defaults are unchanged.
+
+### Fixed
+- `scripts/pcap_gtpu.read_udp_packets` read the payload size from the
+  bytes captured, so every packet longer than a `tcpdump -s N` snaplen
+  looked snaplen-sized. It now uses the record's original length, as the
+  kernel does. Re-scored: AUC, recall and the out-of-fold FPR barely move,
+  but §2.10's zero false positives on varied payloads becomes 90% flagged
+  (corrections in §2.10 and `real-dataset-v3/README.md`).
+
 ## [0.3.0] - 2026-10-28
 
 Closes ROADMAP Phases 2.5, 3 and 4. Highlights: per-TEID GTP-U detection

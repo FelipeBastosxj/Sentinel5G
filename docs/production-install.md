@@ -86,11 +86,20 @@ healthy and silently never scoring. Two ways to supply it:
   (`docs/paper-data/real-dataset/`, `real-dataset-v2/`,
   `test-environment.md` state the limits). It is a reproducible starting
   point that has been shown not to flag traffic from a different day; it
-  is not a model of your network. It is published from `v0.3.0` on;
+  is not a model of your network — and on real application traffic it is
+  measurably wrong: scoring web, video, bulk-download and voice traffic
+  through a real 5G core, it flags **75% of uplink packets (88% of all)**
+  (`docs/paper-data/02-ai-training-inference.md` §2.11.2). Use it to bring
+  the pipeline up, not to judge traffic. It is published from `v0.3.0` on;
   `model.image.tag` must name a tag that exists.
 - **`model.existingSecret`.** Your own model, trained against your own
-  traffic — the right answer before relying on `autoMitigate: true`
-  anywhere. See `docs/getting-started.md`'s "Training against real captures
+  traffic — required before relying on the score for anything, even an
+  alert. Calibrated locally the same way, the model scored **zero** false
+  positives on ~2 million packets of real application traffic, including
+  an independent session it never saw (95% upper bound 3.7 × 10⁻⁶, §2.11.3).
+  Capture whole packets (`tcpdump -s 0`) or a recent `scripts/pcap_gtpu.py`
+  that reads the original length; before 2026-10-28 a truncated capture
+  silently gave the model the wrong payload sizes (§2.11.1). See `docs/getting-started.md`'s "Training against real captures
   instead" section, then:
 
   ```sh
@@ -151,18 +160,25 @@ Two sources feed that counter, and the pilot is the place to tune both:
   about what those captures do and don't cover.
 - The deterministic GTP-U tunnel-flood rule (`config.gtpuTunnelFlood`, on
   by default, `docs/integrations.md`). Its `packetsPerSecond` default of
-  1,000 per *tunnel* is reasoned rather than measured against a production
-  N3; `sentinel5g_threat_scores_received_total{source="rule"}` tells you
-  how often it is the one firing, and the alerting counter tells you
-  whether that would have been right.
+  1,000 per *tunnel* fires on ordinary traffic: on real application
+  traffic it alerted on web, video, bulk download and a photo upload alike
+  — 43 times in 30 minutes from four subscribers — because a single
+  download's ACK stream reaches ~21,000 pkt/s uplink (§2.11.5). Set it from
+  what a subscriber may legitimately send (its session AMBR) rather than
+  from what a flood looks like, and keep it detection-only: a rate quiet on
+  real traffic no longer separates a few-thousand-pkt/s flood from a
+  download (§2.11.4). `sentinel5g_threat_scores_received_total{source="rule"}`
+  tells you how often it is the one firing, and the alerting counter tells
+  you whether that would have been right.
 - The deterministic GTP-U **source**-flood rule
   (`config.gtpuSourceFlood`, on by default), the per-peer counterpart that
   catches a flood spread across many tunnels. Tune its two thresholds here
   with particular care: unlike the per-tunnel rule, its verdict is
   source-wide and the action that fits it (`actions.ebpfBlock`) drops every
   subscriber behind the peer. Its `packetsPerSecond` default of 20,000
-  aggregate is well above a busy legitimate gNB but is still not *your*
-  number, and `distinctTunnels` (256) should be set from your real bearer
+  aggregate is **not** above a busy legitimate gNB: four lab UEs reached
+  21,026 pkt/s uplink (§2.11.5). Set it above your peers' measured
+  aggregate peak, and `distinctTunnels` (256) from your real bearer
   cardinality. Both share the `source="rule"` counter above.
 
 ## 5. Opt into eBPF enforcement only after its preflight passes
@@ -246,7 +262,12 @@ is labelled as a target rather than a result.
 ## 7. Turn on automated mitigation, per policy
 
 Once a policy's `Alerting` phase history from step 4 looks right, set
-`threatDetection.autoMitigate: true` on it. There's no global switch — this
+`threatDetection.autoMitigate: true` on it. "Looks right" is a number, not
+an impression: with a locally calibrated model, score a large slice of your
+own benign traffic with `cmd/ai-engine/scripts/fpr_app_mix.py` (or
+`fpr_large_benign.py`) and enable only when the 95% upper bound times your
+packet rate is a mitigation rate you accept — §2.11.3 measured ≤ 0.37
+wrong mitigations/s at 100k pkt/s on lab application traffic. There's no global switch — this
 is deliberately per-`TelecomSecurityPolicy`, so you can roll it out one
 protected workload at a time rather than flipping it cluster-wide.
 

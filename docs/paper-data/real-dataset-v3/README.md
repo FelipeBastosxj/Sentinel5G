@@ -1,5 +1,14 @@
 # Large benign captures (native Linux, 2026-10-01)
 
+> **Correction (2026-10-28).** These captures were taken with `tcpdump -s
+> 128` / `-s 256`, and until `02-ai-training-inference.md` §2.11.1 fixed it
+> the payload-size feature was read from the truncated bytes — so the
+> "varied payloads" never reached the model (all looked 214 B). Re-scored
+> with real sizes, `benign_diverse_sample.pcap` is flagged at **90%**
+> (13,539 / 15,000). `benign_steady_sample.pcap` stays at 0, and the
+> 1.23 × 10⁻⁵ bound below holds for that one packet shape only. Real
+> application traffic is measured in [`../real-dataset-v4/`](../real-dataset-v4/README.md).
+
 The one thing `02-ai-training-inference.md` §2.9 named as able to move the
 false-positive-rate bound: **orders of magnitude more real benign traffic.**
 Captured against the live Open5GS + UERANSIM core
