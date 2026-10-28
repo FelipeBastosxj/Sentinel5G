@@ -5,7 +5,7 @@ planned next.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-10-12
+## [0.3.0] - 2026-10-28
 
 Closes ROADMAP Phases 2.5, 3 and 4. Highlights: per-TEID GTP-U detection
 and a TEID-keyed XDP drop path, the AI engine Helm chart plus a published,
@@ -18,14 +18,21 @@ budget), and the Falco/Hubble capture paths run against real daemons.
 Full detail below.
 
 ### Security / CI (release preparation)
-- Go toolchain 1.26.8 -> 1.26.9 and `golang.org/x/net` v0.58.0 -> v0.60.0,
+- Go toolchain 1.26.8 -> 1.26.10 and `golang.org/x/net` v0.58.0 -> v0.60.0,
   clearing 11 standard-library vulnerabilities `govulncheck` found
-  reachable (net/http, net/textproto, crypto/tls, html/template); grpc-go
-  bumped to v1.84.0 for GO-2026-6348.
+  reachable (net/http, net/textproto, crypto/tls, html/template) plus
+  GO-2026-6809 (crypto/x509, compromised intermediates); grpc-go bumped to
+  v1.84.0 for GO-2026-6348.
 - Every pinned base image re-resolved to its current digest
-  (golang:1.27-bookworm is now 1.27.2, debian:bookworm-slim,
-  distroless/static, python:3.14-slim, busybox:1.38-uclibc).
-- GitHub Actions moved to their current major versions (Node 24 runtime).
+  (golang:1.27-bookworm is now 1.27.3 -- the builder that compiles the
+  shipped operator and falco-bridge binaries, so it carries the
+  GO-2026-6809 fix too -- debian:bookworm-slim, distroless/static,
+  python:3.14-slim, busybox:1.38-uclibc).
+- GitHub Actions moved to their current major versions (Node 24 runtime),
+  except `sigstore/cosign-installer`, which stays on `@v3`: it publishes
+  no floating `v4` tag, so `@v4` failed every signing job at set-up.
+- CI now tests the AI engine on Python 3.14 (what the serving image runs)
+  as well as 3.11 (what the release trains the published model on).
 - Dependabot removed; base-image digests are bumped by hand (see the root
   `Dockerfile`'s top comment).
 - `scripts/train.py` is now seeded (`--seed`, default 42). It never was,
