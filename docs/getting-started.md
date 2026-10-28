@@ -109,7 +109,7 @@ curl -X POST localhost:8090/v1/score -H 'content-type: application/json' \
   -d '{"protocol":"SIP","destPort":5060,"payloadSize":256,"ratePerSecond":3000,"malformed":false}'
 # A tunneled GTP-U packet carries its tunnel identity too; for those the
 # per-source rate is ignored and tunnelRatePerSecond is what the model sees:
-#   {"protocol":"GTP-U","destPort":2152,"payloadSize":86,"ratePerSecond":3031,"teid":34632,"tunnelRatePerSecond":3001}
+#   {"protocol":"GTP-U","destPort":2152,"payloadSize":244,"ratePerSecond":3031,"teid":34632,"tunnelRatePerSecond":3001}
 ```
 
 ## 3. Run the operator against a local cluster

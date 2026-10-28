@@ -58,7 +58,12 @@ class Packet:
     timestamp: float
     source_ip: str
     dest_port: int
-    #: UDP payload size in bytes (what bpf/packet_filter.c reports).
+    #: UDP payload size in bytes (what bpf/packet_filter.c reports). Taken
+    #: from the record's ORIGINAL length, not the bytes captured: XDP always
+    #: sees the whole frame, while a `tcpdump -s N` capture truncates it, and
+    #: reading the truncated length made every packet longer than the snaplen
+    #: look exactly snaplen-sized (docs/paper-data/02-ai-training-inference.md
+    #: §2.11.1).
     payload_size: int
     #: 0 when no GTP-U T-PDU header was read — the same "no tunnel identity"
     #: sentinel pkg/events.NormalizedEvent documents. May be non-zero on a
@@ -168,7 +173,7 @@ def read_udp_packets(path: Path) -> list[Packet]:
     packets: list[Packet] = []
     offset = 24
     while offset + 16 <= len(raw):
-        ts_sec, ts_frac, caplen, _origlen = struct.unpack_from(endian + "IIII", raw, offset)
+        ts_sec, ts_frac, caplen, origlen = struct.unpack_from(endian + "IIII", raw, offset)
         offset += 16
         frame = raw[offset : offset + caplen]
         offset += caplen
@@ -221,7 +226,7 @@ def read_udp_packets(path: Path) -> list[Packet]:
                 timestamp=ts_sec + ts_frac / ts_divisor,
                 source_ip=source_ip,
                 dest_port=dest_port,
-                payload_size=len(payload),
+                payload_size=max(origlen - (udp_off + 8), len(payload)),
                 teid=teid,
                 malformed=malformed,
             )

@@ -469,7 +469,7 @@ if [ "$WITH_AI_ENGINE" = "true" ]; then
   # the whole Layer 1 -> 2 -> 3 -> 4 loop, minus only the kernel probe.
   step "Simulating an attack (publishing a NormalizedEvent for the AI engine to score)"
   kubectl run nats-box --rm -i --restart=Never --image=natsio/nats-box:latest --namespace="$DEMO_NAMESPACE" -- \
-    nats pub sentinel5g.events.normalized '{"eventId":"quickstart-1","observedAt":"2026-01-05T12:00:00Z","namespace":"telecom-core","podName":"amf-0","nodeName":"kind","sourceIp":"203.0.113.7","destIp":"10.0.0.1","destPort":2152,"protocol":"GTP-U","payloadSize":86,"ratePerSecond":3031,"malformed":false,"vlanId":0,"teid":34632,"tunnelRatePerSecond":3001}' \
+    nats pub sentinel5g.events.normalized '{"eventId":"quickstart-1","observedAt":"2026-01-05T12:00:00Z","namespace":"telecom-core","podName":"amf-0","nodeName":"kind","sourceIp":"203.0.113.7","destIp":"10.0.0.1","destPort":2152,"protocol":"GTP-U","payloadSize":244,"ratePerSecond":3031,"malformed":false,"vlanId":0,"teid":34632,"tunnelRatePerSecond":3001}' \
     --server nats://nats.default.svc.cluster.local:4222 >/dev/null
 else
   # Without the AI engine there is nothing to score, so the ThreatScoreEvent
