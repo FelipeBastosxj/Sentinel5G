@@ -158,14 +158,16 @@ config:
   gtpuTunnelFlood:
     enabled: true
     # Packets/second on a SINGLE tunnel (one TEID), not per source IP.
-    # MEASURED TOO LOW for a real user plane: on real web, video, bulk and
-    # voice traffic through a 5G core it fired on all four applications, 43
-    # times in 30 min from four subscribers, because one download's ACK
-    # stream alone reaches ~21,000 pkt/s uplink
-    # (docs/paper-data/02-ai-training-inference.md §2.11.5). Set it from the
-    # subscriber's session AMBR and keep the policies detection-only; see
-    # docs/production-install.md step 4.
-    packetsPerSecond: 1000
+    # Chosen from a measurement: real web, video, bulk and voice traffic
+    # through a 5G core peaked at ~21,000 pkt/s uplink / ~44,000 downlink per
+    # tunnel (docs/paper-data/02-ai-training-inference.md §2.11.5), and the
+    # old default of 1,000 alerted on all four applications. 100,000 is quiet
+    # on that traffic with >2x margin and still catches a single-tunnel
+    # volumetric flood (the lab generator reaches ~125,000). It does NOT
+    # catch a flood of a few thousand pkt/s -- nothing rate-based quiet on
+    # real traffic can. Lower it toward your subscribers' session AMBR on a
+    # detection-only pilot; see docs/production-install.md step 4.
+    packetsPerSecond: 100000
     # Minimum interval between events for one (source IP, TEID).
     cooldown: 30s
     # What to DO about a flagged tunnel is a per-policy CRD decision, not a
@@ -187,17 +189,22 @@ config:
     enabled: true
     # AGGREGATE packets/second from one source across every tunnel. More
     # consequential than the per-tunnel number because the matching action
-    # drops every subscriber behind the peer -- and MEASURED TOO LOW: four
-    # lab UEs reached 21,026 pkt/s uplink on ordinary application traffic
-    # (docs/paper-data/02-ai-training-inference.md §2.11.5). Set it above
-    # your peers' measured aggregate peak, and pilot in detection-only mode
-    # first (docs/production-install.md). Set to 0 to use cardinality alone.
-    packetsPerSecond: 20000
+    # drops every subscriber behind the peer. Four lab UEs on ordinary
+    # application traffic reached 21,026 pkt/s uplink -- past the old default
+    # of 20,000 (docs/paper-data/02-ai-training-inference.md §2.11.5). A real
+    # gNB aggregates hundreds of UEs; 500,000 leaves room for the ACK stream
+    # of ~10 Gbit/s of downlink. Set it from your peers' measured aggregate
+    # peak on a detection-only pilot (docs/production-install.md). Set to 0
+    # to use cardinality alone.
+    packetsPerSecond: 500000
     # Distinct TEIDs one source may use within the window before being
-    # reported regardless of rate -- the shape of TEID rotation/spoofing,
-    # which a real gNB (bearers turning over slowly) does not produce. Set
-    # to 0 to use the rate alone. Both 0 is refused at startup.
-    distinctTunnels: 256
+    # reported regardless of rate -- the shape of TEID rotation/spoofing.
+    # A real gNB carries one tunnel per active bearer, which on a busy cell
+    # is hundreds in the same second, so the old default of 256 was within
+    # reach of legitimate traffic. 2,048 is half the detector's per-source
+    # tracking cap (4,096). Set it above your real active-bearer count per
+    # peer. Set to 0 to use the rate alone. Both 0 is refused at startup.
+    distinctTunnels: 2048
     # Measurement window for both thresholds; 1s matches the kernel's own
     # rate window so the numbers are in the same units.
     window: 1s

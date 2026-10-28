@@ -21,8 +21,8 @@ const DefaultSourceFloodWindow = time.Second
 const (
 	defaultTrackedSources     = 1024
 	defaultTunnelsPerSource   = 4096
-	defaultSourceFloodPPS     = 20000
-	defaultDistinctTunnelsCap = 256
+	defaultSourceFloodPPS     = 500000
+	defaultDistinctTunnelsCap = 2048
 )
 
 // GTPUSourceFloodConfig configures GTPUSourceFloodDetector.

@@ -27,9 +27,9 @@
       },
       "multi_ue_one_flooding": {
         "packets": 19808,
-        "flagged_high": 0.9495,
+        "flagged_high": 0.9491,
         "flagged_medium": 0.9424,
-        "flagged_low": 0.9371
+        "flagged_low": 0.9367
       }
     },
     "B_locally_calibrated": {
@@ -116,10 +116,10 @@
     "all": {
       "high": {
         "packets": 1974588,
-        "false_positives": 1735757,
-        "point_fpr": 0.8790476798197903,
-        "upper_bound_95": 0.8795021797849738,
-        "wrong_mitigations_per_s_at_100000": 87950.22,
+        "false_positives": 1735095,
+        "point_fpr": 0.8787124200086297,
+        "upper_bound_95": 0.8791674634910684,
+        "wrong_mitigations_per_s_at_100000": 87916.75,
         "by_group": {
           "bulk/downlink": {
             "packets": 609688,
@@ -128,8 +128,8 @@
           },
           "bulk/uplink": {
             "packets": 285441,
-            "false_positives": 281100,
-            "upper_bound_95": 0.9852377291518175
+            "false_positives": 281080,
+            "upper_bound_95": 0.9851686798730956
           },
           "video/downlink": {
             "packets": 404305,
@@ -138,13 +138,13 @@
           },
           "video/uplink": {
             "packets": 188290,
-            "false_positives": 123539,
-            "upper_bound_95": 0.6582560139381204
+            "false_positives": 123124,
+            "upper_bound_95": 0.6560552471478895
           },
           "voice_chat/downlink": {
             "packets": 70822,
-            "false_positives": 3007,
-            "upper_bound_95": 0.04396947464679307
+            "false_positives": 3002,
+            "upper_bound_95": 0.043897697777779465
           },
           "voice_chat/uplink": {
             "packets": 75211,
@@ -153,22 +153,22 @@
           },
           "web/downlink": {
             "packets": 226860,
-            "false_positives": 223755,
-            "upper_bound_95": 0.9867872383979921
+            "false_positives": 223736,
+            "upper_bound_95": 0.9867049276303568
           },
           "web/uplink": {
             "packets": 113971,
-            "false_positives": 83026,
-            "upper_bound_95": 0.731064125225033
+            "false_positives": 82823,
+            "upper_bound_95": 0.729288301995604
           }
         }
       },
       "medium": {
         "packets": 1974588,
-        "false_positives": 1723998,
-        "point_fpr": 0.873092513476229,
-        "upper_bound_95": 0.8735565032070172,
-        "wrong_mitigations_per_s_at_100000": 87355.65,
+        "false_positives": 1723373,
+        "point_fpr": 0.8727759917511906,
+        "upper_bound_95": 0.8732404763026411,
+        "wrong_mitigations_per_s_at_100000": 87324.05,
         "by_group": {
           "bulk/downlink": {
             "packets": 609688,
@@ -177,8 +177,8 @@
           },
           "bulk/uplink": {
             "packets": 285441,
-            "false_positives": 280740,
-            "upper_bound_95": 0.9839944816632031
+            "false_positives": 280720,
+            "upper_bound_95": 0.9839253908335361
           },
           "video/downlink": {
             "packets": 404305,
@@ -187,13 +187,13 @@
           },
           "video/uplink": {
             "packets": 188290,
-            "false_positives": 116068,
-            "upper_bound_95": 0.6186292817141656
+            "false_positives": 115653,
+            "upper_bound_95": 0.6164276286095345
           },
           "voice_chat/downlink": {
             "packets": 70822,
-            "false_positives": 2917,
-            "upper_bound_95": 0.04267731715893103
+            "false_positives": 2912,
+            "upper_bound_95": 0.04260551967931986
           },
           "voice_chat/uplink": {
             "packets": 75211,
@@ -202,22 +202,22 @@
           },
           "web/downlink": {
             "packets": 226860,
-            "false_positives": 223485,
-            "upper_bound_95": 0.9856171459989258
+            "false_positives": 223482,
+            "upper_bound_95": 0.9856041401691287
           },
           "web/uplink": {
             "packets": 113971,
-            "false_positives": 79462,
-            "upper_bound_95": 0.6998792792000932
+            "false_positives": 79280,
+            "upper_bound_95": 0.6982863825956624
           }
         }
       },
       "low": {
         "packets": 1974588,
-        "false_positives": 1714295,
-        "point_fpr": 0.8681785769993537,
-        "upper_bound_95": 0.8686501437701235,
-        "wrong_mitigations_per_s_at_100000": 86865.01,
+        "false_positives": 1713654,
+        "point_fpr": 0.8678539523181544,
+        "upper_bound_95": 0.8683260118694558,
+        "wrong_mitigations_per_s_at_100000": 86832.6,
         "by_group": {
           "bulk/downlink": {
             "packets": 609688,
@@ -226,8 +226,8 @@
           },
           "bulk/uplink": {
             "packets": 285441,
-            "false_positives": 280440,
-            "upper_bound_95": 0.9829578972628321
+            "false_positives": 280420,
+            "upper_bound_95": 0.9828887752300508
           },
           "video/downlink": {
             "packets": 404305,
@@ -236,13 +236,13 @@
           },
           "video/uplink": {
             "packets": 188290,
-            "false_positives": 109843,
-            "upper_bound_95": 0.5855995548029593
+            "false_positives": 109429,
+            "upper_bound_95": 0.5834025093687816
           },
           "voice_chat/downlink": {
             "packets": 70822,
-            "false_positives": 2842,
-            "upper_bound_95": 0.041600230596384014
+            "false_positives": 2837,
+            "upper_bound_95": 0.04152841523082479
           },
           "voice_chat/uplink": {
             "packets": 75211,
@@ -251,13 +251,13 @@
           },
           "web/downlink": {
             "packets": 226860,
-            "false_positives": 223291,
-            "upper_bound_95": 0.9847758993858537
+            "false_positives": 223284,
+            "upper_bound_95": 0.9847455376333794
           },
           "web/uplink": {
             "packets": 113971,
-            "false_positives": 76554,
-            "upper_bound_95": 0.6744234850809858
+            "false_positives": 76359,
+            "upper_bound_95": 0.672716178374871
           }
         }
       }
@@ -265,20 +265,20 @@
     "uplink": {
       "high": {
         "packets": 662913,
-        "false_positives": 495734,
-        "point_fpr": 0.7478115529488787,
-        "upper_bound_95": 0.7488566130144185,
-        "wrong_mitigations_per_s_at_100000": 74885.66,
+        "false_positives": 495096,
+        "point_fpr": 0.7468491340492643,
+        "upper_bound_95": 0.7478955169645063,
+        "wrong_mitigations_per_s_at_100000": 74789.55,
         "by_group": {
           "bulk/uplink": {
             "packets": 285441,
-            "false_positives": 281100,
-            "upper_bound_95": 0.9852377291518175
+            "false_positives": 281080,
+            "upper_bound_95": 0.9851686798730956
           },
           "video/uplink": {
             "packets": 188290,
-            "false_positives": 123539,
-            "upper_bound_95": 0.6582560139381204
+            "false_positives": 123124,
+            "upper_bound_95": 0.6560552471478895
           },
           "voice_chat/uplink": {
             "packets": 75211,
@@ -287,27 +287,27 @@
           },
           "web/uplink": {
             "packets": 113971,
-            "false_positives": 83026,
-            "upper_bound_95": 0.731064125225033
+            "false_positives": 82823,
+            "upper_bound_95": 0.729288301995604
           }
         }
       },
       "medium": {
         "packets": 662913,
-        "false_positives": 484338,
-        "point_fpr": 0.7306207601902512,
-        "upper_bound_95": 0.7316884474710068,
-        "wrong_mitigations_per_s_at_100000": 73168.84,
+        "false_positives": 483721,
+        "point_fpr": 0.7296900196556713,
+        "upper_bound_95": 0.7307588727306529,
+        "wrong_mitigations_per_s_at_100000": 73075.89,
         "by_group": {
           "bulk/uplink": {
             "packets": 285441,
-            "false_positives": 280740,
-            "upper_bound_95": 0.9839944816632031
+            "false_positives": 280720,
+            "upper_bound_95": 0.9839253908335361
           },
           "video/uplink": {
             "packets": 188290,
-            "false_positives": 116068,
-            "upper_bound_95": 0.6186292817141656
+            "false_positives": 115653,
+            "upper_bound_95": 0.6164276286095345
           },
           "voice_chat/uplink": {
             "packets": 75211,
@@ -316,27 +316,27 @@
           },
           "web/uplink": {
             "packets": 113971,
-            "false_positives": 79462,
-            "upper_bound_95": 0.6998792792000932
+            "false_positives": 79280,
+            "upper_bound_95": 0.6982863825956624
           }
         }
       },
       "low": {
         "packets": 662913,
-        "false_positives": 474905,
-        "point_fpr": 0.7163911403155467,
-        "upper_bound_95": 0.7174760098521342,
-        "wrong_mitigations_per_s_at_100000": 71747.6,
+        "false_positives": 474276,
+        "point_fpr": 0.71544229785809,
+        "upper_bound_95": 0.7165282651072769,
+        "wrong_mitigations_per_s_at_100000": 71652.83,
         "by_group": {
           "bulk/uplink": {
             "packets": 285441,
-            "false_positives": 280440,
-            "upper_bound_95": 0.9829578972628321
+            "false_positives": 280420,
+            "upper_bound_95": 0.9828887752300508
           },
           "video/uplink": {
             "packets": 188290,
-            "false_positives": 109843,
-            "upper_bound_95": 0.5855995548029593
+            "false_positives": 109429,
+            "upper_bound_95": 0.5834025093687816
           },
           "voice_chat/uplink": {
             "packets": 75211,
@@ -345,8 +345,8 @@
           },
           "web/uplink": {
             "packets": 113971,
-            "false_positives": 76554,
-            "upper_bound_95": 0.6744234850809858
+            "false_positives": 76359,
+            "upper_bound_95": 0.672716178374871
           }
         }
       }
@@ -594,30 +594,12 @@
       }
     }
   },
-  "C_rules_at_chart_defaults": {
+  "C_rules": {
     "tunnel_flood": {
-      "threshold_pps": 1000,
+      "threshold_pps": 100000,
       "cooldown_s": 30.0,
-      "alerts": {
-        "bulk/downlink": 20,
-        "bulk/uplink": 20,
-        "video/downlink": 43,
-        "video/uplink": 7,
-        "voice_chat/downlink": 2,
-        "voice_chat/uplink": 4,
-        "web/downlink": 38,
-        "web/uplink": 12
-      },
-      "tunnels_alerted": {
-        "bulk/downlink": 1,
-        "bulk/uplink": 1,
-        "video/downlink": 1,
-        "video/uplink": 1,
-        "voice_chat/downlink": 1,
-        "voice_chat/uplink": 1,
-        "web/downlink": 1,
-        "web/uplink": 1
-      },
+      "alerts": {},
+      "tunnels_alerted": {},
       "peak_tunnel_pps": {
         "bulk/downlink": 43850,
         "bulk/uplink": 20975,
@@ -630,8 +612,8 @@
       }
     },
     "source_flood": {
-      "threshold_pps": 20000,
-      "threshold_distinct_tunnels": 256,
+      "threshold_pps": 500000,
+      "threshold_distinct_tunnels": 2048,
       "peak_pps": {
         "127.0.0.1": 21026,
         "127.0.0.7": 43901
@@ -640,7 +622,7 @@
         "127.0.0.1": 4,
         "127.0.0.7": 4
       },
-      "alerts": 2
+      "alerts": 0
     }
   },
   "B_cross_session": {
@@ -890,24 +872,10 @@
   },
   "C_rules_on_holdout": {
     "tunnel_flood": {
-      "threshold_pps": 1000,
+      "threshold_pps": 100000,
       "cooldown_s": 30.0,
-      "alerts": {
-        "bulk/downlink": 10,
-        "bulk/uplink": 10,
-        "video/downlink": 23,
-        "video/uplink": 4,
-        "web/downlink": 18,
-        "web/uplink": 6
-      },
-      "tunnels_alerted": {
-        "bulk/downlink": 1,
-        "bulk/uplink": 1,
-        "video/downlink": 1,
-        "video/uplink": 1,
-        "web/downlink": 1,
-        "web/uplink": 1
-      },
+      "alerts": {},
+      "tunnels_alerted": {},
       "peak_tunnel_pps": {
         "bulk/downlink": 43149,
         "bulk/uplink": 19934,
@@ -920,8 +888,8 @@
       }
     },
     "source_flood": {
-      "threshold_pps": 20000,
-      "threshold_distinct_tunnels": 256,
+      "threshold_pps": 500000,
+      "threshold_distinct_tunnels": 2048,
       "peak_pps": {
         "127.0.0.1": 20588,
         "127.0.0.7": 44444
@@ -930,7 +898,7 @@
         "127.0.0.1": 4,
         "127.0.0.7": 4
       },
-      "alerts": 2
+      "alerts": 0
     }
   }
 }

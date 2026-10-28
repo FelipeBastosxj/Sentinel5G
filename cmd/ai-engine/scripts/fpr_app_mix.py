@@ -13,7 +13,7 @@ turn into a mitigation under `autoMitigate: true`:
      §2.8/§2.10 prescribe for a deployment. With --holdout, it is ALSO
      calibrated on the whole capture and scored on a second, independent
      session (different seed, different time): the stricter form;
-  C. the deterministic rules at their chart defaults -- the per-tunnel flood
+  C. the deterministic rules (chart defaults unless overridden) -- the per-tunnel flood
      rule (pkg/detect.GTPUFloodDetector) and the per-peer source-flood rule
      (pkg/detect.GTPUSourceFloodDetector), mirrored packet by packet.
 
@@ -53,11 +53,13 @@ from scripts.pcap_gtpu import _ip_offset, read_udp_packets
 from sentinel_ai.features import extract_features
 from sentinel_ai.model import Autoencoder, reconstruction_error, train
 
-# charts/sentinel5g-operator/values.yaml defaults. Keep in sync by hand.
-TUNNEL_FLOOD_PPS = 1000
+# charts/sentinel5g-operator/values.yaml defaults (pkg/config). Keep in sync
+# by hand. The pre-2026-10-28 defaults §2.11.5 measured are 1,000 / 20,000 /
+# 256; pass them with --tunnel-flood-pps etc. to reproduce that table.
+TUNNEL_FLOOD_PPS = 100_000
 TUNNEL_FLOOD_COOLDOWN_S = 30.0
-SOURCE_FLOOD_PPS = 20000
-SOURCE_FLOOD_DISTINCT_TUNNELS = 256
+SOURCE_FLOOD_PPS = 500_000
+SOURCE_FLOOD_DISTINCT_TUNNELS = 2048
 
 GNB_N3_IP = "127.0.0.1"  # lab gNB gtpIp; packets from it are uplink
 RATE_SCALE = 100_000  # report "wrong mitigations/s" at this event rate
@@ -145,8 +147,17 @@ def _fp_table(scores: np.ndarray, groups: np.ndarray, alpha: float) -> dict:
     return out
 
 
-def _rules(packets, tunnel_rates, owner_of, direction_of) -> dict:
-    """Mirrors the two Go rules packet by packet at their chart defaults."""
+def _rules(
+    packets,
+    tunnel_rates,
+    owner_of,
+    direction_of,
+    tunnel_pps: int = TUNNEL_FLOOD_PPS,
+    source_pps: int = SOURCE_FLOOD_PPS,
+    distinct_tunnels: int = SOURCE_FLOOD_DISTINCT_TUNNELS,
+) -> dict:
+    """Mirrors the two Go rules packet by packet (chart defaults unless
+    overridden)."""
     alerts: dict[str, int] = defaultdict(int)
     alerted_tunnels: dict[str, set] = defaultdict(set)
     last: dict[tuple[str, int], float] = {}
@@ -157,7 +168,7 @@ def _rules(packets, tunnel_rates, owner_of, direction_of) -> dict:
         key = (p.source_ip, p.teid)
         g = f"{owner_of.get(key, 'unattributed')}/{direction_of(p)}"
         peak[g] = max(peak[g], rate)
-        if rate >= TUNNEL_FLOOD_PPS:
+        if rate >= tunnel_pps:
             if key not in last or p.timestamp - last[key] >= TUNNEL_FLOOD_COOLDOWN_S:
                 last[key] = p.timestamp
                 alerts[g] += 1
@@ -180,22 +191,22 @@ def _rules(packets, tunnel_rates, owner_of, direction_of) -> dict:
 
     return {
         "tunnel_flood": {
-            "threshold_pps": TUNNEL_FLOOD_PPS,
+            "threshold_pps": tunnel_pps,
             "cooldown_s": TUNNEL_FLOOD_COOLDOWN_S,
             "alerts": dict(sorted(alerts.items())),
             "tunnels_alerted": {g: len(v) for g, v in sorted(alerted_tunnels.items())},
             "peak_tunnel_pps": dict(sorted(peak.items())),
         },
         "source_flood": {
-            "threshold_pps": SOURCE_FLOOD_PPS,
-            "threshold_distinct_tunnels": SOURCE_FLOOD_DISTINCT_TUNNELS,
+            "threshold_pps": source_pps,
+            "threshold_distinct_tunnels": distinct_tunnels,
             "peak_pps": dict(src_peak_pps),
             "peak_distinct_tunnels": dict(src_peak_teids),
             "alerts": sum(
                 1
                 for s in src_peak_pps
-                if src_peak_pps[s] >= SOURCE_FLOOD_PPS
-                or src_peak_teids[s] >= SOURCE_FLOOD_DISTINCT_TUNNELS
+                if (source_pps and src_peak_pps[s] >= source_pps)
+                or (distinct_tunnels and src_peak_teids[s] >= distinct_tunnels)
             ),
         },
     }
@@ -255,6 +266,11 @@ def main() -> None:
     ap.add_argument(
         "--gnb-ip", default=GNB_N3_IP, help="the gNB's N3 address; packets from it are uplink"
     )
+    ap.add_argument("--tunnel-flood-pps", type=int, default=TUNNEL_FLOOD_PPS)
+    ap.add_argument("--source-flood-pps", type=int, default=SOURCE_FLOOD_PPS)
+    ap.add_argument(
+        "--source-flood-distinct-tunnels", type=int, default=SOURCE_FLOOD_DISTINCT_TUNNELS
+    )
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
@@ -267,6 +283,11 @@ def main() -> None:
 
     rng = random.Random(args.seed)  # nosec B311
     uplink_of = partial(_direction, gnb_ip=args.gnb_ip)
+    thresholds = {
+        "tunnel_pps": args.tunnel_flood_pps,
+        "source_pps": args.source_flood_pps,
+        "distinct_tunnels": args.source_flood_distinct_tunnels,
+    }
     rows, group, uplink, packets, events, owner_of = _load(args.capture, rng, args.gnb_ip)
 
     # A. As shipped.
@@ -307,8 +328,12 @@ def main() -> None:
             "all": _fp_table(scores_b, group[half:], args.alpha),
             "uplink": _fp_table(scores_b[uplink[half:]], group[half:][uplink[half:]], args.alpha),
         },
-        "C_rules_at_chart_defaults": _rules(
-            packets, [int(e.tunnel_rate_per_second) for e in events], owner_of, uplink_of
+        "C_rules": _rules(
+            packets,
+            [int(e.tunnel_rate_per_second) for e in events],
+            owner_of,
+            uplink_of,
+            **thresholds,
         ),
     }
     if args.holdout:
@@ -331,7 +356,11 @@ def main() -> None:
             "uplink": _fp_table(h_scores[h_up], h_group[h_up], args.alpha),
         }
         out["C_rules_on_holdout"] = _rules(
-            h_packets, [int(e.tunnel_rate_per_second) for e in h_events], h_owner, uplink_of
+            h_packets,
+            [int(e.tunnel_rate_per_second) for e in h_events],
+            h_owner,
+            uplink_of,
+            **thresholds,
         )
     print(json.dumps(out, indent=2))
 

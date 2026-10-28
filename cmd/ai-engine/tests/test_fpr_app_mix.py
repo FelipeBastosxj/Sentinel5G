@@ -14,7 +14,16 @@ import struct
 from pathlib import Path
 
 from scripts.build_real_dataset import tunnel_rate_series
-from scripts.fpr_app_mix import TUNNEL_FLOOD_PPS, _direction, _rules, _tunnel_owners
+import re
+
+from scripts.fpr_app_mix import (
+    SOURCE_FLOOD_DISTINCT_TUNNELS,
+    SOURCE_FLOOD_PPS,
+    TUNNEL_FLOOD_PPS,
+    _direction,
+    _rules,
+    _tunnel_owners,
+)
 from scripts.pcap_gtpu import read_udp_packets
 
 GNB, UPF = "127.0.0.1", "127.0.0.7"
@@ -75,19 +84,32 @@ def _burst(n: int, start: float, teid: int = 0x10) -> list[tuple[float, bytes]]:
     return [(start + i * (0.9 / n), frame) for i in range(n)]
 
 
+# Small thresholds keep the synthetic pcaps small; the semantics are the
+# same at any value.
+_PPS, _SRC_PPS, _DISTINCT = 1000, 20000, 256
+
+
 def _run_rules(tmp_path, frames):
     pcap = _write_pcap(tmp_path / "c.pcap", frames)
     packets = read_udp_packets(pcap)
     owners = _tunnel_owners(pcap, {"10.45.0.6": "web"})
-    return _rules(packets, tunnel_rate_series(packets), owners, _direction)
+    return _rules(
+        packets,
+        tunnel_rate_series(packets),
+        owners,
+        _direction,
+        tunnel_pps=_PPS,
+        source_pps=_SRC_PPS,
+        distinct_tunnels=_DISTINCT,
+    )
 
 
 def test_tunnel_flood_needs_the_full_threshold_inside_one_window(tmp_path):
-    below = _run_rules(tmp_path, _burst(TUNNEL_FLOOD_PPS - 1, 10.0))
+    below = _run_rules(tmp_path, _burst(_PPS - 1, 10.0))
     assert below["tunnel_flood"]["alerts"] == {}
-    assert below["tunnel_flood"]["peak_tunnel_pps"]["web/uplink"] == TUNNEL_FLOOD_PPS - 1
+    assert below["tunnel_flood"]["peak_tunnel_pps"]["web/uplink"] == _PPS - 1
 
-    at = _run_rules(tmp_path, _burst(TUNNEL_FLOOD_PPS, 10.0))
+    at = _run_rules(tmp_path, _burst(_PPS, 10.0))
     assert at["tunnel_flood"]["alerts"] == {"web/uplink": 1}
 
 
@@ -108,7 +130,7 @@ def test_source_flood_counts_packets_and_distinct_tunnels_per_peer(tmp_path):
     result = _run_rules(tmp_path, frames)["source_flood"]
     assert result["peak_pps"] == {GNB: 300}
     assert result["peak_distinct_tunnels"] == {GNB: 300}
-    assert result["alerts"] == 1  # 300 distinct TEIDs >= the 256 default
+    assert result["alerts"] == 1  # 300 distinct TEIDs >= 256
 
 
 def test_payload_size_survives_a_truncating_snaplen(tmp_path):
@@ -124,3 +146,16 @@ def test_payload_size_survives_a_truncating_snaplen(tmp_path):
     (packet,) = read_udp_packets(pcap)
     assert packet.payload_size == real_payload
     assert packet.teid == 0x10
+
+
+def test_rule_defaults_match_the_operator_config():
+    # The mirror is only a measurement of the shipped rules if it uses the
+    # shipped numbers; pkg/config/config.go is where they are defined.
+    go = (Path(__file__).resolve().parents[3] / "pkg" / "config" / "config.go").read_text()
+
+    def default(env: str) -> int:
+        return int(re.search(rf'"{env}", (\d+)\)', go).group(1))
+
+    assert default("GTPU_TUNNEL_FLOOD_PPS") == TUNNEL_FLOOD_PPS
+    assert default("GTPU_SOURCE_FLOOD_PPS") == SOURCE_FLOOD_PPS
+    assert default("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS") == SOURCE_FLOOD_DISTINCT_TUNNELS

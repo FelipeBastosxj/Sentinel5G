@@ -119,8 +119,8 @@ func TestLoad_TunnelFloodDefaults(t *testing.T) {
 	if !cfg.GTPUTunnelFloodEnabled {
 		t.Error("expected the tunnel flood detector on by default")
 	}
-	if cfg.GTPUTunnelFloodPPS != 1000 {
-		t.Errorf("GTPUTunnelFloodPPS = %d, want 1000", cfg.GTPUTunnelFloodPPS)
+	if cfg.GTPUTunnelFloodPPS != 100000 {
+		t.Errorf("GTPUTunnelFloodPPS = %d, want 100000", cfg.GTPUTunnelFloodPPS)
 	}
 	if cfg.GTPUTunnelFloodCooldown != 30*time.Second {
 		t.Errorf("GTPUTunnelFloodCooldown = %v, want 30s", cfg.GTPUTunnelFloodCooldown)
@@ -225,11 +225,11 @@ func TestLoad_SourceFloodDefaults(t *testing.T) {
 	if !cfg.GTPUSourceFloodEnabled {
 		t.Error("expected the source flood detector on by default")
 	}
-	if cfg.GTPUSourceFloodPPS != 20000 {
-		t.Errorf("GTPUSourceFloodPPS = %d, want 20000", cfg.GTPUSourceFloodPPS)
+	if cfg.GTPUSourceFloodPPS != 500000 {
+		t.Errorf("GTPUSourceFloodPPS = %d, want 500000", cfg.GTPUSourceFloodPPS)
 	}
-	if cfg.GTPUSourceFloodDistinctTunnels != 256 {
-		t.Errorf("GTPUSourceFloodDistinctTunnels = %d, want 256", cfg.GTPUSourceFloodDistinctTunnels)
+	if cfg.GTPUSourceFloodDistinctTunnels != 2048 {
+		t.Errorf("GTPUSourceFloodDistinctTunnels = %d, want 2048", cfg.GTPUSourceFloodDistinctTunnels)
 	}
 	if cfg.GTPUSourceFloodWindow != time.Second {
 		t.Errorf("GTPUSourceFloodWindow = %v, want 1s", cfg.GTPUSourceFloodWindow)

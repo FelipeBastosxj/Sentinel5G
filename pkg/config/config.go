@@ -235,7 +235,10 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
-	tunnelFloodPPS, err := parseUint32Env("GTPU_TUNNEL_FLOOD_PPS", 1000)
+	// Defaults sit above the benign peaks measured on real application
+	// traffic (docs/paper-data/02-ai-training-inference.md §2.11.5): a
+	// lower number fired on ordinary downloads. Tune down per network.
+	tunnelFloodPPS, err := parseUint32Env("GTPU_TUNNEL_FLOOD_PPS", 100000)
 	if err != nil {
 		return OperatorConfig{}, err
 	}
@@ -250,12 +253,12 @@ func Load() (OperatorConfig, error) {
 		return OperatorConfig{}, err
 	}
 
-	sourceFloodPPS, err := parseUint32Env("GTPU_SOURCE_FLOOD_PPS", 20000)
+	sourceFloodPPS, err := parseUint32Env("GTPU_SOURCE_FLOOD_PPS", 500000)
 	if err != nil {
 		return OperatorConfig{}, err
 	}
 
-	sourceFloodDistinct, err := parseIntEnv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", 256)
+	sourceFloodDistinct, err := parseIntEnv("GTPU_SOURCE_FLOOD_DISTINCT_TUNNELS", 2048)
 	if err != nil {
 		return OperatorConfig{}, err
 	}
